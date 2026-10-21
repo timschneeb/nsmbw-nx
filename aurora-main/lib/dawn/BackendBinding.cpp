@@ -5,6 +5,9 @@
 #if !defined(SDL_PLATFORM_MACOS) && !defined(SDL_PLATFORM_IOS) && !defined(SDL_PLATFORM_TVOS)
 #include <SDL3/SDL_video.h>
 #endif
+#if defined(SDL_PLATFORM_SWITCH)
+#include <switch.h>
+#endif
 
 namespace aurora::webgpu::utils {
 std::shared_ptr<wgpu::ChainedStruct> SetupWindowAndGetSurfaceDescriptorCocoa(SDL_Window* window);
@@ -23,6 +26,13 @@ std::shared_ptr<wgpu::ChainedStruct> SetupWindowAndGetSurfaceDescriptor(SDL_Wind
   std::shared_ptr<wgpu::SurfaceSourceWindowsHWND> desc = std::make_shared<wgpu::SurfaceSourceWindowsHWND>();
   desc->hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
   desc->hinstance = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, nullptr);
+  return std::move(desc);
+#elif defined(SDL_PLATFORM_SWITCH)
+  // Horizon has no SDL window-handle property; Dawn consumes the libnx
+  // default NWindow directly through VK_NN_vi_surface.
+  std::shared_ptr<wgpu::SurfaceSourceSwitchNWindow> desc =
+      std::make_shared<wgpu::SurfaceSourceSwitchNWindow>();
+  desc->window = nwindowGetDefault();
   return std::move(desc);
 #elif defined(SDL_PLATFORM_LINUX)
   const char* driver = SDL_GetCurrentVideoDriver();
