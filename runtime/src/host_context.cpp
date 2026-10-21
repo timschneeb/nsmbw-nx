@@ -8,9 +8,14 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#elif (defined(__APPLE__) || defined(__ANDROID__)) && defined(__aarch64__)
+#elif (defined(__APPLE__) || defined(__ANDROID__) || defined(MKW_PLATFORM_SWITCH)) && \
+    defined(__aarch64__)
+#if !defined(MKW_PLATFORM_SWITCH)
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
+#include <cstdint>
+#include <new>
 #if defined(__ANDROID__)
 #include <pthread.h>
 
@@ -78,7 +83,8 @@ void Switch(Handle target)
     SwitchToFiber(target);
 }
 
-#elif (defined(__APPLE__) || defined(__ANDROID__)) && defined(__aarch64__)
+#elif (defined(__APPLE__) || defined(__ANDROID__) || defined(MKW_PLATFORM_SWITCH)) && \
+    defined(__aarch64__)
 
 namespace {
 struct Context {
@@ -167,6 +173,15 @@ void ShutdownScheduler(Handle scheduler)
 Handle Create(std::size_t stackSize, Entry entry, void* argument)
 {
     auto* context = new Context();
+#if defined(MKW_PLATFORM_SWITCH)
+    // Horizon has no mmap/mprotect: heap stacks with no guard page.
+    context->stack = new (std::nothrow) uint8_t[stackSize];
+    if (context->stack == nullptr) {
+        delete context;
+        return nullptr;
+    }
+    context->stackSize = stackSize;
+#else
     const std::size_t guardSize = static_cast<std::size_t>(getpagesize());
     const std::size_t totalSize = stackSize + guardSize;
 #if defined(__ANDROID__)
@@ -190,8 +205,9 @@ Handle Create(std::size_t stackSize, Entry entry, void* argument)
         return nullptr;
     }
     context->stackSize = totalSize;
+#endif
 
-    auto* stackTop = static_cast<char*>(context->stack) + totalSize;
+    auto* stackTop = static_cast<char*>(context->stack) + context->stackSize;
     context->savedStackPointer = mkw_co_init(stackTop, entry, argument);
     return context;
 }
@@ -211,7 +227,11 @@ void Destroy(Handle context)
             g_arena.freed.emplace_back(nativeContext->stack, nativeContext->stackSize);
         } else
 #endif
+#if defined(MKW_PLATFORM_SWITCH)
+        delete[] static_cast<uint8_t*>(nativeContext->stack);
+#else
         munmap(nativeContext->stack, nativeContext->stackSize);
+#endif
     }
     delete nativeContext;
 }

@@ -144,6 +144,15 @@ std::optional<fs::path> PickFolder() {
 }
 #endif
 
+#if defined(MKW_PLATFORM_SWITCH)
+// No folder picker on Switch: the beside-program game folder in EnsureConfigured is the only source.
+namespace {
+fs::path ProgramDirectory() {
+    return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});
+}
+} // namespace
+#endif
+
 } // namespace
 
 fs::path Find(const fs::path& path) {
@@ -183,7 +192,7 @@ std::string Problem(const fs::path& root) {
 }
 
 bool EnsureConfigured() {
-#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__)) || defined(MKW_PLATFORM_SWITCH)
     // A "game" folder next to the program needs no questions, and wins over the saved folder: every
     // install shares Documents\MarioWiiSaveData, so this is how two installs play two games (say the
     // original and a mod), each with its own saves (nand_path.h keeps saves per game).

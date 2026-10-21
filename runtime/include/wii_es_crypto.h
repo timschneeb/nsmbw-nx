@@ -36,6 +36,10 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef MKW_PLATFORM_SWITCH
+#include <switch.h>
+#endif
+
 namespace WiiEsCrypto {
 
 using EcSignature = std::array<uint8_t, 60>;
@@ -150,7 +154,19 @@ inline EcSignature SignMessage(const uint8_t* key, const uint8_t* data, size_t s
         throw std::runtime_error("Crypto++ returned an unexpected sect233r1 signature size");
     }
 
+#ifdef MKW_PLATFORM_SWITCH
+    // Crypto++ disables its OS RNG without __unix__/__WIN32__. libnx randomGet
+    // is the Horizon entropy source, so this minimal generator replaces
+    // AutoSeededRandomPool here. Only GenerateBlock needs an override.
+    struct SwitchRandomPool : CryptoPP::RandomNumberGenerator {
+        void GenerateBlock(CryptoPP::byte* output, size_t blockSize) override {
+            randomGet(output, blockSize);
+        }
+    };
+    thread_local SwitchRandomPool random;
+#else
     thread_local CryptoPP::AutoSeededRandomPool random;
+#endif
     EcSignature signature{};
     const size_t written = signer.SignMessage(random, data, size, signature.data());
     if (written != signature.size()) {

@@ -1195,6 +1195,9 @@ void InstallSehLogger() {
     }
 }
 #else
+#if !defined(MKW_PLATFORM_SWITCH)
+// Horizon has no sigaction/siginfo/ucontext, and checked-only access needs no
+// fault interception.
 // POSIX counterpart to SehLogger above. Unlike Windows' AddVectoredExceptionHandler, which lets
 // GuestFlat and this module each install their own handler and defensively re-check each other,
 // sigaction only allows one handler per signal - the second registration replaces the first
@@ -1294,6 +1297,7 @@ void InstallPosixMemoryFaultHandler() {
     // handler costs nothing and avoids a silent gap if it ever isn't.
     sigaction(SIGBUS, &action, nullptr);
 }
+#endif
 #endif
 
 void AbortSignalHandler(int signum) {
@@ -1410,7 +1414,7 @@ int RuntimeMain(int argc, char** argv) {
     ConfigureWindowsFatalDialogBehavior();
     InstallSehLogger();
     WindowsTimerResolutionGuard timerResolutionGuard;
-#else
+#elif !defined(MKW_PLATFORM_SWITCH)
     InstallPosixMemoryFaultHandler();
 #endif
     InitializeProcessTranscript(argc, argv);
@@ -1576,6 +1580,10 @@ int RuntimeMain(int argc, char** argv) {
             static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
             {"auto", BACKEND_AUTO}, {"vulkan", BACKEND_VULKAN},
         }};
+#elif defined(MKW_PLATFORM_SWITCH)
+        static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
+            {"auto", BACKEND_AUTO}, {"vulkan", BACKEND_VULKAN},
+        }};
 #elif defined(_WIN32)
         static constexpr std::array<GraphicsBackendEntry, 3> kGraphicsBackends{{
             {"auto", BACKEND_AUTO}, {"d3d12", BACKEND_D3D12}, {"vulkan", BACKEND_VULKAN},
@@ -1602,8 +1610,14 @@ int RuntimeMain(int argc, char** argv) {
 
         // SDL only reads its Wii driver hint when the joystick subsystem starts, which
         // aurora_initialize does; a Bluetooth Wii Remote paired before launch must be
-        // visible on that first scan.
+        // visible on that first scan. Switch homebrew has no Bluetooth Wii Remote
+        // path (Joy-Cons arrive through the Switch HID driver instead), so the
+        // driver defaults off there.
+#if defined(MKW_PLATFORM_SWITCH)
+        WiiRemoteInput::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled(false));
+#else
         WiiRemoteInput::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled(true));
+#endif
 #if defined(__ANDROID__)
         // Graphics debugging on a phone without a rebuild: `adb shell setprop debug.nsmbw.gfx
         // validate,robust` reaches aurora's device setup as AURORA_GFX_FLAGS (webgpu/gpu.cpp).

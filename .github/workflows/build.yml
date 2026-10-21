@@ -87,3 +87,39 @@ jobs:
       - name: Test execution substrate
         shell: bash
         run: ctest --test-dir build-macos --output-on-failure
+
+  switch_substrate:
+    name: Switch devkitA64 (configure + audit build)
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitA64:latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install host build tools
+        shell: bash
+        run: |
+          apt-get update -q
+          apt-get install -qy --no-install-recommends \
+            cmake ninja-build patch python3 git protobuf-compiler
+
+      - name: Configure Switch audit runtime
+        shell: bash
+        run: |
+          cmake -S runtime -B build-switch -G Ninja \
+            --toolchain "$GITHUB_WORKSPACE/runtime/cmake/SwitchToolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release -DMKW_BUILD_PRODUCTS=OFF
+
+      - name: Build Switch audit targets
+        shell: bash
+        run: |
+          cmake --build build-switch --target \
+            mkw_switch_native_compile \
+            mkw_platform_paths_tests \
+            mkw_runtime_config_tests \
+            mkw_nand_save_tests \
+            mkw_nand_settings_tests \
+            mkw_sc_serial_tests \
+            mkw_input_expr_tests

@@ -12,11 +12,11 @@
 #include "memory.h"
 
 // Windows' SehLogger longjmps out of a vectored exception handler, where plain setjmp/longjmp is
-// the norm. A POSIX signal handler jumping back to here must use the sig-prefixed pair instead:
+// the norm. Switch joins that branch: Horizon has no signals, so there is no mask to preserve. A POSIX signal handler jumping back to here must use the sig-prefixed pair instead:
 // only sigsetjmp/siglongjmp save and restore the process signal mask, which is what keeps SIGSEGV
 // from staying blocked (and a second fault during the same ctor loop from escalating instead of
 // trapping) after the first recovered fault.
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(MKW_PLATFORM_SWITCH)
 using MkwJmpBuf = jmp_buf;
 #define MKW_SETJMP(buf) setjmp(buf)
 #else

@@ -181,6 +181,9 @@ inline bool IsSupportedGraphicsApi(std::string_view value) {
 // only vulkan for linux
 #elif defined(__linux__)
     static constexpr std::array<std::string_view, 2> values{"auto", "vulkan"};
+#elif defined(__SWITCH__)
+    // NXVK Vulkan only.
+    static constexpr std::array<std::string_view, 2> values{"auto", "vulkan"};
 #elif defined(_WIN32)
     static constexpr std::array<std::string_view, 3> values{"auto", "d3d12", "vulkan"};
 #endif
@@ -226,7 +229,7 @@ inline std::optional<std::filesystem::path> ExecutableDirectory() {
         }
         buffer.resize(buffer.size() * 2);
     }
-#elif defined(__APPLE__) || defined(__ANDROID__)
+#elif defined(__APPLE__) || defined(__ANDROID__) || defined(MKW_PLATFORM_SWITCH)
     return RuntimePlatform::ExecutableDirectory();
 #else
     // /proc/self/exe is a Linux-specific magic symlink to the running executable; readlink()

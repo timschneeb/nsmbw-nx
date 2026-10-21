@@ -142,10 +142,18 @@ elseif (_aurora_sdl3_provider STREQUAL "vendor")
     # downloaded tarball is patched by the PATCH_COMMAND; a tree handed in through
     # FETCHCONTENT_SOURCE_DIR_SDL skips the download steps, so patch it here.
     set(_aurora_sdl3_patches "${CMAKE_CURRENT_LIST_DIR}/AuroraSDL3Patches.cmake")
+    if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+      # Switch also needs the libnx backend patch.
+      set(_aurora_sdl3_patches "${CMAKE_CURRENT_LIST_DIR}/AuroraSDL3SwitchPatches.cmake")
+    endif()
     include("${_aurora_sdl3_patches}")
-    if (DEFINED FETCHCONTENT_SOURCE_DIR_SDL AND EXISTS "${FETCHCONTENT_SOURCE_DIR_SDL}")
-      aurora_sdl3_apply_patches("${FETCHCONTENT_SOURCE_DIR_SDL}")
-    endif ()
+    if(DEFINED FETCHCONTENT_SOURCE_DIR_SDL AND EXISTS "${FETCHCONTENT_SOURCE_DIR_SDL}")
+      if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+        aurora_sdl3_apply_switch_patches("${FETCHCONTENT_SOURCE_DIR_SDL}")
+      else()
+        aurora_sdl3_apply_patches("${FETCHCONTENT_SOURCE_DIR_SDL}")
+      endif()
+    endif()
     FetchContent_Declare(SDL
       URL "https://github.com/libsdl-org/SDL/releases/download/release-${AURORA_SDL3_VERSION}/SDL3-${AURORA_SDL3_VERSION}.tar.gz"
       DOWNLOAD_EXTRACT_TIMESTAMP FALSE

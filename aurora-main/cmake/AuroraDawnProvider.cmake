@@ -99,8 +99,15 @@ if (_aurora_dawn_provider STREQUAL "vendor")
     endif ()
 
     include(FetchContent)
+    # Vendor source archive. Switch overrides this with the encounter fork
+    # (see runtime/CMakeLists.txt). Default stays upstream Dawn.
+    if(NOT AURORA_DAWN_VENDOR_URL)
+        set(AURORA_DAWN_VENDOR_URL
+            "https://github.com/google/dawn/archive/refs/tags/${AURORA_DAWN_VERSION}.tar.gz"
+            CACHE STRING "Dawn vendor source archive URL")
+    endif()
     FetchContent_Declare(dawn
-      URL "https://github.com/google/dawn/archive/refs/tags/${AURORA_DAWN_VERSION}.tar.gz"
+      URL "${AURORA_DAWN_VENDOR_URL}"
       DOWNLOAD_EXTRACT_TIMESTAMP FALSE
       EXCLUDE_FROM_ALL
     )

@@ -79,6 +79,10 @@ bool IsActive();
 
 #if defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
 inline constexpr bool RequiresCheckedAccess() noexcept { return false; }
+#elif defined(MKW_PLATFORM_SWITCH)
+// Horizon has no page-fault interception, so every translated access uses the
+// checked Memory::* path (see guest_flat_memory_switch.cpp).
+inline constexpr bool RequiresCheckedAccess() noexcept { return true; }
 #else
 // Const, set from the page size while the library initializes: a store through a flat guest pointer
 // (a memcpy, which may alias any object) cannot change it, so the compiler loads it once per

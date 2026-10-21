@@ -20,7 +20,9 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <fcntl.h>
+#ifndef MKW_PLATFORM_SWITCH
 #include <ifaddrs.h>
+#endif
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -298,7 +300,11 @@ int UdpSocket::ReceiveFrom(Address& from, void* buffer, size_t capacity, int tim
 
 std::vector<LocalInterface> LocalInterfaces() {
     std::vector<LocalInterface> result;
-#ifdef _WIN32
+#ifdef MKW_PLATFORM_SWITCH
+    // Horizon has no interface enumeration (no getifaddrs). Direct-IP LAN
+    // play is unaffected; only broadcast discovery loses its local list.
+    return result;
+#elif defined(_WIN32)
     if (!EnsureWinsock()) {
         return result;
     }
@@ -337,7 +343,7 @@ std::vector<LocalInterface> LocalInterfaces() {
         }
         break;
     }
-#else
+#elif !defined(MKW_PLATFORM_SWITCH)
     ifaddrs* list = nullptr;
     if (getifaddrs(&list) != 0) {
         return result;

@@ -10,7 +10,12 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 project(mkw_recompiled)
 
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    # devkitA64 ships GCC, no Clang. See runtime/cmake/SwitchToolchain.cmake.
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "WiiCompiled Switch builds require a 64-bit devkitA64 GCC toolchain")
+    endif()
+elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "WiiCompiled requires a 64-bit Clang toolchain")
 endif()
 
@@ -39,12 +44,16 @@ elseif(ANDROID AND CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
     # Cross-built with the NDK. The game is a shared library (libmain.so) that SDL's Android
     # activity loads; see cmake/PublicProducts.cmake.
     set(MKW_PLATFORM_ANDROID TRUE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|AARCH64)$")
+    # devkitA64 + libnx. Ships as a homebrew NRO, see cmake/PublicProducts.cmake.
+    set(MKW_PLATFORM_SWITCH TRUE)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64|aarch64|arm64|ARM64)$")
     set(MKW_PLATFORM_LINUX TRUE)
 else()
     message(FATAL_ERROR
         "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux x86_64/aarch64, "
-        "Apple Clang on macOS x86_64/arm64, or the NDK for Android arm64-v8a")
+        "Apple Clang on macOS x86_64/arm64, the NDK for Android arm64-v8a, "
+        "or devkitA64 for Nintendo Switch (via runtime/cmake/SwitchToolchain.cmake)")
 endif()
 
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -180,6 +189,21 @@ if(NOT MKW_PLATFORM_WINDOWS)
         set(DISABLE_PACKAGE_CONFIG_AND_INSTALL ON CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(mkw_mbedtls_upstream)
         target_link_libraries(mkw_mbedtls INTERFACE MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+        if(MKW_PLATFORM_SWITCH)
+            # Horizon has no Unix/Windows entropy source. Entropy comes from
+            # libnx randomGet, see src/platform/switch/mbedtls_hardware_poll.cpp.
+            foreach(_mkw_mbedtls_target mbedcrypto mbedx509 mbedtls)
+                if(TARGET ${_mkw_mbedtls_target})
+                    target_compile_definitions(${_mkw_mbedtls_target} PUBLIC
+                        MBEDTLS_NO_PLATFORM_ENTROPY MBEDTLS_ENTROPY_HARDWARE_ALT
+                        MBEDTLS_PLATFORM_MS_TIME_ALT MBEDTLS_TIMING_ALT
+                        MBEDTLS_PLATFORM_IS_UNIXLIKE)
+                    # Serves "timing_alt.h" for MBEDTLS_TIMING_ALT.
+                    target_include_directories(${_mkw_mbedtls_target} PUBLIC
+                        "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch")
+                endif()
+            endforeach()
+        endif()
     endif()
 endif()
 
@@ -215,8 +239,10 @@ set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
 # The NSMBW sampling profiler includes <windows.h>; keep it out of the unity batches.
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/guest_profiler.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 # Match the optimization policy of the translated callers as well as their FP policy.
+# The SLP flag is spelled per compiler (Clang accepts only its own).
 set_property(SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/ppc_quantized.cpp" APPEND PROPERTY
-    COMPILE_OPTIONS -O2 -fno-slp-vectorize)
+    COMPILE_OPTIONS -O2 $<$<CXX_COMPILER_ID:Clang>:-fno-slp-vectorize>
+    $<$<CXX_COMPILER_ID:GNU>:-fno-tree-slp-vectorize>)
 
 # ----------------------------------------------------------------------
 # Third-party: aurora-main (provides SDL3 + GPU backends)
@@ -274,6 +300,15 @@ else()
     set(SDL_SHARED OFF CACHE BOOL "" FORCE)
     set(SDL_STATIC ON CACHE BOOL "" FORCE)
     set(SDL_TEST OFF CACHE BOOL "" FORCE)
+
+    if(MKW_PLATFORM_SWITCH)
+        # The default vendor archive is a dawn-build tag absent upstream
+        # (google/dawn returns 404). Use the encounter fork tarball from the
+        # Dusklight Switch port instead. Non-Switch builds keep the default.
+        set(AURORA_DAWN_VENDOR_URL
+            "https://github.com/encounter/dawn/archive/1155e0ed531126f33a1279afa029349651ca1c93.tar.gz"
+            CACHE STRING "Dawn vendor source archive URL")
+    endif()
 
     # MinGW/WSL can choke on SDL precompiled headers; disable PCH for aurora/SDL.
     set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
@@ -347,9 +382,20 @@ if(MKW_PLATFORM_MACOS)
     endif()
 else()
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp")
+    if(MKW_PLATFORM_SWITCH)
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp")
+    endif()
+    if(NOT MKW_PLATFORM_SWITCH)
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/mbedtls_hardware_poll.cpp")
+    endif()
     if(MKW_PLATFORM_ANDROID)
         # Android shares HostContext's AArch64 assembly backend with Apple Silicon, in its ELF
         # spelling (and without touching x18, the thread's shadow-call-stack register).
+        enable_language(ASM)
+        list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/android/co_switch.S")
+    endif()
+    if(MKW_PLATFORM_SWITCH)
+        # Same AArch64 ELF switcher: leaf-only, same frame layout, x18 untouched.
         enable_language(ASM)
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/android/co_switch.S")
     endif()
@@ -547,6 +593,39 @@ else()
             target_compile_options(mkw_macos_native_compile PRIVATE -march=x86-64-v3)
         endif()
         set_target_properties(mkw_macos_native_compile PROPERTIES UNITY_BUILD OFF)
+    endif()
+    if(MKW_PLATFORM_SWITCH)
+        # Compile-only audit of native runtime sources for devkitA64, mirroring
+        # the macOS audit above. Same generated-header exclusions: these sources
+        # depend on generated/RuntimeConfig.h, which is emitted for a particular
+        # game by the translator and is intentionally unavailable in this
+        # platform-only configuration.
+        set(MKW_SWITCH_NATIVE_AUDIT_SOURCES ${SOURCES})
+        list(REMOVE_ITEM MKW_SWITCH_NATIVE_AUDIT_SOURCES
+            "${CMAKE_CURRENT_LIST_DIR}/src/abi_bridge.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/src/hle/os/os_alarm.cpp")
+        # Unlike macOS this stays hermetic: it links no aurora/mkw
+        # libraries, so a products-off configure never builds Dawn or its
+        # vendored abseil (which cannot compile for newlib). Header-only
+        # include paths below mirror the Switch sweep recipe in sweep_flags.
+        add_library(mkw_switch_native_compile OBJECT ${MKW_SWITCH_NATIVE_AUDIT_SOURCES})
+        target_include_directories(mkw_switch_native_compile PRIVATE
+            "${CMAKE_CURRENT_LIST_DIR}/include" "${CMAKE_CURRENT_LIST_DIR}/src"
+            "${CMAKE_CURRENT_LIST_DIR}/.." "${CMAKE_CURRENT_LIST_DIR}/../aurora-main/include"
+            "${CMAKE_CURRENT_LIST_DIR}/third_party"
+            "${CMAKE_CURRENT_LIST_DIR}/third_party/toml11"
+            "${CMAKE_CURRENT_LIST_DIR}/third_party/pugixml"
+            "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch"
+            "${CMAKE_BINARY_DIR}/_deps/sdl-src/include"
+            "${CMAKE_BINARY_DIR}/_deps/mkw_mbedtls_upstream-src/include"
+            "${CMAKE_BINARY_DIR}/_deps/imgui-src"
+            "${CMAKE_BINARY_DIR}/_deps/xxhash-src")
+        target_compile_features(mkw_switch_native_compile PRIVATE cxx_std_20)
+        target_compile_definitions(mkw_switch_native_compile PRIVATE
+            SDL_MAIN_HANDLED TARGET_PC NOMINMAX
+            MBEDTLS_NO_PLATFORM_ENTROPY MBEDTLS_ENTROPY_HARDWARE_ALT
+            MBEDTLS_PLATFORM_MS_TIME_ALT MBEDTLS_TIMING_ALT MBEDTLS_PLATFORM_IS_UNIXLIKE)
+        set_target_properties(mkw_switch_native_compile PROPERTIES UNITY_BUILD OFF)
     endif()
     add_custom_target(mkw_platform_paths_check DEPENDS mkw_platform)
     message(STATUS "Translated product targets disabled (MKW_BUILD_PRODUCTS=OFF)")

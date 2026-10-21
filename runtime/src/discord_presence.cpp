@@ -22,9 +22,11 @@
 #endif
 #include <windows.h>
 #else
+#if !defined(MKW_PLATFORM_SWITCH)
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#endif
 #endif
 
 namespace DiscordPresence {
@@ -320,6 +322,12 @@ private:
     }
 
     HANDLE handle_ = INVALID_HANDLE_VALUE;
+#elif defined(MKW_PLATFORM_SWITCH)
+    // No Discord IPC on Switch: the client stays disconnected and every call is a no-op.
+    bool ConnectLocked() { return false; }
+    bool WriteAllLocked(const uint8_t*, size_t) { return false; }
+    bool ReadAllLocked(uint8_t*, size_t) { return false; }
+    void CloseLocked() { connected_ = false; }
 #else
     bool ConnectLocked() {
         if (connected_) {

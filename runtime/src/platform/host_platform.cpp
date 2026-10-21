@@ -54,6 +54,9 @@ std::optional<std::filesystem::path> ExecutableDirectory() noexcept {
         return std::filesystem::path(directory);
     }
     return std::nullopt;
+#elif defined(MKW_PLATFORM_SWITCH)
+    // The NRO lives in its homebrew folder; the game folder and assets sit beside it.
+    return std::filesystem::path("sdmc:/switch/nsmbw");
 #else
     return std::nullopt;
 #endif
@@ -81,6 +84,10 @@ std::filesystem::path ApplicationDataDirectory(std::string_view applicationName)
     if (const char* directory = std::getenv("WIICOMPILED_DATA_DIR"); directory && *directory) {
         return std::filesystem::path(directory);
     }
+#elif defined(MKW_PLATFORM_SWITCH)
+    // The homebrew folder on the SD card already belongs to this game alone.
+    (void)applicationName;
+    return std::filesystem::path("sdmc:/switch/nsmbw");
 #endif
     return std::filesystem::current_path() / applicationName;
 }
