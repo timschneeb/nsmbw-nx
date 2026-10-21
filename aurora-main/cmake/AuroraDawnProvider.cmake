@@ -162,6 +162,11 @@ elseif (_aurora_dawn_provider STREQUAL "system")
   message(STATUS "aurora: Using system Dawn (provider=system)")
   if (NOT Dawn_FOUND)
     set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
+    # Dawn's exported target links Threads::Threads, but a Switch toolchain
+    # never calls find_package(Threads); the pthread API comes from libnx.
+    if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch" AND NOT TARGET Threads::Threads)
+      add_library(Threads::Threads INTERFACE IMPORTED)
+    endif ()
     find_package(Dawn REQUIRED)
     set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL OFF)
   endif ()

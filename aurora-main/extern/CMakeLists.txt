@@ -86,10 +86,19 @@ else ()
     set(ABSL_MSVC_STATIC_RUNTIME ON CACHE INTERNAL "Link static runtime libraries")
   endif()
   set(ABSL_PROPAGATE_CXX_STD ON)
+  # newlib's pthread_t is a pointer, so abseil's fallback GetTID does not
+  # compile. Patch the freshly extracted tree (Switch only, idempotent).
+  if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    set(_abseil_patch PATCH_COMMAND "${CMAKE_COMMAND}" -DABSEIL_SOURCE_DIR=<SOURCE_DIR>
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/AuroraAbseilSwitchPatch.cmake")
+  else ()
+    set(_abseil_patch "")
+  endif ()
   FetchContent_Declare(abseil-cpp
     URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20240722.0.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE
     EXCLUDE_FROM_ALL
+    ${_abseil_patch}
   )
   FetchContent_MakeAvailable(abseil-cpp)
   if (NOT TARGET absl::flat_hash_map OR NOT TARGET absl::btree)
@@ -296,6 +305,11 @@ if (AURORA_ENABLE_GX)
     message(STATUS "aurora: Using existing sqlite3")
   endif ()
 
+  if (TARGET sqlite3 AND CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    target_compile_definitions(sqlite3 PUBLIC SQLITE_OMIT_WAL SQLITE_MAX_MMAP_SIZE=0
+        SQLITE_OMIT_LOAD_EXTENSION)
+  endif ()
+
   if (AURORA_CACHE_USE_ZSTD)
     if (NOT TARGET libzstd_static)
       message(STATUS "aurora: Fetching zstd")
@@ -345,12 +359,21 @@ if (NOT TARGET TracyClient)
   # Default to off, users can enable the cache variable if they want to use it.
   set(TRACY_ENABLE OFF CACHE BOOL "Enable Tracy profiling")
 
+  # Tracy's thread-handle and login helpers have no Horizon branches.
+  # Patch the freshly extracted tree (Switch only, idempotent).
+  if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    set(_tracy_patch PATCH_COMMAND "${CMAKE_COMMAND}" -DTRACY_SOURCE_DIR=<SOURCE_DIR>
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/AuroraTracySwitchPatch.cmake")
+  else ()
+    set(_tracy_patch "")
+  endif ()
   FetchContent_Declare(
           tracy
           URL https://github.com/wolfpld/tracy/archive/a64b9a20294d59421a2f57aeca3c6383d8c48169.tar.gz
           URL_HASH SHA256=24d342b5127d7f659dc3cf94f24347b348cc736f25b17a691fd7f69541937658
           DOWNLOAD_EXTRACT_TIMESTAMP FALSE
           EXCLUDE_FROM_ALL
+          ${_tracy_patch}
   )
   FetchContent_MakeAvailable(tracy)
 

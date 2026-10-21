@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <cctype>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -793,12 +795,29 @@ bool initialize(AuroraBackend auroraBackend) {
           "not safe on this device.");
     }
 #ifdef WEBGPU_DAWN
+#ifdef __SWITCH__
+    // The encounter fork removed the Init function fields; its native backend
+    // reads only the callback-info members, set here via setters. The setters
+    // take span-based C++ callbacks, so thin lambdas adapt the raw helpers.
+    wgpu::DawnCacheDeviceDescriptor cacheDescriptor;
+    cacheDescriptor.SetDawnLoadCacheDataCallback(
+        [](std::span<const std::byte> key, std::span<std::byte> value, void* userdata) -> size_t {
+          return load_from_cache(key.data(), key.size(), value.data(), value.size(), userdata);
+        },
+        static_cast<void*>(nullptr));
+    cacheDescriptor.SetDawnStoreCacheDataCallback(
+        [](std::span<const std::byte> key, std::span<const std::byte> value, void* userdata) {
+          store_to_cache(key.data(), key.size(), value.data(), value.size(), userdata);
+        },
+        static_cast<void*>(nullptr));
+#else
     wgpu::DawnCacheDeviceDescriptor cacheDescriptor({
         .isolationKey = nullptr,
         .loadDataFunction = load_from_cache,
         .storeDataFunction = store_to_cache,
         .functionUserdata = nullptr,
     });
+#endif
 
     std::vector<const char*> enableToggles{
     /* clang-format off */

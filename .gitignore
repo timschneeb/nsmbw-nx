@@ -85,3 +85,4 @@ _references/
 build-switch-audit/
 build-native-audit2/
 build-switch-hermetic/
+/android/original/

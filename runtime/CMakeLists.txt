@@ -608,6 +608,15 @@ else()
         # libraries, so a products-off configure never builds Dawn or its
         # vendored abseil (which cannot compile for newlib). Header-only
         # include paths below mirror the Switch sweep recipe in sweep_flags.
+        # System-provider configures (Aurora product stage) do not
+        # vendor-fetch SDL, so _deps/sdl-src is absent there; use the
+        # prebuilt target's includes instead.
+        if(TARGET SDL3::SDL3-static)
+            set(MKW_SWITCH_SDL_INCLUDE_DIRS
+                $<TARGET_PROPERTY:SDL3::SDL3-static,INTERFACE_INCLUDE_DIRECTORIES>)
+        else()
+            set(MKW_SWITCH_SDL_INCLUDE_DIRS "${CMAKE_BINARY_DIR}/_deps/sdl-src/include")
+        endif()
         add_library(mkw_switch_native_compile OBJECT ${MKW_SWITCH_NATIVE_AUDIT_SOURCES})
         target_include_directories(mkw_switch_native_compile PRIVATE
             "${CMAKE_CURRENT_LIST_DIR}/include" "${CMAKE_CURRENT_LIST_DIR}/src"
@@ -616,7 +625,7 @@ else()
             "${CMAKE_CURRENT_LIST_DIR}/third_party/toml11"
             "${CMAKE_CURRENT_LIST_DIR}/third_party/pugixml"
             "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch"
-            "${CMAKE_BINARY_DIR}/_deps/sdl-src/include"
+            ${MKW_SWITCH_SDL_INCLUDE_DIRS}
             "${CMAKE_BINARY_DIR}/_deps/mkw_mbedtls_upstream-src/include"
             "${CMAKE_BINARY_DIR}/_deps/imgui-src"
             "${CMAKE_BINARY_DIR}/_deps/xxhash-src")
