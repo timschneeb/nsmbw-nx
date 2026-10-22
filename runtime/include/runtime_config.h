@@ -106,6 +106,12 @@ struct RuntimeUserConfig {
     std::map<std::string, std::string> controllerExpressions;
     // NSMBW: [keyboard] action = "comma-separated SDL scancode names" (keybinds.h).
     std::map<std::string, std::string> keyboardBindings;
+    // Switch: [debug] switches and affinity, read before the runtime starts.
+    std::optional<std::string> debugEnv;
+    std::optional<std::string> statsMode;  // "off", "light" or "full"
+    std::optional<bool> affinity;
+    std::optional<int32_t> mainCore;
+    std::optional<int32_t> audioCore;
 };
 
 namespace RuntimeConfigFile {
@@ -467,7 +473,14 @@ inline void EnsureConfigFile() {
               "# dvd_root = \"D:\\\\Games\\\\NSMBW\"\n"
               "# nand_root = \"D:\\\\WiiNand\"\n"
               "# retro_rewind_root = \"D:\\\\RetroRewind\\\\RetroRewind6\"\n"
-              "# overlay_roots = [\"D:\\\\RetroRewind\"]\n";
+              "# overlay_roots = [\"D:\\\\RetroRewind\"]\n\n"
+              "[debug]\n"
+              "# Statistics and thread placement, Switch only.\n"
+              "# stats = \"light\"  # off, light (frame numbers for A/B) or full (attribution)\n"
+              "# env = \"NSMBW_LOG_FPS=full;NAME=value\"\n"
+              "# affinity = true  # pin the guest to main_core and the mixer to audio_core\n"
+              "# main_core = 0\n"
+              "# audio_core = 2\n";
     WriteFileText(path, text);
 }
 
@@ -657,6 +670,19 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         }
     } else if (auto roots = FindConfigValue<std::string>(document, "paths", "overlay_roots")) {
         AppendOverlayRoots(config, *roots);
+    }
+
+    config.debugEnv = FindConfigValue<std::string>(document, "debug", "env");
+    if (auto value = FindConfigValue<std::string>(document, "debug", "stats");
+        value && (*value == "off" || *value == "light" || *value == "full")) {
+        config.statsMode = *value;
+    }
+    config.affinity = FindConfigValue<bool>(document, "debug", "affinity");
+    if (auto value = FindConfigInt(document, "debug", "main_core"); value && *value >= 0 && *value <= 2) {
+        config.mainCore = *value;
+    }
+    if (auto value = FindConfigInt(document, "debug", "audio_core"); value && *value >= 0 && *value <= 2) {
+        config.audioCore = *value;
     }
 
     return config;
@@ -1170,6 +1196,28 @@ inline bool DisableCopyFilter(bool fallback = true) {
 
 inline bool ShowFps(bool fallback = true) {
     return Get().showFps.value_or(fallback);
+}
+
+// [debug] stats: "off", "light" (A/B numbers) or "full" (attribution runs).
+inline std::string StatsMode() {
+    return Get().statsMode.value_or(std::string());
+}
+
+// [debug] env = "NAME=value;NAME=value" applied with setenv before startup.
+inline std::string DebugEnv() {
+    return Get().debugEnv.value_or(std::string());
+}
+
+inline bool Affinity() {
+    return Get().affinity.value_or(true);
+}
+
+inline int32_t MainCore() {
+    return Get().mainCore.value_or(0);
+}
+
+inline int32_t AudioCore() {
+    return Get().audioCore.value_or(2);
 }
 
 inline bool TextureReplacements(bool fallback = false) {

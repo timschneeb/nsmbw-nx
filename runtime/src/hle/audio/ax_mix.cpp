@@ -8,6 +8,7 @@
 #include "isa/big_endian.h"
 #include "memory.h"
 #include "music_attenuation.h"
+#include "perf_stats.h"
 #include "ppc_runtime.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
@@ -1463,6 +1464,7 @@ private:
 
     void MixWorkerMain() {
         t_onMixWorker = true;
+        PerfStats::Pin(PerfStats::RoleAudio);
         for (;;) {
             {
                 std::unique_lock<std::mutex> lock(m_mixMutex);
@@ -1486,6 +1488,11 @@ private:
             g_mixNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - mixStart).count()), std::memory_order_relaxed);
             g_mixes.fetch_add(1, std::memory_order_relaxed);
+            PerfStats::Publish(PerfStats::RoleAudio);
+#if defined(MKW_PLATFORM_SWITCH)
+            g_mixCpu.store(PerfStats::Thread(PerfStats::RoleAudio).core.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
+#endif
 #if defined(__linux__)
             g_mixCpu.store(sched_getcpu(), std::memory_order_relaxed);
 #endif

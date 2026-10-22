@@ -14,6 +14,8 @@
 #include "runtime_log.h"
 #include "host_suspend.h"
 #include "guest_profiler.h"
+#include "perf_stats.h"
+#include "runtime_config.h"
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
@@ -28,6 +30,7 @@
 #include <vector>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -836,11 +839,57 @@ struct FrameTimes {
     double gameMs = 0, endFrameMs = 0, paceMs = 0, worstMs = 0, sumSq = 0;
     int slow = 0;
     int frames = 0;
+    std::vector<double> samples;
 };
 
 static bool LogFpsEnabled() {
-    static const bool on = std::getenv("NSMBW_LOG_FPS") != nullptr;
-    return on;
+    return PerfStats::Enabled();
+}
+
+// Light mode keeps idle attribution and per-draw timing off: they cost more
+// than the numbers are worth outside an attribution run.
+static bool FullStats() {
+    return PerfStats::Full();
+}
+
+static double PercentileMs(std::vector<double> values, double fraction) {
+    if (values.empty()) {
+        return 0.0;
+    }
+    const size_t index = std::min(values.size() - 1, static_cast<size_t>(fraction * static_cast<double>(values.size())));
+    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(index), values.end());
+    return values[index];
+}
+
+// One CSV row per two second window so a run can be diffed by tools/perf_compare.py.
+static void AppendPerfCsv(uint32_t scene, int frames, double fps, double p50, double p95, double p99, double worst,
+                          double gameMs, double gxMs, double guestMs, double audioMs, int guestCore, int audioCore,
+                          int over20) {
+    const auto path = RuntimeConfigFile::ApplicationDataDirectory() / "Logs" / "perf.csv";
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    const std::string text = RuntimeConfigFile::PathToUtf8(path);
+    static bool headerWritten = false;
+    if (!headerWritten) {
+        std::FILE* probe = std::fopen(text.c_str(), "rb");
+        headerWritten = probe != nullptr;
+        if (probe != nullptr) {
+            std::fclose(probe);
+        }
+    }
+    std::FILE* file = std::fopen(text.c_str(), "ab");
+    if (file == nullptr) {
+        return;
+    }
+    if (!headerWritten) {
+        std::fputs("build,scene,frames,fps,p50,p95,p99,worst,game_ms,gx_ms,guest_ms,audio_ms,guest_core,audio_core,over20\n",
+                   file);
+        headerWritten = true;
+    }
+    std::fprintf(file, "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d\n", __DATE__, __TIME__,
+                 scene, frames, fps, p50, p95, p99, worst, gameMs, gxMs, guestMs, audioMs, guestCore, audioCore,
+                 over20);
+    std::fclose(file);
 }
 
 // The scheduler's idle time (no guest thread runnable, though its idle loop runs the audio DMA
@@ -850,7 +899,7 @@ std::atomic<uint64_t> g_idleNanos{0};
 std::atomic<uint32_t> g_idleWaits{0}, g_idleRetraceEnds{0};
 
 bool VI_HLE_IdleTimingEnabled() {
-    return LogFpsEnabled();
+    return FullStats();
 }
 
 // Guest thread only (the scheduler's), read by the fps log on the same thread.
@@ -997,6 +1046,9 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         std::lock_guard<std::mutex> lock(g_viMutex);
         s_lastPacedRetraceCount = g_vi.retraceCount;
     }
+    if (PerfStats::Enabled()) {
+        PerfStats::Publish(PerfStats::RoleGuest);
+    }
     // Always on: a frame that took over 20 ms (a dropped frame at 60) goes to the log with where the
     // time went, so a report of drops on someone's machine comes with its cause. At most 30 a minute.
     if (presentedXfb) {
@@ -1045,6 +1097,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             times.sumSq += frame * frame;
             times.slow += frame > 20.0 ? 1 : 0;
             ++times.frames;
+            times.samples.push_back(frame);
         } else {
             times.windowStart = now;
         }
@@ -1062,71 +1115,100 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     n * 1000.0 / window, times.gameMs / n, gxNanos / 1e6 / n, lockNanos / 1e6 / n, draws / n,
                     copies / n, creates / n, times.endFrameMs / n, times.paceMs / n, times.worstMs,
                     std::sqrt(std::max(0.0, times.sumSq / n - (window / n) * (window / n))), times.slow);
-            const uint32_t waits = g_idleWaits.exchange(0, std::memory_order_relaxed);
-            const uint32_t retraceEnds = g_idleRetraceEnds.exchange(0, std::memory_order_relaxed);
-            static uint32_t s_windowRetraceCount = 0;
-            uint32_t retraceCount = 0;
-            {
-                std::lock_guard<std::mutex> lock(g_viMutex);
-                retraceCount = g_vi.retraceCount;
-            }
+            uint32_t sceneWord = 0;
+            Memory::TryRead32(0x80428730u, sceneWord);
+            const double p50 = PercentileMs(times.samples, 0.50);
+            const double p95 = PercentileMs(times.samples, 0.95);
+            const double p99 = PercentileMs(times.samples, 0.99);
+            static uint64_t s_lastWindowGx = 0;
+            const uint64_t gxWindowTotal = AuroraGxProcessNanosTotal();
+            const double gxWindowMs = (gxWindowTotal - s_lastWindowGx) / 1e6;
+            s_lastWindowGx = gxWindowTotal;
+            const uint64_t guestNanos = PerfStats::Thread(PerfStats::RoleGuest).cpuNanos.load(std::memory_order_relaxed);
+            const uint64_t audioNanos = PerfStats::Thread(PerfStats::RoleAudio).cpuNanos.load(std::memory_order_relaxed);
+            static uint64_t s_lastGuestNanos = 0, s_lastAudioNanos = 0;
+            const double guestMs =
+                s_lastGuestNanos != 0 ? static_cast<double>(guestNanos - s_lastGuestNanos) / 1e6 : 0.0;
+            const double audioMs =
+                s_lastAudioNanos != 0 ? static_cast<double>(audioNanos - s_lastAudioNanos) / 1e6 : 0.0;
+            s_lastGuestNanos = guestNanos;
+            s_lastAudioNanos = audioNanos;
+            const int guestCore = PerfStats::Thread(PerfStats::RoleGuest).core.load(std::memory_order_relaxed);
+            const int audioCore = PerfStats::Thread(PerfStats::RoleAudio).core.load(std::memory_order_relaxed);
             RT_LOGF(RT_TAG_VI,
-                    "idle %.2f ms a frame in %.1f waits, %.0f%% of them ending at a retrace; %.2f retraces a frame\n",
-                    g_idleNanos.exchange(0, std::memory_order_relaxed) / 1e6 / n, waits / n,
-                    waits ? 100.0 * retraceEnds / waits : 0.0,
-                    s_windowRetraceCount ? (retraceCount - s_windowRetraceCount) / n : 0.0);
-            s_windowRetraceCount = retraceCount;
-            static const char* const kEnders[] = {"sleep timer", "audio", "retrace", "fiber timer", "alarm",
-                                                  "already runnable"};
-            std::string enders;
-            for (int i = 0; i < 6; ++i) {
-                if (g_idleCountByEnder[i] == 0) continue;
-                char part[96];
-                std::snprintf(part, sizeof(part), " %s %.2f ms in %.1f;", kEnders[i], g_idleByEnder[i] / 1e6 / n,
-                              g_idleCountByEnder[i] / n);
-                enders += part;
-            }
-            std::vector<std::pair<uint32_t, uint64_t>> threads(g_idleByThread.begin(), g_idleByThread.end());
-            std::sort(threads.begin(), threads.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
-            std::string waiters;
-            for (size_t i = 0; i < threads.size() && i < 4; ++i) {
-                char part[64];
-                std::snprintf(part, sizeof(part), " %08X %.2f ms;", threads[i].first, threads[i].second / 1e6 / n);
-                waiters += part;
-            }
-            RT_LOGF(RT_TAG_VI, "idle ended by (a frame):%s thread that waited:%s\n", enders.c_str(), waiters.c_str());
-            std::vector<std::pair<uint64_t, MainWait>> mainWaits(g_mainWaits.begin(), g_mainWaits.end());
-            std::sort(mainWaits.begin(), mainWaits.end(),
-                      [](const auto& a, const auto& b) { return a.second.blocked > b.second.blocked; });
-            for (size_t i = 0; i < mainWaits.size() && i < 5; ++i) {
-                const MainWait& wait = mainWaits[i].second;
-                const uint32_t lr = static_cast<uint32_t>(mainWaits[i].first);
-                RT_LOGF(RT_TAG_VI, "main thread slept %.2f ms a frame (%.2f idle, %.1f times) on queue %08X from %08X\n",
-                        wait.blocked / 1e6 / n, wait.idle / 1e6 / n, wait.count / n,
-                        static_cast<uint32_t>(mainWaits[i].first >> 32), lr);
-            }
-            {
-                uint64_t mixNanos = 0, mixWaitNanos = 0;
-                uint32_t mixes = 0;
-                int mixCpu = -1;
-                AxDspHle::TakeMixStats(&mixNanos, &mixWaitNanos, &mixes, &mixCpu);
-                RT_LOGF(RT_TAG_VI, "audio mix: %.2f ms a frame in %.1f mixes (%.3f ms each, last on cpu %d), guest waited %.2f ms\n",
-                        mixNanos / 1e6 / n, mixes / n, mixes ? mixNanos / 1e6 / mixes : 0.0, mixCpu,
-                        mixWaitNanos / 1e6 / n);
-                uint64_t steps[7] = {};
-                OS_HLE_TakeIdleSteps(steps);
-                RT_LOGF(RT_TAG_VI, "retrace poll sleeps: %.2f ms a frame in %.1f (%.1f begun)\n",
-                        g_retracePollSleepNanos.exchange(0) / 1e6 / n, g_retracePollSleeps.exchange(0) / n,
-                        g_retracePollEntries.exchange(0) / n);
-                RT_LOGF(RT_TAG_VI, "idle loop (ms a frame): sleep timers %.2f, audio %.2f, retrace %.2f, fiber timers %.2f, "
-                        "alarms %.2f, wait %.2f; %.1f passes\n", steps[0] / 1e6 / n, steps[1] / 1e6 / n, steps[2] / 1e6 / n,
-                        steps[3] / 1e6 / n, steps[4] / 1e6 / n, steps[5] / 1e6 / n, steps[6] / n);
-                uint64_t pushNanos = 0, callbackNanos = 0;
-                uint32_t blocks = 0;
-                Audio_HLE_TakeTickStats(&pushNanos, &callbackNanos, &blocks);
-                RT_LOGF(RT_TAG_VI, "audio blocks: %.1f a frame, speaker push %.2f ms, AI callback %.2f ms (%.3f ms each)\n",
-                        blocks / n, pushNanos / 1e6 / n, callbackNanos / 1e6 / n,
-                        blocks ? callbackNanos / 1e6 / blocks : 0.0);
+                    "perf: p50 %.2f p95 %.2f p99 %.2f worst %.2f ms; guest cpu %.2f ms core %d, audio %.2f ms core "
+                    "%d, gx %.2f ms, %d over 20 ms\n",
+                    p50, p95, p99, times.worstMs, guestMs, guestCore, audioMs, audioCore, gxWindowMs / n, times.slow);
+            AppendPerfCsv(sceneWord & 0xFFFFu, times.frames, n * 1000.0 / window, p50, p95, p99, times.worstMs,
+                          times.gameMs / n, gxWindowMs / n, guestMs, audioMs, guestCore, audioCore, times.slow);
+            // Full mode only: idle attribution and per-draw stats are what this reads.
+            if (PerfStats::Full()) {
+                const uint32_t waits = g_idleWaits.exchange(0, std::memory_order_relaxed);
+                const uint32_t retraceEnds = g_idleRetraceEnds.exchange(0, std::memory_order_relaxed);
+                static uint32_t s_windowRetraceCount = 0;
+                uint32_t retraceCount = 0;
+                {
+                    std::lock_guard<std::mutex> lock(g_viMutex);
+                    retraceCount = g_vi.retraceCount;
+                }
+                RT_LOGF(RT_TAG_VI,
+                        "idle %.2f ms a frame in %.1f waits, %.0f%% of them ending at a retrace; %.2f retraces a frame\n",
+                        g_idleNanos.exchange(0, std::memory_order_relaxed) / 1e6 / n, waits / n,
+                        waits ? 100.0 * retraceEnds / waits : 0.0,
+                        s_windowRetraceCount ? (retraceCount - s_windowRetraceCount) / n : 0.0);
+                s_windowRetraceCount = retraceCount;
+                static const char* const kEnders[] = {"sleep timer", "audio", "retrace", "fiber timer", "alarm",
+                                                      "already runnable"};
+                std::string enders;
+                for (int i = 0; i < 6; ++i) {
+                    if (g_idleCountByEnder[i] == 0) continue;
+                    char part[96];
+                    std::snprintf(part, sizeof(part), " %s %.2f ms in %.1f;", kEnders[i], g_idleByEnder[i] / 1e6 / n,
+                                  g_idleCountByEnder[i] / n);
+                    enders += part;
+                }
+                std::vector<std::pair<uint32_t, uint64_t>> threads(g_idleByThread.begin(), g_idleByThread.end());
+                std::sort(threads.begin(), threads.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+                std::string waiters;
+                for (size_t i = 0; i < threads.size() && i < 4; ++i) {
+                    char part[64];
+                    std::snprintf(part, sizeof(part), " %08X %.2f ms;", threads[i].first, threads[i].second / 1e6 / n);
+                    waiters += part;
+                }
+                RT_LOGF(RT_TAG_VI, "idle ended by (a frame):%s thread that waited:%s\n", enders.c_str(), waiters.c_str());
+                std::vector<std::pair<uint64_t, MainWait>> mainWaits(g_mainWaits.begin(), g_mainWaits.end());
+                std::sort(mainWaits.begin(), mainWaits.end(),
+                          [](const auto& a, const auto& b) { return a.second.blocked > b.second.blocked; });
+                for (size_t i = 0; i < mainWaits.size() && i < 5; ++i) {
+                    const MainWait& wait = mainWaits[i].second;
+                    const uint32_t lr = static_cast<uint32_t>(mainWaits[i].first);
+                    RT_LOGF(RT_TAG_VI, "main thread slept %.2f ms a frame (%.2f idle, %.1f times) on queue %08X from %08X\n",
+                            wait.blocked / 1e6 / n, wait.idle / 1e6 / n, wait.count / n,
+                            static_cast<uint32_t>(mainWaits[i].first >> 32), lr);
+                }
+                {
+                    uint64_t mixNanos = 0, mixWaitNanos = 0;
+                    uint32_t mixes = 0;
+                    int mixCpu = -1;
+                    AxDspHle::TakeMixStats(&mixNanos, &mixWaitNanos, &mixes, &mixCpu);
+                    RT_LOGF(RT_TAG_VI, "audio mix: %.2f ms a frame in %.1f mixes (%.3f ms each, last on cpu %d), guest waited %.2f ms\n",
+                            mixNanos / 1e6 / n, mixes / n, mixes ? mixNanos / 1e6 / mixes : 0.0, mixCpu,
+                            mixWaitNanos / 1e6 / n);
+                    uint64_t steps[7] = {};
+                    OS_HLE_TakeIdleSteps(steps);
+                    RT_LOGF(RT_TAG_VI, "retrace poll sleeps: %.2f ms a frame in %.1f (%.1f begun)\n",
+                            g_retracePollSleepNanos.exchange(0) / 1e6 / n, g_retracePollSleeps.exchange(0) / n,
+                            g_retracePollEntries.exchange(0) / n);
+                    RT_LOGF(RT_TAG_VI, "idle loop (ms a frame): sleep timers %.2f, audio %.2f, retrace %.2f, fiber timers %.2f, "
+                            "alarms %.2f, wait %.2f; %.1f passes\n", steps[0] / 1e6 / n, steps[1] / 1e6 / n, steps[2] / 1e6 / n,
+                            steps[3] / 1e6 / n, steps[4] / 1e6 / n, steps[5] / 1e6 / n, steps[6] / n);
+                    uint64_t pushNanos = 0, callbackNanos = 0;
+                    uint32_t blocks = 0;
+                    Audio_HLE_TakeTickStats(&pushNanos, &callbackNanos, &blocks);
+                    RT_LOGF(RT_TAG_VI, "audio blocks: %.1f a frame, speaker push %.2f ms, AI callback %.2f ms (%.3f ms each)\n",
+                            blocks / n, pushNanos / 1e6 / n, callbackNanos / 1e6 / n,
+                            blocks ? callbackNanos / 1e6 / blocks : 0.0);
+                }
             }
             g_mainWaits.clear();
             g_idleByEnder.fill(0);

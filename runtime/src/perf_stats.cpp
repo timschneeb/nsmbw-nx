@@ -1,0 +1,129 @@
+#include "perf_stats.h"
+
+#include "runtime_config.h"
+#include "runtime_log.h"
+
+#include <string>
+
+#if defined(MKW_PLATFORM_SWITCH)
+#include <switch.h>
+#endif
+
+namespace PerfStats {
+namespace {
+
+ThreadState g_threads[RoleCount];
+double g_nanosPerTick = -1.0;
+
+const char* RoleName(int role) {
+    return role == RoleAudio ? "audio mixer" : "guest";
+}
+
+#if defined(MKW_PLATFORM_SWITCH)
+// InfoType_ThreadTickCount does not document its unit. A short busy wait tells
+// nanoseconds from 19.2 MHz system ticks: a thread cannot use more time than the
+// system clock advanced while it was spinning.
+void CalibrateTickUnit() {
+    u64 before = 0;
+    if (R_FAILED(svcGetInfo(&before, InfoType_ThreadTickCount, threadGetCurHandle(), 0))) {
+        return;
+    }
+    const u64 wallStart = armGetSystemTick();
+    const u64 target = wallStart + armGetSystemTickFreq() / 40;  // ~25 ms
+    while (armGetSystemTick() < target) {
+    }
+    const u64 wall = armGetSystemTick() - wallStart;
+    u64 after = 0;
+    if (R_FAILED(svcGetInfo(&after, InfoType_ThreadTickCount, threadGetCurHandle(), 0))) {
+        return;
+    }
+    const u64 delta = after - before;
+    if (delta == 0 || wall == 0) {
+        return;
+    }
+    g_nanosPerTick = delta > wall / 2 ? 1.0 : 1e9 / static_cast<double>(armGetSystemTickFreq());
+}
+#endif
+
+void ApplyEnvList(const std::string& list) {
+    for (size_t start = 0; start < list.size();) {
+        size_t end = list.find(';', start);
+        if (end == std::string::npos) {
+            end = list.size();
+        }
+        const std::string item = list.substr(start, end - start);
+        const size_t eq = item.find('=');
+        if (eq != std::string::npos && eq > 0) {
+            const std::string name = item.substr(0, eq);
+            const std::string value = item.substr(eq + 1);
+            setenv(name.c_str(), value.c_str(), 1);
+            RT_LOGF(RT_TAG_RUNTIME, "debug env: %s=%s\n", name.c_str(), value.c_str());
+        }
+        start = end + 1;
+    }
+}
+
+}  // namespace
+
+ThreadState& Thread(int role) {
+    return g_threads[role];
+}
+
+void ApplyConfig() {
+#if defined(MKW_PLATFORM_SWITCH)
+    CalibrateTickUnit();
+#endif
+    const std::string stats = RuntimeConfigFile::StatsMode();
+    if (!stats.empty()) {
+        setenv("NSMBW_STATS", stats.c_str(), 1);
+    }
+    if (stats == "full") {
+        // Aurora's per-draw timing still keys off the old variable.
+        setenv("NSMBW_LOG_FPS", "full", 1);
+    }
+    ApplyEnvList(RuntimeConfigFile::DebugEnv());
+    if (Enabled()) {
+        RT_LOGF(RT_TAG_RUNTIME, "stats: %s\n", Full() ? "full" : "light");
+    } else {
+        return;
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "affinity: %s (guest core %d, audio core %d)\n",
+            RuntimeConfigFile::Affinity() ? "on" : "off", static_cast<int>(RuntimeConfigFile::MainCore()),
+            static_cast<int>(RuntimeConfigFile::AudioCore()));
+}
+
+void Pin(int role) {
+#if defined(MKW_PLATFORM_SWITCH)
+    if (!RuntimeConfigFile::Affinity()) {
+        return;
+    }
+    const int core = role == RoleAudio ? RuntimeConfigFile::AudioCore() : RuntimeConfigFile::MainCore();
+    if (core < 0 || core > 2) {
+        return;
+    }
+    const Result rc = svcSetThreadCoreMask(threadGetCurHandle(), core, 1u << core);
+    if (R_FAILED(rc)) {
+        RT_LOGF(RT_TAG_RUNTIME, "affinity: cannot pin the %s thread to core %d (0x%08x)\n", RoleName(role),
+                core, rc);
+        return;
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "affinity: %s thread pinned to core %d\n", RoleName(role), core);
+#endif
+}
+
+void Publish(int role) {
+#if defined(MKW_PLATFORM_SWITCH)
+    if (g_nanosPerTick < 0.0) {
+        return;
+    }
+    u64 ticks = 0;
+    if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, threadGetCurHandle(), 0))) {
+        return;
+    }
+    g_threads[role].cpuNanos.store(static_cast<uint64_t>(static_cast<double>(ticks) * g_nanosPerTick),
+                                   std::memory_order_relaxed);
+    g_threads[role].core.store(svcGetCurrentProcessorNumber(), std::memory_order_relaxed);
+#endif
+}
+
+}  // namespace PerfStats
