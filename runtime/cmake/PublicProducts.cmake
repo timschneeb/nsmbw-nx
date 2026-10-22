@@ -260,6 +260,11 @@ function(mkw_configure_product target)
         # (SDL's egl refs resolve to stubs in egl_stubs.cpp; harfbuzz+bz2 ride
         # on Freetype::Freetype itself, see runtime/CMakeLists.txt.)
         target_link_libraries(${target} PRIVATE mkw_switch_nvk)
+        # libnx_shims.cpp: force 4 MiB stacks on attribute-less pthreads and map
+        # thrd_create's newlib success code to 0 for Mesa.
+        target_link_options(${target} PRIVATE
+            "LINKER:--wrap=pthread_create"
+            "LINKER:--wrap=thrd_create")
     endif()
     if(MKW_PLATFORM_WINDOWS)
         foreach(runtime_dll libc++.dll libunwind.dll)

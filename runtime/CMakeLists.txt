@@ -418,6 +418,7 @@ else()
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/mbedtls_hardware_poll.cpp")
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/posix_stubs.cpp")
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/egl_stubs.cpp")
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/libnx_shims.cpp")
     endif()
     if(MKW_PLATFORM_ANDROID)
         # Android shares HostContext's AArch64 assembly backend with Apple Silicon, in its ELF

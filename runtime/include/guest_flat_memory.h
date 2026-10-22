@@ -40,7 +40,27 @@ inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0010'0000'0000ull;
 #error "guest_flat_memory.h has no fixed flat guest base chosen for this architecture"
 #endif
 
+#if defined(MKW_PLATFORM_SWITCH)
+// The window is reserved once at startup and never moves, so the base lives in x28 and a
+// guest access is a register-relative load instead of a PIE GOT load per access. Every
+// target we compile is built with -ffixed-x28; libraries keep the register because x28 is
+// callee-saved.
+extern uint8_t* g_flatGuestBase;
+register uint8_t* g_flatGuestBaseReg __asm__("x28");
+inline uint8_t* FlatGuestBase() { return g_flatGuestBaseReg; }
+inline void SetFlatGuestBase(uint8_t* base) {
+    g_flatGuestBase = base;
+    __asm__ volatile("mov x28, %0" : : "r"(base) : "memory");
+}
+// x28 is per-thread, so every thread that enters translated code restores it.
+inline void RestoreFlatGuestBase() {
+    __asm__ volatile("mov x28, %0" : : "r"(g_flatGuestBase) : "memory");
+}
+#define MKW_FLAT_GUEST_BASE (GuestFlat::FlatGuestBase())
+#else
+inline void RestoreFlatGuestBase() {}
 #define MKW_FLAT_GUEST_BASE (reinterpret_cast<uint8_t*>(GuestFlat::kFixedFlatGuestBase))
+#endif
 
 enum class Backing {
     Owned,
@@ -80,9 +100,10 @@ bool IsActive();
 #if defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
 inline constexpr bool RequiresCheckedAccess() noexcept { return false; }
 #elif defined(MKW_PLATFORM_SWITCH)
-// Horizon has no page-fault interception, so every translated access uses the
-// checked Memory::* path (see guest_flat_memory_switch.cpp).
-inline constexpr bool RequiresCheckedAccess() noexcept { return true; }
+// Guest RAM is aliased into the reserved code-memory window, so a translated
+// access is a plain base + address like on desktop. An address outside the
+// backed ranges is a bug and dies loudly instead of faulting.
+inline constexpr bool RequiresCheckedAccess() noexcept { return false; }
 #else
 // Const, set from the page size while the library initializes: a store through a flat guest pointer
 // (a memcpy, which may alias any object) cannot change it, so the compiler loads it once per

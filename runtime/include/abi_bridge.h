@@ -1,5 +1,6 @@
 #pragma once
 #include "memory.h"
+#include "guest_flat_memory.h"
 #include "ppc_runtime.h"
 #include "system_bridge.h"
 #include "game_graphics_options.h"
@@ -569,6 +570,7 @@ template <uint32_t Target>
 inline void InvokeDirectCpu(CpuContext* ctx) {
     static_assert(Target != 0, "InvokeDirectCpu cannot target address 0");
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    GuestFlat::RestoreFlatGuestBase();
     ApplyRuntimeCallOptions(Target, cpu);
     if constexpr (KnownNativeCpuCall<Target>::kAvailable) {
         const auto invokeKnownNative = [&]() {
@@ -663,6 +665,7 @@ inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
 
 inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    GuestFlat::RestoreFlatGuestBase();
     if (target == 0) {
         ReportMissingCpuTarget(target, cpu);
     }

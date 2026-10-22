@@ -20,9 +20,6 @@
 #include <SDL3/SDL_iostream.h>
 #include <absl/container/flat_hash_map.h>
 
-#if defined(__SWITCH__)
-#include <switch.h>
-#endif
 #include <absl/container/flat_hash_set.h>
 #include <fmt/format.h>
 #include <tracy/Tracy.hpp>
@@ -73,60 +70,7 @@ constexpr size_t MaxPipelineWorkers = 22;
 // Cached clear and GX pipelines are prewarmed using the full worker pool.
 constexpr size_t MaxBackgroundPipelineWorkers = MaxPipelineWorkers;
 
-#if defined(__SWITCH__)
-// libnx gives every pthread a small default stack, and Dawn's tint resolver recurses
-// deep enough to overflow it in the middle of a shader parse. Worker threads created
-// here get an explicit large stack instead. The pool is also capped because each
-// worker now costs several MB.
-constexpr size_t SwitchPipelineThreadStackSize = 4 * 1024 * 1024;
-
-class PipelineThread {
-public:
-  PipelineThread() = default;
-  explicit PipelineThread(void (*entry)()) {
-    if (R_SUCCEEDED(threadCreate(&m_thread, &PipelineThread::Run, reinterpret_cast<void*>(entry), nullptr,
-                                 SwitchPipelineThreadStackSize, 0x2C, -2))) {
-      m_started = R_SUCCEEDED(threadStart(&m_thread));
-    }
-  }
-  ~PipelineThread() { join(); }
-  PipelineThread(const PipelineThread&) = delete;
-  PipelineThread& operator=(const PipelineThread&) = delete;
-  PipelineThread(PipelineThread&& other) noexcept { Take(other); }
-  PipelineThread& operator=(PipelineThread&& other) noexcept {
-    if (this != &other) {
-      join();
-      Take(other);
-    }
-    return *this;
-  }
-
-  bool joinable() const { return m_started; }
-
-  void join() {
-    if (!m_started) {
-      return;
-    }
-    threadWaitForExit(&m_thread);
-    threadClose(&m_thread);
-    m_started = false;
-  }
-
-private:
-  void Take(PipelineThread& other) {
-    m_thread = other.m_thread;
-    m_started = other.m_started;
-    other.m_started = false;
-  }
-
-  static void Run(void* arg) { reinterpret_cast<void (*)()>(arg)(); }
-
-  Thread m_thread{};
-  bool m_started = false;
-};
-#else
 using PipelineThread = std::thread;
-#endif
 // For synchronous pipeline fallback (OpenGL)
 #ifdef NDEBUG
 constexpr size_t BuildPipelinesPerFrame = 5;

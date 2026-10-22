@@ -99,11 +99,37 @@ constexpr bool IsGpuFifoAddress(uint32_t addr) {
     return addr >= 0xCC008000u && addr < 0xCC008100u;
 }
 
-// Page protections can't cover this: an MMIO write must reach GX HLE with its value or be
-// reported, and a fault record can't carry the value, so this mask/compare sits in front of
-// every flat store instead.
+// Physical and uncached views address the same pages as the cached view. Horizon allows only one
+// code-memory alias per page, so rather than mapping them we rewrite the address onto the cached
+// view: the mirrors keep aliasing and stay on the flat path instead of the checked one.
+MKW_MEMORY_FORCE_INLINE void CanonicalizeMirror(uint32_t& address) {
+    if (address < Memory::kMem1PhysicalBase + static_cast<uint32_t>(Memory::kMem1Size)) {
+        address += 0x80000000u - Memory::kMem1PhysicalBase;
+        return;
+    }
+    if (address - Memory::kMem1UncachedBase < static_cast<uint32_t>(Memory::kMem1Size)) {
+        address += 0x80000000u - Memory::kMem1UncachedBase;
+        return;
+    }
+    if (address - Memory::kMem2PhysicalBase < static_cast<uint32_t>(Memory::kMem2Size)) {
+        address += Memory::kMem2CachedBase - Memory::kMem2PhysicalBase;
+        return;
+    }
+    if (address - Memory::kMem2UncachedBase < static_cast<uint32_t>(Memory::kMem2Size)) {
+        address += Memory::kMem2CachedBase - Memory::kMem2UncachedBase;
+        return;
+    }
+}
+
 MKW_MEMORY_FORCE_INLINE bool FlatWriteNeedsPolicy(uint32_t address) {
-    return (address & 0xFE000000u) == 0xCC000000u;  // 0xCC000000..0xCDFFFFFF
+    // An MMIO write must reach GX HLE with its value or be reported.
+    return (address & 0xFE000000u) == 0xCC000000u;
+}
+
+// The hardware window has no store behind it, so reads go through the checked path, which
+// returns what its policy defines instead of aborting on an unmapped page.
+MKW_MEMORY_FORCE_INLINE bool FlatReadNeedsPolicy(uint32_t address) {
+    return (address & 0xFE000000u) == 0xCC000000u;
 }
 
 // Gekko stfs conversion is a bit-level narrowing operation.  In particular it
@@ -238,10 +264,12 @@ MKW_MEMORY_FORCE_INLINE uint8_t* ResolveRangeHost(uint32_t base, int32_t minOffs
         (void)needsWrite;
         return nullptr;
     }
+    uint32_t flatStart = guestStart;
+    CanonicalizeMirror(flatStart);
     if (needsWrite &&
-        (FlatWriteNeedsPolicy(guestStart) || FlatWriteNeedsPolicy(guestStart + (length - 1))))
+        (FlatWriteNeedsPolicy(flatStart) || FlatWriteNeedsPolicy(flatStart + (length - 1))))
         [[unlikely]] return nullptr;
-    return MKW_FLAT_GUEST_BASE + guestStart;
+    return MKW_FLAT_GUEST_BASE + flatStart;
 }
 
 // Guest-address byte order. Distinct from isa/big_endian.h, which is the
@@ -552,14 +580,20 @@ MKW_MEMORY_FORCE_INLINE void FlatStore(uint32_t address, T value) {
 
 MKW_MEMORY_FORCE_INLINE uint8_t FlatRead8(uint32_t address) {
     if (GuestFlat::RequiresCheckedAccess()) return Memory::Read8(address);
+    CanonicalizeMirror(address);
+    if (FlatReadNeedsPolicy(address)) [[unlikely]] return Memory::Read8(address);
     return FlatLoad<uint8_t>(address);
 }
 MKW_MEMORY_FORCE_INLINE uint16_t FlatRead16(uint32_t address) {
     if (GuestFlat::RequiresCheckedAccess()) return Memory::Read16(address);
+    CanonicalizeMirror(address);
+    if (FlatReadNeedsPolicy(address)) [[unlikely]] return Memory::Read16(address);
     return FlatLoad<uint16_t>(address);
 }
 MKW_MEMORY_FORCE_INLINE uint32_t FlatRead32(uint32_t address) {
     if (GuestFlat::RequiresCheckedAccess()) return Memory::Read32(address);
+    CanonicalizeMirror(address);
+    if (FlatReadNeedsPolicy(address)) [[unlikely]] return Memory::Read32(address);
     return FlatLoad<uint32_t>(address);
 }
 
@@ -571,8 +605,13 @@ MKW_MEMORY_FORCE_INLINE float FlatReadFloat32(uint32_t address) {
 }
 
 MKW_MEMORY_FORCE_INLINE double FlatReadFloat64(uint32_t address) {
-    const uint64_t bits = GuestFlat::RequiresCheckedAccess()
-        ? Memory::Read64(address) : FlatLoad<uint64_t>(address);
+    uint64_t bits = 0;
+    if (GuestFlat::RequiresCheckedAccess()) {
+        bits = Memory::Read64(address);
+    } else {
+        CanonicalizeMirror(address);
+        bits = FlatReadNeedsPolicy(address) ? Memory::Read64(address) : FlatLoad<uint64_t>(address);
+    }
     double value = 0.0;
     std::memcpy(&value, &bits, sizeof(value));
     return value;
@@ -580,18 +619,21 @@ MKW_MEMORY_FORCE_INLINE double FlatReadFloat64(uint32_t address) {
 
 MKW_MEMORY_FORCE_INLINE void FlatWrite8(uint32_t address, uint8_t value) {
     if (GuestFlat::RequiresCheckedAccess()) { Memory::Write8(address, value); return; }
+    CanonicalizeMirror(address);
     if (FlatWriteNeedsPolicy(address)) [[unlikely]] { Write8Slow(address, value); return; }
     FlatStore<uint8_t>(address, value);
 }
 
 MKW_MEMORY_FORCE_INLINE void FlatWrite16(uint32_t address, uint16_t value) {
     if (GuestFlat::RequiresCheckedAccess()) { Memory::Write16(address, value); return; }
+    CanonicalizeMirror(address);
     if (FlatWriteNeedsPolicy(address)) [[unlikely]] { Write16Slow(address, value); return; }
     FlatStore<uint16_t>(address, value);
 }
 
 MKW_MEMORY_FORCE_INLINE void FlatWrite32(uint32_t address, uint32_t value) {
     if (GuestFlat::RequiresCheckedAccess()) { Memory::Write32(address, value); return; }
+    CanonicalizeMirror(address);
     if (FlatWriteNeedsPolicy(address)) [[unlikely]] { Write32Slow(address, value); return; }
     FlatStore<uint32_t>(address, value);
 }
@@ -599,6 +641,7 @@ MKW_MEMORY_FORCE_INLINE void FlatWrite32(uint32_t address, uint32_t value) {
 
 MKW_MEMORY_FORCE_INLINE void FlatWriteFloat32(uint32_t address, double value) {
     if (GuestFlat::RequiresCheckedAccess()) { Memory::WriteFloat32(address, value); return; }
+    CanonicalizeMirror(address);
     const uint32_t bits = ConvertPpcDoubleToSingleBits(value);
     if (FlatWriteNeedsPolicy(address)) [[unlikely]] { WriteFloat32Slow(address, value); return; }
     FlatStore<uint32_t>(address, bits);
@@ -606,6 +649,7 @@ MKW_MEMORY_FORCE_INLINE void FlatWriteFloat32(uint32_t address, double value) {
 
 MKW_MEMORY_FORCE_INLINE void FlatWriteFloat64(uint32_t address, double value) {
     if (GuestFlat::RequiresCheckedAccess()) { Memory::WriteFloat64(address, value); return; }
+    CanonicalizeMirror(address);
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     if (FlatWriteNeedsPolicy(address)) [[unlikely]] { WriteFloat64Slow(address, value); return; }

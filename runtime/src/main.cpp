@@ -1483,6 +1483,21 @@ int RuntimeMain(int argc, char** argv) {
     std::string currentEntryLabel;
 
     try {
+#if defined(MKW_PLATFORM_SWITCH)
+        // Full-RAM launch grants svcMapProcessCodeMemory and svcSetProcessMemoryPermission,
+        // which the guest memory window needs. The album applet never grants them, so refuse
+        // that launch up front instead of failing part-way through start-up.
+        if (!envIsSyscallHinted(0x77) || !envIsSyscallHinted(0x73)) {
+            ShowRuntimeFatalPopup(
+                "Cannot start in applet mode",
+                "Start WiiCompiled from hbmenu: select a game tile, hold R, then confirm.\n\n"
+                "Launching from the album applet, or without holding R, does not grant the "
+                "memory the game needs.");
+            SetRuntimeExitCodeImpl(1);
+            ShutdownProcessTranscript();
+            return 1;
+        }
+#endif
         if (argc != 1) {
             throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
         }

@@ -62,6 +62,8 @@ set(MKW_SWITCH_ARCH_FLAGS
 add_compile_options(${MKW_SWITCH_ARCH_FLAGS})
 # Keep x29 a frame pointer so the fatal-log host stack walk can unwind.
 add_compile_options("-fno-omit-frame-pointer")
+# x28 holds the guest flat window base, so guest memory is one register-relative access.
+add_compile_options("-ffixed-x28")
 add_compile_options("-I${MKW_LIBNX}/include")
 add_link_options(${MKW_SWITCH_ARCH_FLAGS})
 add_link_options("-L${MKW_LIBNX}/lib")
