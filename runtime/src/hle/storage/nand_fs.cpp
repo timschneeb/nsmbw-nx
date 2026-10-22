@@ -7,6 +7,8 @@
 #include "hle/storage/riivolution.h"
 #include "runtime_log.h"
 
+#include <cerrno>
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -117,6 +119,22 @@ bool NandRemove(const std::filesystem::path& path) {
 bool NandRename(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code ec;
     std::filesystem::rename(from, to, ec);
+#if defined(MKW_PLATFORM_SWITCH)
+    // Horizon's rename cannot replace an existing file, so drop the target and retry.
+    if (ec && (ec.value() == EEXIST || ec == std::errc::file_exists)) {
+        std::error_code removeEc;
+        std::filesystem::remove(to, removeEc);
+        if (!removeEc) {
+            ec.clear();
+            std::filesystem::rename(from, to, ec);
+        }
+    }
+#endif
+    if (ec) {
+        LogNandError("nand-rename", "rename('%s' -> '%s') failed: %s (errno %d)",
+                     HostPathText(from).c_str(), HostPathText(to).c_str(),
+                     ec.message().c_str(), ec.value());
+    }
     return !ec;
 }
 
@@ -226,8 +244,12 @@ static void CloneRiivolutionSaveIfNeeded(const std::filesystem::path& sourceHost
     CreateParentDirectories(redirectedHostPath);
 
     std::error_code ec;
+#if defined(MKW_PLATFORM_SWITCH)
+    RuntimeNandPath::CopyFileBytes(sourceHostPath, redirectedHostPath, ec);
+#else
     std::filesystem::copy_file(sourceHostPath, redirectedHostPath,
                                std::filesystem::copy_options::skip_existing, ec);
+#endif
     if (ec) {
         LogNandWarning("RiivolutionSave", "WARNING: failed to clone '%s' -> '%s': %s",
                        HostPathText(sourceHostPath).c_str(),

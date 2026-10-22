@@ -316,6 +316,33 @@ else()
     add_subdirectory(${MKW_AURORA_DIR} ${CMAKE_BINARY_DIR}/aurora-build EXCLUDE_FROM_ALL)
     set(CMAKE_DISABLE_PRECOMPILE_HEADERS OFF)
 
+    if(MKW_PLATFORM_SWITCH)
+        # Horizon has no libdl, but vendor targets unconditionally carry
+        # ${CMAKE_DL_LIBS}. Strip it at product layer; vendor stays untouched.
+        foreach(t TracyClient dawn::webgpu_dawn dawn_native dawn_common)
+            if(TARGET ${t})
+                get_target_property(_mkw_dl_libs ${t} INTERFACE_LINK_LIBRARIES)
+                if(_mkw_dl_libs)
+                    # Dawn's installed config wraps it as $<LINK_ONLY:dl>.
+                    list(REMOVE_ITEM _mkw_dl_libs dl -ldl "$<LINK_ONLY:dl>")
+                    set_target_properties(${t} PROPERTIES INTERFACE_LINK_LIBRARIES "${_mkw_dl_libs}")
+                endif()
+            endif()
+        endforeach()
+        # Portlibs freetype (found system-wide by aurora, PRIVATE to imgui)
+        # needs harfbuzz+bz2, and harfbuzz refers back to freetype. Appending
+        # the group to Freetype::Freetype itself puts it adjacent to every
+        # freetype reference on the one-pass link line, wherever BFS order
+        # lands it; a trailing group at the exe cannot cover a late ref.
+        if(TARGET Freetype::Freetype)
+            target_link_libraries(Freetype::Freetype INTERFACE
+                "-Wl,--start-group"
+                "$ENV{DEVKITPRO}/portlibs/switch/lib/libharfbuzz.a"
+                "$ENV{DEVKITPRO}/portlibs/switch/lib/libbz2.a"
+                "-Wl,--end-group")
+        endif()
+    endif()
+
     # Keep upstream Aurora split: several sources intentionally use file-local
     # names that collide under this repo's aggressive unity build settings.
     set(AURORA_TARGETS aurora_core aurora_gx aurora_pad aurora_si aurora_mtx aurora_vi)
@@ -384,9 +411,13 @@ else()
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp")
     if(MKW_PLATFORM_SWITCH)
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp")
+    else()
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_switch.cpp")
     endif()
     if(NOT MKW_PLATFORM_SWITCH)
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/mbedtls_hardware_poll.cpp")
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/posix_stubs.cpp")
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/egl_stubs.cpp")
     endif()
     if(MKW_PLATFORM_ANDROID)
         # Android shares HostContext's AArch64 assembly backend with Apple Silicon, in its ELF
@@ -430,7 +461,9 @@ if(MKW_BUILD_PSQ_TESTS)
         "${CMAKE_CURRENT_LIST_DIR}/include")
     target_compile_features(mkw_psq_helpers_tests PRIVATE cxx_std_17)
     target_compile_options(mkw_psq_helpers_tests PRIVATE
-        -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS} -fno-slp-vectorize)
+        -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS}
+        $<$<CXX_COMPILER_ID:Clang>:-fno-slp-vectorize>
+        $<$<CXX_COMPILER_ID:GNU>:-fno-tree-slp-vectorize>)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
         target_compile_options(mkw_psq_helpers_tests PRIVATE -march=x86-64-v3)
     endif()
@@ -564,6 +597,12 @@ if(MKW_BUILD_PRODUCTS)
         "${MKW_RETRO_REWIND_FUNCTION_COUNT} Retro Rewind functions")
 
     set(MKW_RUNTIME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+    if(MKW_PLATFORM_SWITCH)
+        # Prebuilt Dawn Switch + Mesa NVK archives (SwitchGraphics.cmake
+        # documents the recipes). mkw_switch_nvk carries the Vulkan driver;
+        # Dawn itself comes from the system provider above (same ref).
+        include("${CMAKE_CURRENT_LIST_DIR}/cmake/SwitchGraphics.cmake")
+    endif()
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/PublicProducts.cmake")
 else()
     if(MKW_PLATFORM_MACOS)

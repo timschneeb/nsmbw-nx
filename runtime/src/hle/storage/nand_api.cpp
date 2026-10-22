@@ -171,8 +171,12 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
             const std::filesystem::path tempPath = SafeTempPathFor(hostPath);
             if (DiscardStaleSafeTemp(tempPath)) {
                 std::error_code ec;
+#if defined(MKW_PLATFORM_SWITCH)
+                RuntimeNandPath::CopyFileBytes(hostPath, tempPath, ec);
+#else
                 std::filesystem::copy_file(hostPath, tempPath,
                                            std::filesystem::copy_options::overwrite_existing, ec);
+#endif
                 if (ec) {
                     LogNandWarning("NANDOpen", "WARNING: could not seed shadow '%s' (%s), writing in place",
                                    HostPathText(tempPath).c_str(), ec.message().c_str());
@@ -513,7 +517,11 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
             std::filesystem::copy(srcHost, tempHost,
                                   std::filesystem::copy_options::recursive, copyEc);
         } else {
+#if defined(MKW_PLATFORM_SWITCH)
+            RuntimeNandPath::CopyFileBytes(srcHost, tempHost, copyEc);
+#else
             std::filesystem::copy_file(srcHost, tempHost, copyEc);
+#endif
         }
 
         if (copyEc) {

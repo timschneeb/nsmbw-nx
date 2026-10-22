@@ -21,22 +21,17 @@ void GXSetLineWidth(u8 width, GXTexOffset texOffsets);
 void GXSetPointSize(u8 pointSize, GXTexOffset texOffsets);
 void GXEnableTexOffsets(GXTexCoordID coord, GXBool line_enable, GXBool point_enable);
 #ifdef TARGET_PC
-#ifdef __cplusplus
-}  // extern "C"
 // Single declaration with a default argument: GCC forbids overloading an
-// extern "C" name (Clang permits), so the former 4-arg wrapper cannot keep
-// this name. All TARGET_PC consumers are C++.
-#endif
+// extern "C" name (Clang permits), so the former 4-arg wrapper is gone.
+// The C++ definition in GXGeometry.cpp takes all five parameters.
+// All TARGET_PC consumers are C++.
 void GXSetArray(GXAttr attr, const void* data, u32 size, u8 stride,
 #ifdef __cplusplus
                 bool le = false
 #else
-                bool le
+                unsigned char le
 #endif
 );
-#ifdef __cplusplus
-extern "C" {
-#endif
 #define GXSETARRAY(attr, data, size, stride, le) GXSetArray((attr), (data), (size), (stride), (le))
 #else
 void GXSetArray(GXAttr attr, const void* data, u8 stride);

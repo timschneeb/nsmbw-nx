@@ -37,7 +37,9 @@ endfunction()
 
 function(mkw_apply_translated_compile_options target)
     target_compile_options(${target} PRIVATE
-        -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS} -fno-slp-vectorize -w -pipe)
+        -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS}
+        $<$<CXX_COMPILER_ID:Clang>:-fno-slp-vectorize>
+        $<$<CXX_COMPILER_ID:GNU>:-fno-tree-slp-vectorize> -w -pipe)
 endfunction()
 
 function(mkw_configure_object_target target)
@@ -252,6 +254,12 @@ function(mkw_configure_product target)
         target_link_libraries(${target} PRIVATE android log ${CMAKE_DL_LIBS})
         target_link_options(${target} PRIVATE "LINKER:-z,max-page-size=16384" "LINKER:--no-undefined")
         set_target_properties(${target} PROPERTIES OUTPUT_NAME main)
+    elseif(MKW_PLATFORM_SWITCH)
+        # Product graphics: system Dawn (same ref, via aurora above) plus the
+        # prebuilt Mesa NVK Vulkan driver (vk_icdGetInstanceProcAddr, vk_*).
+        # (SDL's egl refs resolve to stubs in egl_stubs.cpp; harfbuzz+bz2 ride
+        # on Freetype::Freetype itself, see runtime/CMakeLists.txt.)
+        target_link_libraries(${target} PRIVATE mkw_switch_nvk)
     endif()
     if(MKW_PLATFORM_WINDOWS)
         foreach(runtime_dll libc++.dll libunwind.dll)
@@ -377,6 +385,10 @@ elseif(MKW_PLATFORM_ANDROID)
     # Cross-compiled, so -mcpu=native would describe the build machine. ARMv8.2-A (LSE atomics,
     # RCpc loads) is the floor of every Android phone since Cortex-A55/A75.
     set(MKW_BASELINE_ARCH_FLAG -march=armv8.2-a)
+elseif(MKW_PLATFORM_SWITCH)
+    # Same cross-compiled caveat as Android: the toolchain already tunes for
+    # Cortex-A57, so no per-target arch flag.
+    set(MKW_BASELINE_ARCH_FLAG "")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(MKW_BASELINE_ARCH_FLAG -mcpu=native)
 else()

@@ -127,7 +127,11 @@ void RecoverHostSave() {
     const auto played = SessionNand() / std::filesystem::u8path(kSaveFile);
     const auto mine = RuntimeNandPath::ResolveNandRootPath() / std::filesystem::u8path(kSaveFile);
     if (std::filesystem::exists(played, ec)) {
+#if defined(MKW_PLATFORM_SWITCH)
+        RuntimeNandPath::CopyFileBytes(played, mine, ec);
+#else
         std::filesystem::copy_file(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
+#endif
         RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the save from the last session you hosted (%s)\n",
                 ec ? ec.message().c_str() : "ok");
     }
@@ -201,7 +205,11 @@ void PrepareToLeave() {
         const auto mine = RuntimeNandPath::ResolveNandRootPath() / std::filesystem::u8path(kSaveFile);
         const auto played = SessionNand() / std::filesystem::u8path(kSaveFile);
         if (std::filesystem::exists(played, ec)) {
+#if defined(MKW_PLATFORM_SWITCH)
+            RuntimeNandPath::CopyFileBytes(played, mine, ec);
+#else
             std::filesystem::copy_file(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
+#endif
             RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the session's save (%s)\n", ec ? ec.message().c_str() : "ok");
         }
     }

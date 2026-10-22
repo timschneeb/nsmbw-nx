@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 #define MKW_RESTRICT __restrict
@@ -35,4 +36,20 @@ inline constexpr bool MkwStateFreeAbiEnabled(uint32_t) noexcept
 #define MKW_PPC_COLD __attribute__((cold))
 
 
+#if defined(__clang__)
 using MkwStateFreeResult2 = uint64_t __attribute__((ext_vector_type(2)));
+#else
+// GCC has no ext_vector_type, and rejects return braced-init on vector_size
+// vectors. This struct covers every operation translated code performs on
+// the type: return {a, b}, copy, [0]/[1] subscript, static_cast to u32/u64
+// (lane 0, matching Clang's vector-to-scalar conversion).
+struct MkwStateFreeResult2 {
+    uint64_t v[2];
+    constexpr uint64_t operator[](std::size_t i) const noexcept { return v[i]; }
+    constexpr uint64_t& operator[](std::size_t i) noexcept { return v[i]; }
+    constexpr explicit operator uint32_t() const noexcept {
+        return static_cast<uint32_t>(v[0]);
+    }
+    constexpr explicit operator uint64_t() const noexcept { return v[0]; }
+};
+#endif

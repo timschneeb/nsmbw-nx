@@ -58,6 +58,9 @@
 #if defined(__ANDROID__)
 #include <sys/system_properties.h>
 #endif
+#if defined(MKW_PLATFORM_SWITCH)
+#include <switch.h>
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <SDL3/SDL_messagebox.h>
 #endif
@@ -528,11 +531,25 @@ void InitializeProcessTranscript(int argc, char** argv) {
         state.file.close();
     };
 
+#if defined(MKW_PLATFORM_SWITCH)
+    // Horizon has no pipe(): capture stdout/stderr straight to sibling files instead.
+    // Unbuffered direct writes survive a hard abort; a pump thread would die with the process.
+    const std::string stdoutPath = (path.parent_path() / "stdout.log").string();
+    const std::string stderrPath = (path.parent_path() / "stderr.log").string();
+    if (std::freopen(stdoutPath.c_str(), "w", stdout) == nullptr ||
+        std::freopen(stderrPath.c_str(), "w", stderr) == nullptr) {
+        restoreFailedSetup();
+        return;
+    }
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+#else
     if (!InstallTranscriptPipe(state.stdoutPipeReadFd, state.stdoutPipeWriteFd, GetFileDescriptor(stdout)) ||
         !InstallTranscriptPipe(state.stderrPipeReadFd, state.stderrPipeWriteFd, GetFileDescriptor(stderr))) {
         restoreFailedSetup();
         return;
     }
+#endif
 
     state.stdoutThread = std::thread([&state]() {
         PumpTranscriptPipe(state, state.stdoutPipeReadFd, state.savedStdoutFd);
@@ -706,6 +723,30 @@ std::string FormatHostStackTrace(unsigned framesToSkip) {
         out << ")\n";
     }
     return out.str();
+#elif defined(__aarch64__)
+    // aarch64 frame chain: [x29] = caller frame, [x29 + 8] = return address.
+    (void)framesToSkip;
+    std::ostringstream out;
+    out << "[runtime] host stack trace (most recent call first):\n";
+    const auto anchor = reinterpret_cast<std::uintptr_t>(&FormatHostStackTrace);
+    out << "[runtime] host module anchor=0x" << std::hex << anchor << std::dec << "\n";
+    const auto sp = reinterpret_cast<std::uintptr_t>(__builtin_frame_address(0));
+    std::uintptr_t fp = sp;
+    for (unsigned i = 0; i < 32; ++i) {
+        if (fp == 0 || (fp & 0xF) != 0 || fp + 0x10 < sp || fp > sp + 0x200000) {
+            break;
+        }
+        const auto* words = reinterpret_cast<const std::uintptr_t*>(fp);
+        const std::uintptr_t next = words[0];
+        const std::uintptr_t lr = words[1];
+        out << "  [" << std::setw(2) << std::setfill('0') << i << std::setfill(' ') << "] 0x"
+            << std::hex << lr << std::dec << "\n";
+        if (next <= fp) {
+            break;
+        }
+        fp = next;
+    }
+    return out.str();
 #else
     (void)framesToSkip;
     return {};
@@ -780,7 +821,7 @@ std::filesystem::path RuntimeRunLogDirectory() {
 namespace {
 
 void DumpHostStackTrace() {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__aarch64__)
     static std::atomic_flag s_inProgress = ATOMIC_FLAG_INIT;
     if (s_inProgress.test_and_set()) {
         return;
@@ -835,6 +876,20 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
         RT_LOGF(RT_TAG_RUNTIME, "fatal dialog: %s\n", message.c_str());
 #if defined(__linux__) && !defined(__ANDROID__)
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "NSMBW - Fatal Error", message.c_str(), nullptr);
+#elif defined(MKW_PLATFORM_SWITCH)
+        // The Switch has no SDL message-box backend, so fatal errors would
+        // otherwise be invisible: show the system error applet instead.
+        {
+            ErrorSystemConfig config{};
+            constexpr size_t kMaxAppletText = 0x7FF;
+            const std::string dialog(category.empty() ? "a fatal error occurred." : category);
+            const std::string fullscreen = message.size() <= kMaxAppletText
+                                               ? message
+                                               : message.substr(0, kMaxAppletText);
+            if (R_SUCCEEDED(errorSystemCreate(&config, dialog.c_str(), fullscreen.c_str()))) {
+                errorSystemShow(&config);
+            }
+        }
 #endif
 #endif
     } catch (...) {
@@ -1387,7 +1442,6 @@ static void TerminateHandler() {
     } else {
         terminateDetails = "std::terminate() without current exception.";
     }
-    ShowRuntimeFatalPopup("an unhandled C++ exception occurred", terminateDetails);
     const std::string hostStackSummary = FormatHostStackTrace(1);
     if (!hostStackSummary.empty()) {
         terminateDetails.append("\n");
@@ -1402,6 +1456,9 @@ static void TerminateHandler() {
         SystemBridge::DumpCpuState(cpu);
     }
     std::fflush(stderr);
+    // Everything is on disk before the applet blocks, so a stuck popup still
+    // leaves usable evidence.
+    ShowRuntimeFatalPopup("an unhandled C++ exception occurred", terminateDetails);
     std::_Exit(EXIT_FAILURE);
 }
 
@@ -1639,6 +1696,12 @@ int RuntimeMain(int argc, char** argv) {
 #endif
 
 
+#if defined(MKW_PLATFORM_SWITCH)
+        // NVK needs the nv services before first use (same as the reference ports).
+        setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
+        nvInitialize();
+#endif
+
         const AuroraInfo auroraInfo = aurora_initialize(0, nullptr, &auroraConfig);
         if (auroraInfo.initializationStatus != AURORA_INITIALIZATION_SUCCESS) {
             throw std::runtime_error(auroraInfo.initializationError != nullptr
@@ -1713,6 +1776,9 @@ int RuntimeMain(int argc, char** argv) {
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         aurora_shutdown();
+#if defined(MKW_PLATFORM_SWITCH)
+        nvExit();
+#endif
         DiscordPresence::Shutdown();
         SetRuntimeExitCodeImpl(0);
         ShutdownProcessTranscript();
@@ -1731,6 +1797,9 @@ int RuntimeMain(int argc, char** argv) {
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         aurora_shutdown();
+#if defined(MKW_PLATFORM_SWITCH)
+        nvExit();
+#endif
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
         return 1;
@@ -1738,11 +1807,14 @@ int RuntimeMain(int argc, char** argv) {
         std::cerr << "Runtime error: " << ex.what() << std::endl;
         SystemBridge::DumpCpuState(TryGetCpuContext());
         ShowRuntimeFatalPopup("a runtime exception occurred", ex.what());
-        WriteFatalLogImpl("exception");
+        WriteFatalLogImpl("exception", ex.what());
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         aurora_shutdown();
+#if defined(MKW_PLATFORM_SWITCH)
+        nvExit();
+#endif
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
         return 1;

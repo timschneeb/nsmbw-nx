@@ -506,7 +506,11 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
     if (s_inAdvanceRetrace.exchange(true)) {
         return;
     }
+#if !defined(MKW_PLATFORM_SWITCH)
+    // Switch: thread creation can throw when the app pool is exhausted, and call_once's noexcept
+    // proxy turns that into std::terminate. The watchdog only fired during the slow first boot.
     StartStallWatchdogOnce();
+#endif
     LogGuestModulesOnce();
     LogSceneChanges();
 

@@ -31,6 +31,12 @@ extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include <map>
 #include <unordered_set>
 #include <filesystem>
+#if defined(MKW_PLATFORM_SWITCH)
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
+#include <cerrno>
+#include <functional>
 #include <iostream>
 #include <fstream>
 #include <mutex>
@@ -531,11 +537,62 @@ static bool DvdEntryExists(const std::string& dvdPath) {
            g_pathToEntry.end();
 }
 
-// Walk `root` and hand every entry to `visit`. Uses the error_code iterator forms so an
-// unreadable entry doesn't abort the rest of the overlay. `announceErrors` keeps the
-// disc-index scan noisy and the by-name mapping quiet, matching each caller's old behavior.
+// Textual relative path. std::filesystem::relative fails on Horizon and silently
+// drops every entry, which empties the disc index.
+static std::string RelativeText(const fs::path& root, const fs::path& path) {
+    const std::string rootText = HostPathText(root);
+    const std::string pathText = HostPathText(path);
+    if (pathText.size() > rootText.size() &&
+        pathText.compare(0, rootText.size(), rootText) == 0) {
+        std::string relative = pathText.substr(rootText.size());
+        while (!relative.empty() && (relative.front() == '/' || relative.front() == '\\')) {
+            relative.erase(relative.begin());
+        }
+        return relative;
+    }
+    return pathText;
+}
+
+// Walk `root` and hand every entry to `visit`. `announceErrors` keeps the disc-index
+// scan noisy and the by-name mapping quiet, matching each caller's old behavior.
+// Switch walks with opendir/readdir because Horizon's std::filesystem iteration
+// yields no entries.
 template <typename Visit>
 static void WalkDirectory(const fs::path& root, bool recursive, bool announceErrors, Visit&& visit) {
+#if defined(MKW_PLATFORM_SWITCH)
+    std::function<void(const fs::path&)> walk = [&](const fs::path& directory) {
+        DIR* handle = opendir(directory.c_str());
+        if (handle == nullptr) {
+            if (announceErrors) {
+                RT_LOG(RT_TAG_DVD) << "WARNING: cannot enumerate " << HostPathText(directory) << ": "
+                                   << std::strerror(errno) << std::endl;
+            }
+            return;
+        }
+        std::vector<fs::path> subdirectories;
+        while (const dirent* entry = readdir(handle)) {
+            const std::string name = entry->d_name;
+            if (name == "." || name == "..") {
+                continue;
+            }
+            const fs::path child = directory / name;
+            struct stat info {};
+            if (stat(child.c_str(), &info) != 0) {
+                continue;
+            }
+            const bool regular = S_ISREG(info.st_mode) != 0;
+            visit(child, regular, regular ? static_cast<std::uintmax_t>(info.st_size) : 0);
+            if (recursive && S_ISDIR(info.st_mode) != 0) {
+                subdirectories.push_back(child);
+            }
+        }
+        closedir(handle);
+        for (const auto& subdirectory : subdirectories) {
+            walk(subdirectory);
+        }
+    };
+    walk(root);
+#else
     std::error_code ec;
 
     if (!recursive) {
@@ -575,6 +632,7 @@ static void WalkDirectory(const fs::path& root, bool recursive, bool announceErr
 
         visit(entry);
     }
+#endif
 }
 
 // Helper: Scan directory and build file index.
@@ -587,6 +645,28 @@ static void ScanDirectory(const fs::path& root, const std::string& virtualPrefix
         return;
     }
 
+    const auto registerFile = [&](const fs::path& path, const std::string& relative,
+                                  std::uintmax_t size) {
+        std::string prefix = virtualPrefix.empty() ? "/" : virtualPrefix;
+        if (prefix.back() != '/' && prefix.back() != '\\') {
+            prefix += "/";
+        }
+        std::string dvdPath = prefix + relative;
+        if (!addNewFiles && !DvdEntryExists(dvdPath)) {
+            return;
+        }
+        RegisterFileEntry(std::move(dvdPath), path, static_cast<uint32_t>(size));
+    };
+
+#if defined(MKW_PLATFORM_SWITCH)
+    WalkDirectory(root, recursive, /*announceErrors=*/true,
+                  [&](const fs::path& path, bool regular, std::uintmax_t size) {
+                      if (!regular) {
+                          return;
+                      }
+                      registerFile(path, RelativeText(root, path), size);
+                  });
+#else
     const auto registerEntry = [&](const fs::directory_entry& entry) {
         std::error_code entryEc;
         if (!entry.is_regular_file(entryEc) || entryEc) {
@@ -605,18 +685,11 @@ static void ScanDirectory(const fs::path& root, const std::string& virtualPrefix
             return;
         }
 
-        std::string prefix = virtualPrefix.empty() ? "/" : virtualPrefix;
-        if (prefix.back() != '/' && prefix.back() != '\\') {
-            prefix += "/";
-        }
-        std::string dvdPath = prefix + HostPathText(relative);
-        if (!addNewFiles && !DvdEntryExists(dvdPath)) {
-            return;
-        }
-        RegisterFileEntry(std::move(dvdPath), entry.path(), static_cast<uint32_t>(size));
+        registerFile(entry.path(), HostPathText(relative), size);
     };
 
     WalkDirectory(root, recursive, /*announceErrors=*/true, registerEntry);
+#endif
 }
 
 // Riivolution <folder> without a disc path: replace disc files that share a
@@ -638,28 +711,41 @@ static void ApplyFolderByNameMapping(const RuntimeRiivolution::Mapping& mapping)
     }
 
     uint32_t replaced = 0;
-    const auto applyEntry = [&](const fs::directory_entry& entry) {
-        std::error_code entryEc;
-        if (!entry.is_regular_file(entryEc) || entryEc) {
-            return;
-        }
-        std::string name = HostPathText(entry.path().filename());
+    const auto applyFile = [&](const fs::path& path, std::uintmax_t size) {
+        std::string name = HostPathText(path.filename());
         RuntimeHle::LowerInPlace(name);
         const auto matches = discPathsByName.find(name);
         if (matches == discPathsByName.end()) {
+            return;
+        }
+        for (const std::string& dvdPath : matches->second) {
+            RegisterFileEntry(dvdPath, path, static_cast<uint32_t>(size));
+            ++replaced;
+        }
+    };
+
+#if defined(MKW_PLATFORM_SWITCH)
+    WalkDirectory(mapping.hostPath, mapping.recursive, /*announceErrors=*/false,
+                  [&](const fs::path& path, bool regular, std::uintmax_t size) {
+                      if (regular) {
+                          applyFile(path, size);
+                      }
+                  });
+#else
+    const auto applyEntry = [&](const fs::directory_entry& entry) {
+        std::error_code entryEc;
+        if (!entry.is_regular_file(entryEc) || entryEc) {
             return;
         }
         const std::uintmax_t size = fs::file_size(entry.path(), entryEc);
         if (entryEc) {
             return;
         }
-        for (const std::string& dvdPath : matches->second) {
-            RegisterFileEntry(dvdPath, entry.path(), static_cast<uint32_t>(size));
-            ++replaced;
-        }
+        applyFile(entry.path(), size);
     };
 
     WalkDirectory(mapping.hostPath, mapping.recursive, /*announceErrors=*/false, applyEntry);
+#endif
 
     RT_LOG(RT_TAG_DVD) << HostPathText(mapping.hostPath) << ": replaced " << replaced
               << " disc file(s) by filename" << std::endl;

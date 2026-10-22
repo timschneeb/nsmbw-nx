@@ -1180,6 +1180,22 @@ inline std::string DvdRoot(std::string fallback = "") {
 inline std::filesystem::path ResolveRelativeTo(const std::filesystem::path& base,
                                                const std::string& value) {
     std::filesystem::path path = PathFromUtf8(value);
+#if defined(MKW_PLATFORM_SWITCH)
+    // Horizon device paths ("sdmc:/...") are relative to std::filesystem, whose
+    // root rules are POSIX, so joining one onto the config base would duplicate
+    // the prefix. A "device:" head is absolute here.
+    const std::string text = PathToUtf8(path);
+    const size_t colon = text.find(':');
+    bool device = colon != std::string::npos && colon > 1;
+    for (size_t i = 0; device && i < colon; ++i) {
+        const char c = text[i];
+        device = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                 (i > 0 && ((c >= '0' && c <= '9') || c == '_' || c == '-'));
+    }
+    if (device) {
+        return path.lexically_normal();
+    }
+#endif
     if (path.is_relative()) {
         path = base / path;
     }

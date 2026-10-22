@@ -285,9 +285,23 @@ static bool AtomicReplaceHostFile(const char* who, const std::filesystem::path& 
     return false;
 #else
     if (!NandRename(tempPath, targetPath)) {
-        LogNandError(who, "ERROR: rename('%s' -> '%s') failed",
-                HostPathText(tempPath).c_str(), HostPathText(targetPath).c_str());
+#if defined(MKW_PLATFORM_SWITCH)
+        // Horizon can refuse to rename over an existing file, so fall back to
+        // rewriting the target in place.
+        std::error_code copyEc;
+        if (!RuntimeNandPath::CopyFileBytes(tempPath, targetPath, copyEc)) {
+            LogNandError(who, "ERROR: fallback copy('%s' -> '%s') failed: %s",
+                    HostPathText(tempPath).c_str(), HostPathText(targetPath).c_str(),
+                    copyEc.message().c_str());
+            return false;
+        }
+        if (!NandRemove(tempPath)) {
+            LogNandWarning(who, "WARNING: could not remove scratch file '%s'",
+                    HostPathText(tempPath).c_str());
+        }
+#else
         return false;
+#endif
     }
     // Durably record the directory entry so the rename itself survives a crash.
     const std::string directory = targetPath.parent_path().string();
@@ -455,8 +469,12 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
     // The scratch file starts as a byte-for-byte copy of the original and the guest is
     // positioned at offset 0, so partial writes keep the bytes they never touch.
     std::error_code ec;
+#if defined(MKW_PLATFORM_SWITCH)
+    RuntimeNandPath::CopyFileBytes(hostPath, tempPath, ec);
+#else
     std::filesystem::copy_file(hostPath, tempPath,
                                std::filesystem::copy_options::overwrite_existing, ec);
+#endif
     if (ec) {
         LogNandError("NANDSafeOpen", "FAILED to seed scratch file '%s' from '%s': %s",
                 HostPathText(tempPath).c_str(), HostPathText(hostPath).c_str(),

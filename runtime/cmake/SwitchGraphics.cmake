@@ -67,7 +67,7 @@ foreach(_archive IN LISTS _mkw_mesa_archives)
 endforeach()
 
 set(_mkw_portlib_dir "$ENV{DEVKITPRO}/portlibs/switch/lib")
-foreach(_portlib libexpat.a libz.a libzstd.a)
+foreach(_portlib libexpat.a libz.a libzstd.a libdrm_nouveau.a)
     if (NOT EXISTS "${_mkw_portlib_dir}/${_portlib}")
         message(FATAL_ERROR "Switch portlib ${_portlib} not found in ${_mkw_portlib_dir}")
     endif()
@@ -77,4 +77,12 @@ add_library(mkw_switch_graphics INTERFACE IMPORTED)
 set_target_properties(mkw_switch_graphics PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${MKW_DAWN_SWITCH_BUILD}/gen/include;${MKW_DAWN_SWITCH_SOURCE}/include"
     INTERFACE_COMPILE_DEFINITIONS "VK_USE_PLATFORM_VI_NN"
-    INTERFACE_LINK_LIBRARIES "${MKW_DAWN_SWITCH_BUILD}/src/dawn/native/libwebgpu_dawn.a;-Wl,--start-group;${_mkw_mesa_paths};-Wl,--end-group;${_mkw_portlib_dir}/libexpat.a;${_mkw_portlib_dir}/libz.a;${_mkw_portlib_dir}/libzstd.a")
+    INTERFACE_LINK_LIBRARIES "${MKW_DAWN_SWITCH_BUILD}/src/dawn/native/libwebgpu_dawn.a;-Wl,--start-group;${_mkw_mesa_paths};${_mkw_portlib_dir}/libdrm_nouveau.a;-Wl,--end-group;${_mkw_portlib_dir}/libexpat.a;${_mkw_portlib_dir}/libz.a;${_mkw_portlib_dir}/libzstd.a")
+
+# Vulkan driver without Dawn: the product links system Dawn (same ref) via
+# aurora, so pulling the prebuilt webgpu_dawn.a again would duplicate every
+# Dawn symbol. This carries only the Mesa NVK group and its portlib deps.
+add_library(mkw_switch_nvk INTERFACE IMPORTED)
+set_target_properties(mkw_switch_nvk PROPERTIES
+    INTERFACE_COMPILE_DEFINITIONS "VK_USE_PLATFORM_VI_NN"
+    INTERFACE_LINK_LIBRARIES "-Wl,--start-group;${_mkw_mesa_paths};${_mkw_portlib_dir}/libdrm_nouveau.a;-Wl,--end-group;${_mkw_portlib_dir}/libexpat.a;${_mkw_portlib_dir}/libz.a;${_mkw_portlib_dir}/libzstd.a")

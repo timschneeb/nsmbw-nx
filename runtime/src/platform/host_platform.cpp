@@ -17,6 +17,10 @@
 #include <pwd.h>
 #endif
 
+#if defined(MKW_PLATFORM_SWITCH)
+#include <system_error>
+#endif
+
 namespace RuntimePlatform {
 
 std::optional<std::filesystem::path> ExecutableDirectory() noexcept {
@@ -55,8 +59,13 @@ std::optional<std::filesystem::path> ExecutableDirectory() noexcept {
     }
     return std::nullopt;
 #elif defined(MKW_PLATFORM_SWITCH)
-    // The NRO lives in its homebrew folder; the game folder and assets sit beside it.
-    return std::filesystem::path("sdmc:/switch/nsmbw");
+    // Horizon starts homebrew inside its own folder, so the current directory is the NRO's.
+    std::error_code ec;
+    const auto directory = std::filesystem::current_path(ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    return directory;
 #else
     return std::nullopt;
 #endif
@@ -87,7 +96,11 @@ std::filesystem::path ApplicationDataDirectory(std::string_view applicationName)
 #elif defined(MKW_PLATFORM_SWITCH)
     // The homebrew folder on the SD card already belongs to this game alone.
     (void)applicationName;
-    return std::filesystem::path("sdmc:/switch/nsmbw");
+    std::error_code ec;
+    const auto directory = std::filesystem::current_path(ec);
+    if (!ec) {
+        return directory;
+    }
 #endif
     return std::filesystem::current_path() / applicationName;
 }

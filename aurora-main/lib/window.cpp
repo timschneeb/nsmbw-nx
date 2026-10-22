@@ -389,7 +389,11 @@ bool create_window(AuroraBackend backend) {
 #ifdef AURORA_ENABLE_GX
 #ifdef DAWN_ENABLE_BACKEND_VULKAN
   case BACKEND_VULKAN:
+// The Switch SDL driver has no Vulkan hooks; Dawn builds the ViSurface from
+// NWindow directly, so the flag must stay off or window creation fails.
+#if !defined(__SWITCH__)
     flags |= SDL_WINDOW_VULKAN;
+#endif
     break;
 #endif
 #ifdef DAWN_ENABLE_BACKEND_METAL

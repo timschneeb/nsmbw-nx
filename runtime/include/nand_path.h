@@ -152,6 +152,62 @@ inline std::optional<std::filesystem::path> BootstrapPayloadPath() {
     return std::nullopt;
 }
 
+#if defined(MKW_PLATFORM_SWITCH)
+#include <cerrno>
+#include <cstdio>
+
+// std::filesystem::copy_file misreports on Horizon, so Switch copies go
+// through plain C I/O instead.
+inline bool CopyFileBytes(const std::filesystem::path& source,
+                          const std::filesystem::path& destination, std::error_code& ec) {
+    std::FILE* in = std::fopen(source.c_str(), "rb");
+    if (in == nullptr) {
+        ec = std::error_code(errno, std::generic_category());
+        return false;
+    }
+    std::FILE* out = std::fopen(destination.c_str(), "wb");
+    if (out == nullptr) {
+        ec = std::error_code(errno, std::generic_category());
+        std::fclose(in);
+        return false;
+    }
+    // Horizon's fread returns 0 at end of file without setting feof, so looping
+    // on feof spins forever. Track the expected size and stop on a short read.
+    std::fseek(in, 0, SEEK_END);
+    const long expected = std::ftell(in);
+    std::rewind(in);
+    char buffer[4096];
+    bool ok = true;
+    long total = 0;
+    while (true) {
+        const size_t count = std::fread(buffer, 1, sizeof(buffer), in);
+        if (count == 0) {
+            ok = expected < 0 || total == expected;
+            break;
+        }
+        if (std::fwrite(buffer, 1, count, out) != count) {
+            ok = false;
+            break;
+        }
+        total += static_cast<long>(count);
+    }
+    if (!ok) {
+        RT_LOG(RT_TAG_NAND) << "short copy " << total << "/" << expected << " "
+                            << RuntimeConfigFile::PathToUtf8(source) << std::endl;
+    }
+    if (std::fclose(out) != 0) {
+        ok = false;
+    }
+    std::fclose(in);
+    if (!ok) {
+        ec = std::error_code(errno != 0 ? errno : EIO, std::generic_category());
+    } else {
+        ec.clear();
+    }
+    return ok;
+}
+#endif
+
 inline bool CopyBootstrapFile(const std::filesystem::path& sourceRoot,
                               const std::filesystem::path& destinationRoot,
                               const std::filesystem::path& relativePath,
@@ -166,8 +222,13 @@ inline bool CopyBootstrapFile(const std::filesystem::path& sourceRoot,
     if (ec) {
         return false;
     }
+#if defined(MKW_PLATFORM_SWITCH)
+    // std::filesystem::copy_file is unreliable on Horizon, so copy manually.
+    return CopyFileBytes(source, destination, ec);
+#else
     std::filesystem::copy_file(source, destination, std::filesystem::copy_options::none, ec);
     return !ec;
+#endif
 }
 
 // Create these WC24 files only for a new profile; never overwrite user data.
@@ -197,10 +258,11 @@ inline bool SeedMissingBootstrapFiles(const std::filesystem::path& root) {
         ec.clear();
         if (!CopyBootstrapFile(*payload, root, relativePath, ec)) {
             RT_LOG(RT_TAG_NAND) << "could not create "
-                                << RuntimeConfigFile::PathToUtf8(root / relativePath)
-                                << std::endl;
+                                << RuntimeConfigFile::PathToUtf8(root / relativePath) << " ("
+                                << ec.message() << ")" << std::endl;
             return false;
         }
+        RT_LOG(RT_TAG_NAND) << "seeded " << file << std::endl;
     }
     return true;
 }

@@ -60,6 +60,8 @@ set(MKW_SWITCH_ARCH_FLAGS
     CACHE STRING "Tegra X1 arch flags")
 
 add_compile_options(${MKW_SWITCH_ARCH_FLAGS})
+# Keep x29 a frame pointer so the fatal-log host stack walk can unwind.
+add_compile_options("-fno-omit-frame-pointer")
 add_compile_options("-I${MKW_LIBNX}/include")
 add_link_options(${MKW_SWITCH_ARCH_FLAGS})
 add_link_options("-L${MKW_LIBNX}/lib")
