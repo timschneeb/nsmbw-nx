@@ -180,7 +180,12 @@ std::atomic_bool g_bootShadersReady = false;
 bool g_bootShaderNotice = false;
 Clock::time_point g_bootShaderWaitStart{};
 constexpr uint32_t kBootShaderNoticeThreshold = 100;
-constexpr auto kBootShaderWaitLimit = std::chrono::minutes(3);
+// The queue must stay empty this long before the guest is released, so a momentary dip
+// between prewarm and first-frame work cannot dismiss the screen early.
+constexpr auto kBootShaderDrainSettle = std::chrono::milliseconds(1500);
+// Safety valve only: the guest is gated on the pipelines, so this guards a wedged worker.
+constexpr auto kBootShaderWaitLimit = std::chrono::minutes(10);
+Clock::time_point g_bootShaderDrainStart{};
 
 // Render heights: 1x is 480 lines in every aspect (DisplaySettings), the width follows the aspect.
 constexpr std::array<ResolutionItem, 10> kResolutions = {{
@@ -1447,7 +1452,14 @@ void UpdateBootShaderState() {
     }
     const uint32_t queued = aurora_get_queued_pipeline_count();
     g_bootShaderNotice |= queued > kBootShaderNoticeThreshold;
-    if (queued == 0 || now - g_bootShaderWaitStart > kBootShaderWaitLimit) {
+    if (aurora_boot_pipelines_pending()) {
+        g_bootShaderDrainStart = {};
+    } else if (g_bootShaderDrainStart == Clock::time_point{}) {
+        g_bootShaderDrainStart = now;
+    }
+    const bool drained = g_bootShaderDrainStart != Clock::time_point{} &&
+                         now - g_bootShaderDrainStart > kBootShaderDrainSettle;
+    if (drained || now - g_bootShaderWaitStart > kBootShaderWaitLimit) {
         g_bootShadersReady.store(true, std::memory_order_release);
     }
 }
@@ -1667,6 +1679,7 @@ void InitializeRuntimeSettings() noexcept {
     g_bootShadersReady.store(false, std::memory_order_relaxed);
     g_bootShaderNotice = false;
     g_bootShaderWaitStart = {};
+    g_bootShaderDrainStart = {};
     PADBlockInput(false);
     InputBindings::SetInputBlocked(false);
 }
@@ -1900,6 +1913,8 @@ void Draw() noexcept {
     ApplyInputBlockState();
     DrawStartupScreen();
 }
+
+bool BootShadersPending() noexcept { return !g_bootShadersReady.load(std::memory_order_acquire); }
 
 bool StartupScreenVisible() noexcept {
     return !g_strapInputAccepted.load(std::memory_order_acquire) ||

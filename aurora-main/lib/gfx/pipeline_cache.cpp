@@ -10,6 +10,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <limits>
@@ -30,6 +32,9 @@ static Module Log("aurora::gfx::pipeline_cache");
 constexpr int PipelineCacheSchema = 1;
 constexpr const char* InitialPipelineCacheName = "initial_pipeline_cache.db";
 constexpr const char* SdlVfsName = "aurora_pipeline_cache_sdl_vfs";
+// Also used by the Dawn cache in lib/webgpu/gpu_cache.cpp: the default newlib VFS cannot
+// create files on Horizon, so every writable cache has to go through the SDL one.
+const char* sdl_vfs_name() { return SdlVfsName; }
 
 struct CachedPipeline {
   wgpu::RenderPipeline pipeline;
@@ -52,7 +57,10 @@ struct PipelineCacheWrite {
 
 struct SdlVfsSqliteFile {
   sqlite3_file base;
-  SDL_IOStream* io = nullptr;
+  // Plain stdio: SDL_IOStream writes were rejected by the SD card path, while newlib stdio
+  // is what every other file write in this port already uses successfully.
+  std::FILE* io = nullptr;
+  char path[512] = {};
 };
 
 static std::mutex g_pipelineMutex;
@@ -109,7 +117,7 @@ static sqlite3_vfs* default_vfs(sqlite3_vfs* vfs) {
 static int sdl_vfs_close(sqlite3_file* file) {
   auto* vfsFile = sdl_vfs_file(file);
   if (vfsFile->io != nullptr) {
-    SDL_CloseIO(vfsFile->io);
+    std::fclose(vfsFile->io);
     vfsFile->io = nullptr;
   }
   return SQLITE_OK;
@@ -120,46 +128,80 @@ static int sdl_vfs_read(sqlite3_file* file, void* buffer, int amount, sqlite3_in
   if (vfsFile->io == nullptr || offset < 0 || amount < 0) {
     return SQLITE_IOERR_READ;
   }
-  if (SDL_SeekIO(vfsFile->io, offset, SDL_IO_SEEK_SET) < 0) {
+  if (std::fseek(vfsFile->io, static_cast<long>(offset), SEEK_SET) != 0) {
     return SQLITE_IOERR_SEEK;
   }
 
   auto* dst = static_cast<uint8_t*>(buffer);
-  int total = 0;
-  while (total < amount) {
-    const size_t read = SDL_ReadIO(vfsFile->io, dst + total, static_cast<size_t>(amount - total));
-    if (read == 0) {
-      if (SDL_GetIOStatus(vfsFile->io) == SDL_IO_STATUS_EOF) {
-        std::memset(dst + total, 0, static_cast<size_t>(amount - total));
-        return SQLITE_IOERR_SHORT_READ;
-      }
-      return SQLITE_IOERR_READ;
-    }
-    if (read > static_cast<size_t>(std::numeric_limits<int>::max() - total)) {
-      return SQLITE_IOERR_READ;
-    }
-    total += static_cast<int>(read);
+  const size_t read = std::fread(dst, 1, static_cast<size_t>(amount), vfsFile->io);
+  if (read == static_cast<size_t>(amount)) {
+    return SQLITE_OK;
+  }
+  // Horizon's fread returns 0 at end of file without setting feof, so a short read is the
+  // only end-of-file signal. Zero the tail and report a short read.
+  std::memset(dst + read, 0, static_cast<size_t>(amount) - read);
+  return SQLITE_IOERR_SHORT_READ;
+}
+
+static int sdl_vfs_write(sqlite3_file* file, const void* buffer, int amount, sqlite3_int64 offset) {
+  auto* vfsFile = sdl_vfs_file(file);
+  if (vfsFile->io == nullptr || offset < 0 || amount < 0) {
+    return SQLITE_IOERR_WRITE;
+  }
+  if (std::fseek(vfsFile->io, static_cast<long>(offset), SEEK_SET) != 0) {
+    return SQLITE_IOERR_SEEK;
+  }
+  const size_t written = std::fwrite(buffer, 1, static_cast<size_t>(amount), vfsFile->io);
+  if (written != static_cast<size_t>(amount)) {
+    return SQLITE_IOERR_WRITE;
   }
   return SQLITE_OK;
 }
 
-static int sdl_vfs_write(sqlite3_file*, const void*, int, sqlite3_int64) { return SQLITE_READONLY; }
+static int sdl_vfs_truncate(sqlite3_file* file, sqlite3_int64 size) {
+  auto* vfsFile = sdl_vfs_file(file);
+  if (vfsFile->io == nullptr || size < 0 || vfsFile->path[0] == '\0') {
+    return SQLITE_IOERR_TRUNCATE;
+  }
+  // Horizon has no ftruncate on a stdio stream, but the path is known, so resize behind it
+  // after flushing the buffered write.
+  std::fflush(vfsFile->io);
+  std::error_code ec;
+  std::filesystem::resize_file(vfsFile->path, static_cast<std::uintmax_t>(size), ec);
+  if (ec) {
+    return SQLITE_IOERR_TRUNCATE;
+  }
+  std::fseek(vfsFile->io, static_cast<long>(size), SEEK_SET);
+  return SQLITE_OK;
+}
 
-static int sdl_vfs_truncate(sqlite3_file*, sqlite3_int64) { return SQLITE_READONLY; }
-
-static int sdl_vfs_sync(sqlite3_file*, int) { return SQLITE_OK; }
+static int sdl_vfs_sync(sqlite3_file* file, int) {
+  auto* vfsFile = sdl_vfs_file(file);
+  if (vfsFile->io == nullptr) {
+    return SQLITE_IOERR_FSYNC;
+  }
+  // Without the flush the buffered bytes are invisible to size queries and to a reopen.
+  return std::fflush(vfsFile->io) == 0 ? SQLITE_OK : SQLITE_IOERR_FSYNC;
+}
 
 static int sdl_vfs_file_size(sqlite3_file* file, sqlite3_int64* size) {
   auto* vfsFile = sdl_vfs_file(file);
   if (vfsFile->io == nullptr || size == nullptr) {
     return SQLITE_IOERR_FSTAT;
   }
-
-  const auto ioSize = SDL_GetIOSize(vfsFile->io);
-  if (ioSize < 0) {
+  std::fflush(vfsFile->io);
+  const long previous = std::ftell(vfsFile->io);
+  if (std::fseek(vfsFile->io, 0, SEEK_END) != 0) {
     return SQLITE_IOERR_FSTAT;
   }
-  *size = static_cast<sqlite3_int64>(ioSize);
+  const long end = std::ftell(vfsFile->io);
+  if (end < 0) {
+    return SQLITE_IOERR_FSTAT;
+  }
+  if (previous >= 0) {
+    std::fseek(vfsFile->io, previous, SEEK_SET);
+  }
+  *size = static_cast<sqlite3_int64>(end);
   return SQLITE_OK;
 }
 
@@ -192,7 +234,7 @@ static int sdl_vfs_file_control(sqlite3_file*, int op, void* arg) {
 static int sdl_vfs_sector_size(sqlite3_file*) { return 4096; }
 
 static int sdl_vfs_device_characteristics(sqlite3_file*) {
-  return SQLITE_IOCAP_IMMUTABLE | SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN;
+  return SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN;
 }
 
 static constexpr sqlite3_io_methods SdlVfsIoMethods{
@@ -215,38 +257,61 @@ static int sdl_vfs_open(sqlite3_vfs*, sqlite3_filename name, sqlite3_file* file,
   auto* vfsFile = sdl_vfs_file(file);
   vfsFile->base.pMethods = nullptr;
   vfsFile->io = nullptr;
+  vfsFile->path[0] = '\0';
 
-  if (name == nullptr || (flags & SQLITE_OPEN_READWRITE) != 0 || (flags & SQLITE_OPEN_READONLY) == 0) {
+  if (name == nullptr) {
     return SQLITE_CANTOPEN;
   }
 
-  vfsFile->io = SDL_IOFromFile(name, "rb");
+  const bool writable = (flags & SQLITE_OPEN_READWRITE) != 0 || (flags & SQLITE_OPEN_CREATE) != 0;
+  // SDL has no "create without truncating" mode and Horizon's filesystem predicates are
+  // unreliable, so try the non-truncating mode first and only fall back to "w+b" when the
+  // file genuinely is not there yet.
+  vfsFile->io = writable ? std::fopen(name, "r+b") : std::fopen(name, "rb");
+  if (vfsFile->io == nullptr && writable) {
+    vfsFile->io = std::fopen(name, "w+b");
+  }
   if (vfsFile->io == nullptr) {
     return SQLITE_CANTOPEN;
   }
 
+  const size_t nameLength = std::strlen(name);
+  if (nameLength >= sizeof(vfsFile->path)) {
+    std::fclose(vfsFile->io);
+    vfsFile->io = nullptr;
+    return SQLITE_CANTOPEN;
+  }
+  std::memcpy(vfsFile->path, name, nameLength + 1);
+
   vfsFile->base.pMethods = &SdlVfsIoMethods;
   if (outFlags != nullptr) {
-    *outFlags = SQLITE_OPEN_READONLY;
+    *outFlags = writable ? SQLITE_OPEN_READWRITE : SQLITE_OPEN_READONLY;
   }
   return SQLITE_OK;
 }
 
-static int sdl_vfs_delete(sqlite3_vfs*, const char*, int) { return SQLITE_READONLY; }
+static int sdl_vfs_delete(sqlite3_vfs*, const char* name, int) {
+  if (name == nullptr) {
+    return SQLITE_IOERR_DELETE;
+  }
+  std::error_code ec;
+  std::filesystem::remove(std::filesystem::path{name}, ec);
+  return ec ? SQLITE_IOERR_DELETE : SQLITE_OK;
+}
 
 static int sdl_vfs_access(sqlite3_vfs*, const char* name, int flags, int* result) {
   if (result == nullptr) {
     return SQLITE_IOERR_ACCESS;
   }
-  if (name == nullptr || flags == SQLITE_ACCESS_READWRITE) {
+  if (name == nullptr) {
     *result = 0;
     return SQLITE_OK;
   }
 
-  auto* io = SDL_IOFromFile(name, "rb");
+  std::FILE* io = std::fopen(name, flags == SQLITE_ACCESS_EXISTS ? "rb" : "r+b");
   *result = io != nullptr ? 1 : 0;
   if (io != nullptr) {
-    SDL_CloseIO(io);
+    std::fclose(io);
   }
   return SQLITE_OK;
 }
@@ -300,7 +365,7 @@ static int sdl_vfs_current_time(sqlite3_vfs* vfs, double* time) {
 
 static int sdl_vfs_get_last_error(sqlite3_vfs*, int, char*) { return SQLITE_OK; }
 
-static bool register_sdl_vfs() {
+bool register_sdl_vfs() {
   static std::once_flag registerOnce;
   std::call_once(registerOnce, [] {
     auto* baseVfs = sqlite3_vfs_find(nullptr);
@@ -722,14 +787,21 @@ static bool prepare_pipeline_cache_db() {
   }
 
   const auto path = fs_path_to_string(fs_path_from_string(g_config.pipelineCachePath) / "pipeline_cache.db");
-  auto ret = sqlite3_open(path.c_str(), &g_pipelineCacheDb);
+  if (!register_sdl_vfs()) {
+    Log.error("Failed to register the pipeline cache VFS");
+    pipeline_cache_abort();
+    return false;
+  }
+  auto ret = sqlite3_open_v2(path.c_str(), &g_pipelineCacheDb,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, sdl_vfs_name());
   if (ret != SQLITE_OK) {
     Log.error("Failed to open pipeline cache database: {}", sqlite3_errmsg(g_pipelineCacheDb));
     pipeline_cache_abort();
     return false;
   }
 
-  ret = sqlite::exec(g_pipelineCacheDb, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+  // WAL needs mmap-backed shared memory, which Horizon does not provide.
+  ret = sqlite::exec(g_pipelineCacheDb, "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=NORMAL;");
   if (ret != SQLITE_OK) {
     Log.error("Failed to set pipeline cache pragmas: {}", sqlite3_errmsg(g_pipelineCacheDb));
     pipeline_cache_abort();
@@ -1241,6 +1313,11 @@ void set_skip_unready_pipelines(bool enabled) noexcept {
 
 bool skip_unready_pipelines() noexcept { return g_skipUnreadyGxPipelines.load(std::memory_order_relaxed); }
 
+bool boot_pipelines_pending() noexcept {
+  return g_prewarmActive.load(std::memory_order_relaxed) ||
+         queuedPipelines.load(std::memory_order_relaxed) > 0;
+}
+
 uint32_t queued_pipeline_count() noexcept {
 #if defined(__cpp_lib_atomic_ref)
   return queuedPipelines.load(std::memory_order_relaxed);
@@ -1305,3 +1382,5 @@ void aurora_set_skip_unready_pipelines(const bool enabled) { aurora::gfx::set_sk
 bool aurora_get_skip_unready_pipelines() { return aurora::gfx::skip_unready_pipelines(); }
 
 uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipeline_count(); }
+
+bool aurora_boot_pipelines_pending() { return aurora::gfx::boot_pipelines_pending(); }

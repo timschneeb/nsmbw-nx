@@ -1477,7 +1477,8 @@ extern "C" void VIWaitForRetrace_HLE_801b99ec(CpuContext* ctx)
             {
                 std::lock_guard<std::mutex> lock(g_viMutex);
                 EnsureInitializedLocked();
-                if (g_vi.retraceCount != retraceCount) {
+                // Hold the guest at the boot screen until the pipeline prewarm is done.
+                if (g_vi.retraceCount != retraceCount && !settings_overlay::BootShadersPending()) {
                     break;
                 }
             }

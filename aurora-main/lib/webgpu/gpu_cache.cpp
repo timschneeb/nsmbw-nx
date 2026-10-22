@@ -20,6 +20,12 @@
 #define XXH_STATIC_LINKING_ONLY
 #include <xxhash.h>
 
+namespace aurora::gfx {
+// Defined in lib/gfx/pipeline_cache.cpp; the writable SDL-backed sqlite VFS.
+const char* sdl_vfs_name();
+bool register_sdl_vfs();
+}  // namespace aurora::gfx
+
 namespace aurora::webgpu {
 static Module Log("aurora::gpu::cache");
 
@@ -141,14 +147,16 @@ static bool cache_init_core() {
   const auto path = fs_path_from_string(g_config.cachePath) / "dawn_cache.db";
   std::string file = fs_path_to_string(path);
   Log.debug("Using dawn cache at {}", file);
-  auto ret = sqlite3_open(file.c_str(), &db);
+  aurora::gfx::register_sdl_vfs();
+  auto ret = sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                             aurora::gfx::sdl_vfs_name());
   if (ret != SQLITE_OK) {
     Log.error("Failed to open database: {}", sqlite3_errmsg(db));
     return false;
   }
 
-  // WAL mode + NORMAL = no need for disk syncs, consistent but not durable is fine.
-  ret = sqlite::exec(db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+  // MEMORY journal: WAL needs mmap-backed shared memory, which Horizon does not provide.
+  ret = sqlite::exec(db, "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=NORMAL;");
   if (ret != SQLITE_OK) {
     Log.error("Failed to set pragmas: {}", sqlite3_errmsg(db));
     return false;
@@ -172,12 +180,14 @@ static bool cache_init_core() {
     auto shm = path;
     shm += "-shm";
     std::filesystem::remove(shm, ec);
-    ret = sqlite3_open(file.c_str(), &db);
+    aurora::gfx::register_sdl_vfs();
+    ret = sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                          aurora::gfx::sdl_vfs_name());
     if (ret != SQLITE_OK) {
       Log.error("Failed to recreate database: {}", sqlite3_errmsg(db));
       return false;
     }
-    ret = sqlite::exec(db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+    ret = sqlite::exec(db, "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=NORMAL;");
     if (ret != SQLITE_OK) {
       Log.error("Failed to set pragmas: {}", sqlite3_errmsg(db));
       return false;

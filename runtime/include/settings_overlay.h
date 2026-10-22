@@ -10,6 +10,8 @@ void InitializeRuntimeSettings() noexcept;
 void HandleEvents(const AuroraEvent* events) noexcept;
 void Draw() noexcept;
 bool StartupScreenVisible() noexcept;
+// True while boot pipelines are still compiling, so the guest may not run yet.
+bool BootShadersPending() noexcept;
 void NotifyStrapInputAccepted() noexcept;
 void AdvancePresentedFrame() noexcept;
 // Put host controllers back to a neutral state before the process ends.
