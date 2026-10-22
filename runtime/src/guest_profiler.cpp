@@ -12,6 +12,7 @@
 #include "runtime_log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +27,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 #elif defined(__linux__)
 #include <atomic>
 #include <dlfcn.h>
@@ -61,6 +63,28 @@ const char* GuestName(uint32_t address) {
     return it != end && *it == address ? kGuestMapSymbolNames[it - begin] : "";
 }
 #endif
+
+// The last present, for NSMBW_PROFILE_HITCH.
+std::atomic<int64_t> g_lastPresentNanos{0};
+
+int64_t NowNanos() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// NSMBW_PROFILE_HITCH=<ms>: the threshold (in ns) past which no present means a hitch, else 0.
+int64_t HitchNanos() {
+    static const int64_t nanos = [] {
+        const char* value = std::getenv("NSMBW_PROFILE_HITCH");
+        return value != nullptr ? static_cast<int64_t>(std::atof(value) * 1e6) : int64_t{0};
+    }();
+    return nanos;
+}
+
+bool InHitch() {
+    const int64_t last = g_lastPresentNanos.load(std::memory_order_relaxed);
+    return last != 0 && NowNanos() - last >= HitchNanos();
+}
 
 #ifdef _WIN32
 void Report(const std::unordered_map<uintptr_t, uint32_t>& samples, const std::vector<std::vector<uintptr_t>>& stacks,
@@ -180,9 +204,16 @@ void Report(const std::unordered_map<uintptr_t, uint32_t>& samples, const std::v
 
 void Run(HANDLE thread, double startSeconds, double lengthSeconds) {
     std::this_thread::sleep_for(std::chrono::duration<double>(startSeconds));
+    // NSMBW_PROFILE_HITCH=<ms>: keep only the samples taken while no frame has been presented for that
+    // long, so the report shows what the game thread does during a hitch rather than on average.
+    const int64_t hitchNanos = HitchNanos();
     std::unordered_map<uintptr_t, uint32_t> samples;
     std::vector<std::vector<uintptr_t>> stacks;
     uint32_t total = 0;
+    // The sampler's own late wake-ups: when this thread misses its 1 ms tick by a lot too, the whole
+    // process was off the CPU (another process, paging), not just the game thread.
+    uint32_t lateTicks = 0;
+    double lateMs = 0, worstLateMs = 0;
     auto next = std::chrono::steady_clock::now();
     const auto end = next + std::chrono::duration<double>(lengthSeconds);
     while (std::chrono::steady_clock::now() < end) {
@@ -190,6 +221,17 @@ void Run(HANDLE thread, double startSeconds, double lengthSeconds) {
         next += std::chrono::microseconds(1000);
         while (std::chrono::steady_clock::now() < next) {
             std::this_thread::yield();
+        }
+        const auto woke = std::chrono::steady_clock::now();
+        const double late = std::chrono::duration<double, std::milli>(woke - next).count();
+        if (late > 5.0) {
+            ++lateTicks;
+            lateMs += late;
+            worstLateMs = std::max(worstLateMs, late);
+            next = woke;
+        }
+        if (hitchNanos > 0 && !InHitch()) {
+            continue;
         }
         if (SuspendThread(thread) != static_cast<DWORD>(-1)) {
             CONTEXT context{};
@@ -218,7 +260,11 @@ void Run(HANDLE thread, double startSeconds, double lengthSeconds) {
             ResumeThread(thread);
         }
     }
-    Report(samples, stacks, total);
+    RT_LOGF(RT_TAG_RUNTIME, "profile: sampler woke over 5 ms late %u times (%.0f ms in all, worst %.1f ms)%s\n",
+            lateTicks, lateMs, worstLateMs, hitchNanos > 0 ? "; only samples during hitches kept" : "");
+    if (total > 0) {
+        Report(samples, stacks, total);
+    }
 }
 
 #endif
@@ -444,6 +490,9 @@ void RunLinux(pid_t thread, double startSeconds, double lengthSeconds) {
     while (next < end) {
         next += std::chrono::microseconds(1000);
         std::this_thread::sleep_until(next);
+        if (HitchNanos() > 0 && !InHitch()) {
+            continue;  // NSMBW_PROFILE_HITCH: only while no frame has been presented for that long
+        }
         syscall(SYS_tgkill, getpid(), thread, SIGPROF);
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -463,8 +512,33 @@ void NoteScene(unsigned scene) {
 #endif
 }
 
+unsigned ProcessPageFaults() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS counters{};
+    counters.cb = sizeof(counters);
+    return K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)) ? counters.PageFaultCount : 0;
+#else
+    return 0;
+#endif
+}
+
+void ThreadCpuMs(double* user, double* kernel) {
+    *user = *kernel = 0;
+#ifdef _WIN32
+    FILETIME created, exited, kernelTime, userTime;
+    if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernelTime, &userTime)) {
+        const auto ms = [](const FILETIME& t) {
+            return ((static_cast<uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime) / 1e4;
+        };
+        *user = ms(userTime);
+        *kernel = ms(kernelTime);
+    }
+#endif
+}
+
 void OnFramePresented() {
 #if defined(_WIN32) || defined(__linux__)
+    g_lastPresentNanos.store(NowNanos(), std::memory_order_relaxed);
     static bool started = false;
     if (started) {
         return;
