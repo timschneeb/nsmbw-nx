@@ -14,6 +14,7 @@ namespace {
 
 ThreadState g_threads[RoleCount];
 double g_nanosPerTick = -1.0;
+uint64_t g_gxFifoNanos = 0, g_gxFifoBytes = 0, g_gxFifoCalls = 0;
 
 const char* RoleName(int role) {
     return role == RoleAudio ? "audio mixer" : "guest";
@@ -25,7 +26,9 @@ const char* RoleName(int role) {
 // system clock advanced while it was spinning.
 void CalibrateTickUnit() {
     u64 before = 0;
-    if (R_FAILED(svcGetInfo(&before, InfoType_ThreadTickCount, threadGetCurHandle(), 0))) {
+    Result rc = svcGetInfo(&before, InfoType_ThreadTickCount, threadGetCurHandle(), TickCountInfo_Total);
+    if (R_FAILED(rc)) {
+        RT_LOGF(RT_TAG_RUNTIME, "stats: thread tick count unavailable (0x%08x)\n", rc);
         return;
     }
     const u64 wallStart = armGetSystemTick();
@@ -34,14 +37,21 @@ void CalibrateTickUnit() {
     }
     const u64 wall = armGetSystemTick() - wallStart;
     u64 after = 0;
-    if (R_FAILED(svcGetInfo(&after, InfoType_ThreadTickCount, threadGetCurHandle(), 0))) {
-        return;
-    }
+    rc = svcGetInfo(&after, InfoType_ThreadTickCount, threadGetCurHandle(), TickCountInfo_Total);
     const u64 delta = after - before;
-    if (delta == 0 || wall == 0) {
+    if (R_FAILED(rc) || delta == 0 || wall == 0) {
+        RT_LOGF(RT_TAG_RUNTIME, "stats: thread tick count did not advance (0x%08x, %llu ticks, %llu sys)\n",
+                rc, static_cast<unsigned long long>(delta),
+                static_cast<unsigned long long>(wall));
         return;
     }
-    g_nanosPerTick = delta > wall / 2 ? 1.0 : 1e9 / static_cast<double>(armGetSystemTickFreq());
+    // The thread was spinning for the whole wall interval, so its cpu time equals
+    // the wall time and the unit follows from the tick delta.
+    const double wallNs = static_cast<double>(wall) * 1e9 / static_cast<double>(armGetSystemTickFreq());
+    g_nanosPerTick = wallNs / static_cast<double>(delta);
+    RT_LOGF(RT_TAG_RUNTIME, "stats: thread ticks %llu in %llu system ticks (%.3f ns each)\n",
+            static_cast<unsigned long long>(delta), static_cast<unsigned long long>(wall),
+            g_nanosPerTick);
 }
 #endif
 
@@ -111,18 +121,31 @@ void Pin(int role) {
 #endif
 }
 
+void AddGxFifo(uint64_t nanos, uint64_t bytes) {
+    g_gxFifoNanos += nanos;
+    g_gxFifoBytes += bytes;
+    ++g_gxFifoCalls;
+}
+
+void TakeGxFifo(uint64_t& nanos, uint64_t& bytes, uint64_t& calls) {
+    nanos = g_gxFifoNanos;
+    bytes = g_gxFifoBytes;
+    calls = g_gxFifoCalls;
+    g_gxFifoNanos = g_gxFifoBytes = g_gxFifoCalls = 0;
+}
+
 void Publish(int role) {
 #if defined(MKW_PLATFORM_SWITCH)
+    g_threads[role].core.store(svcGetCurrentProcessorNumber(), std::memory_order_relaxed);
     if (g_nanosPerTick < 0.0) {
         return;
     }
     u64 ticks = 0;
-    if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, threadGetCurHandle(), 0))) {
+    if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, threadGetCurHandle(), TickCountInfo_Total))) {
         return;
     }
     g_threads[role].cpuNanos.store(static_cast<uint64_t>(static_cast<double>(ticks) * g_nanosPerTick),
                                    std::memory_order_relaxed);
-    g_threads[role].core.store(svcGetCurrentProcessorNumber(), std::memory_order_relaxed);
 #endif
 }
 

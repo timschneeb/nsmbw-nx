@@ -51,4 +51,9 @@ void ApplyConfig();
 // Pins the calling thread when [debug] affinity is on.
 void Pin(int role);
 
+// Guest-thread GX FIFO translation cost, accumulated by gx_fifo.cpp and read
+// from the same thread by the stats line.
+void AddGxFifo(uint64_t nanos, uint64_t bytes);
+void TakeGxFifo(uint64_t& nanos, uint64_t& bytes, uint64_t& calls);
+
 }  // namespace PerfStats

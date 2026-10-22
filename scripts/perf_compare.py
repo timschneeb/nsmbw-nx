@@ -2,12 +2,12 @@
 """Pull the newest perf.csv from the console and diff it against a baseline.
 
 The game appends one row per two second window to
-switch:/nsmbw/WiiCompiled/Logs/<run>/perf.csv when [debug] stats is on.
+switch:/nsmbw/WiiCompiled/Logs/perf.csv when [debug] stats is on.
 
 Usage:
-  perf_compare.py --save --label 1-1          record a baseline
-  perf_compare.py --label 1-1                 compare against it
-  perf_compare.py --csv perf.csv --label 1-1  compare a local file
+  perf_compare.py --save --label 1-1 --scene 0x005         record a baseline
+  perf_compare.py --label 1-1 --scene 0x005                compare against it
+  perf_compare.py --csv perf.csv --label 1-1              compare a local file
 """
 
 import argparse
@@ -30,29 +30,23 @@ def newest_csv(host, port, timeout):
     ftp.login()
     ftp.cwd("/")
     ftp.cwd(REMOTE)
-    runs = sorted(name.split("/")[-1] for name in ftp.nlst())
-    for run in reversed(runs):
-        try:
-            ftp.cwd("/")
-            ftp.cwd(f"{REMOTE}/{run}")
-            buffer = io.BytesIO()
-            ftp.retrbinary("RETR perf.csv", buffer.write)
-            ftp.quit()
-            return run, buffer.getvalue().decode("utf-8", "replace")
-        except ftplib.error_perm:
-            continue
+    buffer = io.BytesIO()
+    ftp.retrbinary("RETR perf.csv", buffer.write)
     ftp.quit()
-    raise SystemExit("no perf.csv on the console, run with [debug] stats = \"light\"")
+    return REMOTE, buffer.getvalue().decode("utf-8", "replace")
 
 
-def summarize(text):
+def summarize(text, scene=None):
     rows = list(csv.DictReader(io.StringIO(text)))
+    if scene is not None:
+        rows = [row for row in rows if int(row["scene"], 16) == scene]
     if not rows:
-        raise SystemExit("perf.csv is empty")
+        raise SystemExit("perf.csv is empty for this scene")
     fps = [float(row["fps"]) for row in rows]
     p50 = [float(row["p50"]) for row in rows]
     p95 = [float(row["p95"]) for row in rows]
     guest = [float(row["guest_ms"]) for row in rows if float(row["guest_ms"]) > 0]
+    gxfifo = [float(row.get("gxfifo_ms") or 0.0) for row in rows]
     return {
         "build": rows[-1]["build"],
         "rows": len(rows),
@@ -61,6 +55,7 @@ def summarize(text):
         "p95": round(statistics.median(p95), 2),
         "worst": round(max(float(row["worst"]) for row in rows), 2),
         "guest_ms": round(statistics.median(guest), 2) if guest else 0.0,
+        "gxfifo_ms": round(statistics.median(gxfifo), 2),
     }
 
 
@@ -76,6 +71,7 @@ def main():
     parser.add_argument("--port", type=int, default=5001)
     parser.add_argument("--label", default="default", help="benchmark scene name")
     parser.add_argument("--csv", type=Path, help="local perf.csv instead of FTP")
+    parser.add_argument("--scene", help="only this scene id, e.g. 0x005")
     parser.add_argument("--save", action="store_true", help="store this run as the baseline")
     parser.add_argument("--baseline", type=Path, default=BASELINE)
     parser.add_argument("--fps-drop", type=float, default=2.0, help="fail above this fps drop in percent")
@@ -87,7 +83,8 @@ def main():
     else:
         run, text = newest_csv(args.host, args.port, 40)
 
-    result = summarize(text)
+    scene = int(args.scene, 16) if args.scene else None
+    result = summarize(text, scene)
     baselines = load_baselines(args.baseline)
 
     if args.save:
@@ -106,7 +103,7 @@ def main():
     p95_rise = (result["p95"] - base["p95"]) / base["p95"] * 100.0 if base["p95"] else 0.0
     print(f"run {run}")
     print(f"{'metric':>10} {'baseline':>10} {'now':>10} {'delta':>10}")
-    for key in ("fps", "p50", "p95", "worst", "guest_ms"):
+    for key in ("fps", "p50", "p95", "worst", "guest_ms", "gxfifo_ms"):
         delta = result[key] - base[key]
         print(f"{key:>10} {base[key]:>10.2f} {result[key]:>10.2f} {delta:>+10.2f}")
     print(f"fps drop {fps_drop:+.1f}% (limit {args.fps_drop}%), p95 rise {p95_rise:+.1f}% (limit {args.p95_rise}%)")

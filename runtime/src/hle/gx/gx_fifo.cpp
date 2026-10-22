@@ -2,6 +2,9 @@
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
+#include "perf_stats.h"
+
+#include <chrono>
 
 // Opcode constants and the stream helpers this file shares with gx_dl.cpp /
 // gx_vertex.cpp; see gx_stream_common.h.
@@ -9,6 +12,29 @@ using namespace GxCmd;
 using namespace GxStream;
 
 HleGxState g_hleGxState;
+
+namespace {
+// Attributes the guest-thread FIFO translation cost to the stats line. Two
+// clock reads per write, so light mode stays comparable across builds.
+struct HleFifoStatScope {
+    std::chrono::steady_clock::time_point start;
+    uint32_t bytes;
+
+    explicit HleFifoStatScope(uint32_t sizeBytes)
+        : start(PerfStats::Enabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}),
+          bytes(sizeBytes) {}
+
+    ~HleFifoStatScope() {
+        if (!PerfStats::Enabled()) {
+            return;
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now() - start)
+                                 .count();
+        PerfStats::AddGxFifo(static_cast<uint64_t>(elapsed), bytes);
+    }
+};
+}  // namespace
 
 namespace aurora::gx::fifo {
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
@@ -346,6 +372,7 @@ void SubmitAttribute(GXAttr attr, float* comps, const VtxAttrFmt& fmt, const u32
 // `val` is a raw big-endian bit pattern: the FIFO stream is type-agnostic, and
 // the float entry point converts before it gets here.
 void HleFifoWrite(u32 val, uint32_t sizeBytes) {
+    const HleFifoStatScope statScope(sizeBytes);
     const bool recordOnly = IsDisplayListActive();
     if (recordOnly) {
         WriteDisplayListData(val, sizeBytes);

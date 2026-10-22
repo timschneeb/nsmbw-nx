@@ -861,10 +861,10 @@ static double PercentileMs(std::vector<double> values, double fraction) {
     return values[index];
 }
 
-// One CSV row per two second window so a run can be diffed by tools/perf_compare.py.
+// One CSV row per two second window so a run can be diffed by scripts/perf_compare.py.
 static void AppendPerfCsv(uint32_t scene, int frames, double fps, double p50, double p95, double p99, double worst,
-                          double gameMs, double gxMs, double guestMs, double audioMs, int guestCore, int audioCore,
-                          int over20) {
+                          double gameMs, double gxMs, double guestMs, double audioMs, double gxFifoMs, double gxFifoWrites,
+                          int guestCore, int audioCore, int over20) {
     const auto path = RuntimeConfigFile::ApplicationDataDirectory() / "Logs" / "perf.csv";
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
@@ -882,13 +882,15 @@ static void AppendPerfCsv(uint32_t scene, int frames, double fps, double p50, do
         return;
     }
     if (!headerWritten) {
-        std::fputs("build,scene,frames,fps,p50,p95,p99,worst,game_ms,gx_ms,guest_ms,audio_ms,guest_core,audio_core,over20\n",
+        std::fputs("build,scene,frames,fps,p50,p95,p99,worst,game_ms,gx_ms,guest_ms,audio_ms,gxfifo_ms,gxfifo_writes,"
+                   "guest_core,audio_core,over20\n",
                    file);
         headerWritten = true;
     }
-    std::fprintf(file, "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d\n", __DATE__, __TIME__,
-                 scene, frames, fps, p50, p95, p99, worst, gameMs, gxMs, guestMs, audioMs, guestCore, audioCore,
-                 over20);
+    std::fprintf(file,
+                 "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%d,%d,%d\n",
+                 __DATE__, __TIME__, scene, frames, fps, p50, p95, p99, worst, gameMs, gxMs, guestMs, audioMs,
+                 gxFifoMs, gxFifoWrites, guestCore, audioCore, over20);
     std::fclose(file);
 }
 
@@ -1135,12 +1137,16 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             s_lastAudioNanos = audioNanos;
             const int guestCore = PerfStats::Thread(PerfStats::RoleGuest).core.load(std::memory_order_relaxed);
             const int audioCore = PerfStats::Thread(PerfStats::RoleAudio).core.load(std::memory_order_relaxed);
+            uint64_t gxFifoNanos = 0, gxFifoBytes = 0, gxFifoCalls = 0;
+            PerfStats::TakeGxFifo(gxFifoNanos, gxFifoBytes, gxFifoCalls);
             RT_LOGF(RT_TAG_VI,
                     "perf: p50 %.2f p95 %.2f p99 %.2f worst %.2f ms; guest cpu %.2f ms core %d, audio %.2f ms core "
-                    "%d, gx %.2f ms, %d over 20 ms\n",
-                    p50, p95, p99, times.worstMs, guestMs, guestCore, audioMs, audioCore, gxWindowMs / n, times.slow);
+                    "%d, gx %.2f ms, gx fifo %.2f ms in %.1f k writes (%.0f KiB), %d over 20 ms\n",
+                    p50, p95, p99, times.worstMs, guestMs / n, guestCore, audioMs / n, audioCore, gxWindowMs / n,
+                    gxFifoNanos / 1e6 / n, gxFifoCalls / n / 1000.0, gxFifoBytes / n / 1024.0, times.slow);
             AppendPerfCsv(sceneWord & 0xFFFFu, times.frames, n * 1000.0 / window, p50, p95, p99, times.worstMs,
-                          times.gameMs / n, gxWindowMs / n, guestMs, audioMs, guestCore, audioCore, times.slow);
+                          times.gameMs / n, gxWindowMs / n, guestMs / n, audioMs / n, gxFifoNanos / 1e6 / n,
+                          gxFifoCalls / n, guestCore, audioCore, times.slow);
             // Full mode only: idle attribution and per-draw stats are what this reads.
             if (PerfStats::Full()) {
                 const uint32_t waits = g_idleWaits.exchange(0, std::memory_order_relaxed);
