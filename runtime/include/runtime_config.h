@@ -6,12 +6,15 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <cerrno>
+#include <cstring>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -386,6 +389,30 @@ inline std::filesystem::path ResolveConfigPath() {
     return ApplicationDataDirectory() / kConfigFileName;
 }
 
+// Horizon cannot truncate through newlib's ofstream and refuses to open a file for
+// writing while this process still holds a read handle on it, so settings go to a
+// scratch file that replaces the target.
+inline bool WriteFileText(const std::filesystem::path& path, const std::string& text) {
+    const std::string target = PathToUtf8(path);
+    const std::string temp = target + ".tmp";
+    std::FILE* file = std::fopen(temp.c_str(), "wb");
+    if (file == nullptr) {
+        return false;
+    }
+    const bool wrote = std::fwrite(text.data(), 1, text.size(), file) == text.size();
+    const bool closed = std::fclose(file) == 0;
+    if (!wrote || !closed) {
+        std::remove(temp.c_str());
+        return false;
+    }
+    std::remove(target.c_str());
+    if (std::rename(temp.c_str(), target.c_str()) == 0) {
+        return true;
+    }
+    std::remove(temp.c_str());
+    return false;
+}
+
 inline void EnsureConfigFile() {
     const std::filesystem::path path = ResolveConfigPath();
     std::error_code ec;
@@ -394,11 +421,8 @@ inline void EnsureConfigFile() {
         return;
     }
 
-    std::ofstream output(path);
-    if (!output) {
-        return;
-    }
-    output << "# WiiCompiled user configuration\n"
+    const std::string text =
+              "# WiiCompiled user configuration\n"
               "# paths.dvd_root is your New Super Mario Bros. Wii (SMNE01 rev 1), extracted with\n"
               "# Dolphin's Extract Entire Disc. The game asks for it at first start.\n\n"
               "[video]\n"
@@ -444,6 +468,7 @@ inline void EnsureConfigFile() {
               "# nand_root = \"D:\\\\WiiNand\"\n"
               "# retro_rewind_root = \"D:\\\\RetroRewind\\\\RetroRewind6\"\n"
               "# overlay_roots = [\"D:\\\\RetroRewind\"]\n";
+    WriteFileText(path, text);
 }
 
 template <typename T>
@@ -684,14 +709,18 @@ inline const std::optional<std::string>& ControllerButton(size_t index) {
 // user-specific paths. This is used by the in-game F10 settings bar.
 inline bool WriteSetting(std::string_view section, std::string_view key, std::string_view value) {
     const auto path = ResolveConfigPath();
-    std::ifstream input(path);
     std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(input, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
+    {
+        // Horizon refuses to open a file for writing while this process still holds a
+        // read handle on it, so the config must be fully read before the rewrite.
+        std::ifstream input(path);
+        std::string line;
+        while (std::getline(input, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            lines.push_back(std::move(line));
         }
-        lines.push_back(std::move(line));
     }
 
     const std::string normalizedSection = Trim(section);
@@ -748,15 +777,18 @@ inline bool WriteSetting(std::string_view section, std::string_view key, std::st
     if (path.has_parent_path()) {
         std::filesystem::create_directories(path.parent_path(), ec);
     }
-    std::ofstream output(path, std::ios::trunc);
-    if (!output) {
-        std::cerr << "[runtime-config] Unable to write " << PathToUtf8(path) << std::endl;
+    std::string text;
+    text.reserve(lines.size() * 32);
+    for (const auto& outputLine : lines) {
+        text += outputLine;
+        text += '\n';
+    }
+    if (!WriteFileText(path, text)) {
+        std::cerr << "[runtime-config] Unable to write " << PathToUtf8(path) << ": "
+                  << std::strerror(errno) << std::endl;
         return false;
     }
-    for (const auto& outputLine : lines) {
-        output << outputLine << '\n';
-    }
-    return static_cast<bool>(output);
+    return true;
 }
 
 inline std::string FormatString(std::string_view value) {
