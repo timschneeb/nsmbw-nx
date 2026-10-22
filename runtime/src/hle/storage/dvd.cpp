@@ -238,8 +238,14 @@ void StartReadCachePreload() {
         return;
     }
 #endif
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(MKW_PLATFORM_SWITCH)
+#if defined(MKW_PLATFORM_SWITCH)
+    // The Switch keeps the whole disc in RAM, but 384 MiB is enough for the streaming reads and
+    // leaves room for guest memory and the GPU caches.
+    constexpr uint64_t kCacheLimitBytes = 384ull << 20;
+#else
     constexpr uint64_t kCacheLimitBytes = 1ull << 30;  // mods can be larger than the disc; stop at 1 GiB
+#endif
     std::vector<fs::path> paths;
     for (const DVDFileEntry& entry : g_fileEntries) {
         if (!entry.isDirectory && entry.size > 0) {
@@ -249,7 +255,7 @@ void StartReadCachePreload() {
     std::thread([paths = std::move(paths)] {
 #if defined(_WIN32)
         ::SetThreadPriority(::GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
-#else
+#elif defined(__ANDROID__)
         setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 19);  // the lowest: never ahead of the game
 #endif
         const auto start = std::chrono::steady_clock::now();
