@@ -863,7 +863,7 @@ static double PercentileMs(std::vector<double> values, double fraction) {
 
 // One CSV row per two second window so a run can be diffed by scripts/perf_compare.py.
 static void AppendPerfCsv(uint32_t scene, int frames, double fps, double p50, double p95, double p99, double worst,
-                          double gameMs, double gxMs, double guestMs, double audioMs, double gxFifoMs, double gxFifoWrites,
+                          double gameMs, double gxMs, double guestMs, double audioMs, double gxFifoMs, double gxFifoWrites, double bpMs, double dlMs, double drawMs, double submitMs,
                           int guestCore, int audioCore, int over20) {
     const auto path = RuntimeConfigFile::ApplicationDataDirectory() / "Logs" / "perf.csv";
     std::error_code ec;
@@ -883,14 +883,14 @@ static void AppendPerfCsv(uint32_t scene, int frames, double fps, double p50, do
     }
     if (!headerWritten) {
         std::fputs("build,scene,frames,fps,p50,p95,p99,worst,game_ms,gx_ms,guest_ms,audio_ms,gxfifo_ms,gxfifo_writes,"
-                   "guest_core,audio_core,over20\n",
+                   "bp_ms,dl_ms,draw_ms,submit_ms,guest_core,audio_core,over20\n",
                    file);
         headerWritten = true;
     }
     std::fprintf(file,
-                 "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%d,%d,%d\n",
+                 "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d\n",
                  __DATE__, __TIME__, scene, frames, fps, p50, p95, p99, worst, gameMs, gxMs, guestMs, audioMs,
-                 gxFifoMs, gxFifoWrites, guestCore, audioCore, over20);
+                 gxFifoMs, gxFifoWrites, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, over20);
     std::fclose(file);
 }
 
@@ -1139,14 +1139,24 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             const int audioCore = PerfStats::Thread(PerfStats::RoleAudio).core.load(std::memory_order_relaxed);
             uint64_t gxFifoNanos = 0, gxFifoBytes = 0, gxFifoCalls = 0;
             PerfStats::TakeGxFifo(gxFifoNanos, gxFifoBytes, gxFifoCalls);
+            const PerfStats::GxFifoBreakdown breakdown = PerfStats::TakeGxFifoBreakdown();
+            const double bpMs = breakdown.nanos[PerfStats::GxFifoBp] / 1e6 / n;
+            const double dlMs = breakdown.nanos[PerfStats::GxFifoDisplayList] / 1e6 / n;
+            const double drawMs = breakdown.nanos[PerfStats::GxFifoDraw] / 1e6 / n;
+            const double submitMs = PerfStats::TakeGxFifoSubmitNanos() / 1e6 / n;
             RT_LOGF(RT_TAG_VI,
                     "perf: p50 %.2f p95 %.2f p99 %.2f worst %.2f ms; guest cpu %.2f ms core %d, audio %.2f ms core "
-                    "%d, gx %.2f ms, gx fifo %.2f ms in %.1f k writes (%.0f KiB), %d over 20 ms\n",
+                    "%d, gx %.2f ms, gx fifo %.2f ms in %.1f k writes (%.0f KiB): bp %.2f x %.1f k, dl %.2f x %.0f, submit %.2f, "
+                    "draw %.2f x %.0f, %d over 20 ms\n",
                     p50, p95, p99, times.worstMs, guestMs / n, guestCore, audioMs / n, audioCore, gxWindowMs / n,
-                    gxFifoNanos / 1e6 / n, gxFifoCalls / n / 1000.0, gxFifoBytes / n / 1024.0, times.slow);
+                    gxFifoNanos / 1e6 / n, gxFifoCalls / n / 1000.0, gxFifoBytes / n / 1024.0, bpMs,
+                    breakdown.calls[PerfStats::GxFifoBp] / n / 1000.0, dlMs,
+                    static_cast<double>(breakdown.calls[PerfStats::GxFifoDisplayList]) / n, submitMs,
+                    drawMs,
+                    static_cast<double>(breakdown.calls[PerfStats::GxFifoDraw]) / n, times.slow);
             AppendPerfCsv(sceneWord & 0xFFFFu, times.frames, n * 1000.0 / window, p50, p95, p99, times.worstMs,
                           times.gameMs / n, gxWindowMs / n, guestMs / n, audioMs / n, gxFifoNanos / 1e6 / n,
-                          gxFifoCalls / n, guestCore, audioCore, times.slow);
+                          gxFifoCalls / n, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, times.slow);
             // Full mode only: idle attribution and per-draw stats are what this reads.
             if (PerfStats::Full()) {
                 const uint32_t waits = g_idleWaits.exchange(0, std::memory_order_relaxed);

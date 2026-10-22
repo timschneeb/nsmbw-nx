@@ -2,6 +2,9 @@
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
+#include "perf_stats.h"
+
+#include <chrono>
 
 #include <cstdlib>
 #include <unordered_map>
@@ -17,6 +20,19 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
 }
 
 namespace {
+
+// Attributes the aurora submit inside a CALL_DL to its own bucket so the scan
+// and the drain can be compared.
+struct DlSubmitScope {
+    std::chrono::steady_clock::time_point start;
+    DlSubmitScope() : start(std::chrono::steady_clock::now()) {}
+    ~DlSubmitScope() {
+        PerfStats::AddGxFifoSubmit(
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                      std::chrono::steady_clock::now() - start)
+                                      .count()));
+    }
+};
 
 // Opcode constants and the stream helpers this file shares with gx_fifo.cpp /
 // gx_vertex.cpp; see gx_stream_common.h.
@@ -1198,6 +1214,7 @@ static void SubmitLytDrawPacket(const uint8_t* packet, uint32_t packetBytes) {
     ApplyAuroraVtxAttrFmtForDisplayList(GX_VTXFMT0, false);
     EnsureDefaultGxAlphaCompare();
 
+    const DlSubmitScope submitScope;
     GXCallDisplayList(packet, packetBytes);
     GXMarkFrameWork();
     SyncAppliedVtxStateFromHleReal();
@@ -1312,6 +1329,7 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
         if (!mayContainDraw) {
             EnsureAuroraFrameActive();
             GXMarkFrameWork();
+            const DlSubmitScope submitScope;
             GXCallDisplayList(list, nbytes);
             // The republish is required even for register-only lists (verified by
             // experiment: dropping it corrupts in-race geometry decode). It is
@@ -1444,6 +1462,7 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
             if (flattenApplyOk) {
                 EnsureAuroraFrameActive();
                 GXMarkFrameWork();
+                const DlSubmitScope submitScope;
                 GXCallDisplayList(auroraStream, auroraStreamBytes);
                 // No flip back to GX_DIRECT here
                 SyncAppliedVtxStateFromHleReal();
@@ -1464,6 +1483,7 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
             if (applyOk) {
                 EnsureAuroraFrameActive();
                 GXMarkFrameWork();
+                const DlSubmitScope submitScope;
                 GXCallDisplayList(list, nbytes);
 
                 SyncAppliedVtxStateFromHleReal();

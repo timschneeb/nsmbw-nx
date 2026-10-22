@@ -34,6 +34,28 @@ struct HleFifoStatScope {
         PerfStats::AddGxFifo(static_cast<uint64_t>(elapsed), bytes);
     }
 };
+
+// Times one FIFO handler so the stats line can say where the translation time
+// went. Cheap enough to leave on: a few clock reads per command packet.
+struct HleFifoPartScope {
+    int part;
+    std::chrono::steady_clock::time_point start;
+
+    explicit HleFifoPartScope(int part_)
+        : part(part_), start(PerfStats::Enabled() ? std::chrono::steady_clock::now()
+                                                 : std::chrono::steady_clock::time_point{}) {}
+
+    ~HleFifoPartScope() {
+        if (!PerfStats::Enabled()) {
+            return;
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now() - start)
+                                 .count();
+        PerfStats::AddGxFifoPart(part, static_cast<uint64_t>(elapsed));
+    }
+};
+
 }  // namespace
 
 namespace aurora::gx::fifo {
@@ -458,6 +480,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
         const uint8_t opcode = cmd & GX_OPCODE_MASK_CMD;
         u32 sink = 0;
 
+        // Ordering: a non-XF packet may depend on the XF state written before it.
         if (cmd == GX_NOP_CMD || opcode == GX_CMD_INVL_VC_CMD) {
             if (!consumeBytes(1, sink)) break;
             continue;
@@ -466,6 +489,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
         if (cmd == GX_LOAD_BP_REG_CMD) {
             if (g_hleGxState.fifoByteCount < 5) break;
             const uint32_t bpWord = ReadBE32(data + 1);
+            const HleFifoPartScope partScope(PerfStats::GxFifoBp);
             GXApplyBPReg(static_cast<uint8_t>(bpWord >> 24), bpWord & 0x00FFFFFFu);
             if (!consumeBytes(5, sink)) break;
             continue;
@@ -485,8 +509,11 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             const uint16_t countWords = ReadBE16(data + 1);
             const uint32_t packetBytes = 1u + 4u + (static_cast<uint32_t>(countWords) + 1u) * 4u;
             if (g_hleGxState.fifoByteCount < packetBytes) break;
-            GXCallDisplayList(data, packetBytes);
-            GXMarkFrameWork();
+            {
+                const HleFifoPartScope partScope(PerfStats::GxFifoDisplayList);
+                GXCallDisplayList(data, packetBytes);
+                GXMarkFrameWork();
+            }
             if (!consumeBytes(packetBytes, sink)) break;
             continue;
         }
@@ -495,8 +522,11 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             if (g_hleGxState.fifoByteCount < 5) break;
             const uint32_t xfValue = ReadBE32(data + 1);
             ApplyIndexedXfArrayForPacket(cmd, xfValue);
-            GXCallDisplayList(data, 5);
-            GXMarkFrameWork();
+            {
+                const HleFifoPartScope partScope(PerfStats::GxFifoDisplayList);
+                GXCallDisplayList(data, 5);
+                GXMarkFrameWork();
+            }
             if (!consumeBytes(5, sink)) break;
             continue;
         }
@@ -507,6 +537,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             const uint32_t listSize = ReadBE32(data + 5);
             if (!consumeBytes(9, sink)) break;
             if (listAddr != 0 && listSize > 0) {
+                const HleFifoPartScope partScope(PerfStats::GxFifoDisplayList);
                 GX__CallDisplayList_80172f64(listAddr, listSize);
             }
             continue;
@@ -523,6 +554,7 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
                 if (g_hleGxState.fifoByteCount < packetBytes) {
                     break;
                 }
+                const HleFifoPartScope partScope(PerfStats::GxFifoDraw);
                 if (TrySubmitRawDirectFifoDraw(data, packetBytes, prim, vtxFmt, vtxCount)) {
                     if (!consumeBytes(packetBytes, sink)) break;
                     continue;

@@ -134,6 +134,38 @@ void TakeGxFifo(uint64_t& nanos, uint64_t& bytes, uint64_t& calls) {
     g_gxFifoNanos = g_gxFifoBytes = g_gxFifoCalls = 0;
 }
 
+namespace {
+GxFifoBreakdown g_gxFifoBreakdown;
+uint64_t g_gxFifoSubmitNanos = 0;
+uint64_t g_gxFifoSubmitCalls = 0;
+}
+
+void AddGxFifoPart(int part, uint64_t nanos) {
+    if (part < 0 || part >= GxFifoPartCount) {
+        return;
+    }
+    g_gxFifoBreakdown.nanos[part] += nanos;
+    ++g_gxFifoBreakdown.calls[part];
+}
+
+void AddGxFifoSubmit(uint64_t nanos) {
+    g_gxFifoSubmitNanos += nanos;
+    ++g_gxFifoSubmitCalls;
+}
+
+uint64_t TakeGxFifoSubmitNanos() {
+    const uint64_t value = g_gxFifoSubmitNanos;
+    g_gxFifoSubmitNanos = 0;
+    g_gxFifoSubmitCalls = 0;
+    return value;
+}
+
+GxFifoBreakdown TakeGxFifoBreakdown() {
+    GxFifoBreakdown out = g_gxFifoBreakdown;
+    g_gxFifoBreakdown = GxFifoBreakdown{};
+    return out;
+}
+
 void Publish(int role) {
 #if defined(MKW_PLATFORM_SWITCH)
     g_threads[role].core.store(svcGetCurrentProcessorNumber(), std::memory_order_relaxed);

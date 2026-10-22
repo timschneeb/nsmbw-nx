@@ -56,4 +56,18 @@ void Pin(int role);
 void AddGxFifo(uint64_t nanos, uint64_t bytes);
 void TakeGxFifo(uint64_t& nanos, uint64_t& bytes, uint64_t& calls);
 
+// Which part of the FIFO translation the time went to, so one run names the
+// dominant handler instead of the whole path.
+enum GxFifoPart : int { GxFifoBp = 0, GxFifoDisplayList = 1, GxFifoDraw = 2, GxFifoPartCount = 3 };
+struct GxFifoBreakdown {
+    uint64_t nanos[GxFifoPartCount]{};
+    uint64_t calls[GxFifoPartCount]{};
+};
+void AddGxFifoPart(int part, uint64_t nanos);
+// Time spent inside aurora::gx::GXCallDisplayList on the CALL_DL path, split out
+// from the surrounding display list scan.
+void AddGxFifoSubmit(uint64_t nanos);
+uint64_t TakeGxFifoSubmitNanos();
+GxFifoBreakdown TakeGxFifoBreakdown();
+
 }  // namespace PerfStats
