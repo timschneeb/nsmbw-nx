@@ -195,6 +195,15 @@ struct StaticPaletteTextureKey {
   }
 };
 
+inline constexpr u32 kSourceGranuleBytes = 64 * 1024;
+inline constexpr u32 kMaxSourceGranules = 64;
+
+struct SourceGranules {
+  std::array<u64, kMaxSourceGranules> digests{};
+  std::array<u64, kMaxSourceGranules> generations{};
+  u32 count = 0;
+};
+
 // Revalidation used to keep a full byte-for-byte copy of every cached source and memcmp against it.
 struct StaticTextureSourceEntry {
   gfx::TextureHandle handle;
@@ -202,6 +211,7 @@ struct StaticTextureSourceEntry {
   u32 sourceSize = 0;
   u64 validationRevision = 0;
   u64 sourceGeneration = kGuestWriteUntracked;
+  SourceGranules granules;
 };
 
 struct StaticPaletteTextureSourceEntry {
@@ -384,34 +394,87 @@ static u32 static_texture_data_size(const StaticTextureKey& key) noexcept {
                             key.mips > 1 ? GX_TRUE : GX_FALSE, static_cast<u8>(key.mips - 1));
 }
 
-static u64 digest_source_bytes(const void* data, size_t size) noexcept {
+struct SourceDigest {
+  u64 value = 0;
+  bool valid = false;
+};
+
+static u64 digest_source_bytes(const void* data, size_t size, SourceDigest* cache = nullptr) noexcept {
   if (data == nullptr || size == 0) {
     return 0;
   }
-  return static_cast<u64>(xxh3_hash_s(data, size));
+  if (cache != nullptr && cache->valid) {
+    return cache->value;
+  }
+  const u64 digest = static_cast<u64>(xxh3_hash_s(data, size));
+  if (cache != nullptr) {
+    cache->value = digest;
+    cache->valid = true;
+  }
+  return digest;
 }
 
-static bool source_matches_digest(const void* data, size_t size, u64 digest, u32 expectedSize) noexcept {
+static bool source_matches_digest(const void* data, size_t size, u64 digest, u32 expectedSize,
+                                  SourceDigest* cache = nullptr) noexcept {
   if (data == nullptr || size != expectedSize) {
     return false;
   }
-  return digest_source_bytes(data, size) == digest;
+  return digest_source_bytes(data, size, cache) == digest;
+}
+
+static void compute_source_granules(const void* data, u32 size, SourceGranules& granules) noexcept {
+  granules = {};
+  if (data == nullptr || size == 0 || size > kMaxSourceGranules * kSourceGranuleBytes) {
+    return;
+  }
+  const auto* bytes = static_cast<const u8*>(data);
+  u32 offset = 0;
+  while (offset < size) {
+    const u32 chunk = std::min(kSourceGranuleBytes, size - offset);
+    granules.digests[granules.count] = digest_source_bytes(bytes + offset, chunk);
+    granules.generations[granules.count] = guest_write_generation(bytes + offset, chunk);
+    ++granules.count;
+    offset += chunk;
+  }
 }
 
 // A source whose generation still matches the one recorded beside its digest cannot have been written since, so the digest is skipped.
 static bool validate_static_texture_source_entry(const StaticTextureKey& key,
-                                                 StaticTextureSourceEntry& entry) noexcept {
+                                                 StaticTextureSourceEntry& entry,
+                                                 SourceDigest* digestCache = nullptr) noexcept {
   if (entry.validationRevision == s_staticTextureCacheValidationRevision) {
     return true;
   }
   const u32 dataSize = static_texture_data_size(key);
-  const u64 generation = guest_write_generation(key.data, dataSize);
-  if (dataSize == entry.sourceSize && guest_write_generation_matches(entry.sourceGeneration, generation)) {
+  if (dataSize != entry.sourceSize) {
+    return false;
+  }
+  if (entry.granules.count != 0) {
+    const auto* bytes = static_cast<const u8*>(key.data);
+    u32 offset = 0;
+    for (u32 i = 0; i < entry.granules.count; ++i) {
+      const u32 chunk = std::min(kSourceGranuleBytes, dataSize - offset);
+      const u64 generation = guest_write_generation(bytes + offset, chunk);
+      if (!guest_write_generation_matches(entry.granules.generations[i], generation)) {
+        const u64 digest = digest_source_bytes(bytes + offset, chunk);
+        if (digest != entry.granules.digests[i]) {
+          return false;
+        }
+        entry.granules.generations[i] = generation;
+      }
+      offset += chunk;
+    }
     entry.validationRevision = s_staticTextureCacheValidationRevision;
     note_texture_cache_stamp();
     return true;
   }
-  if (!source_matches_digest(key.data, dataSize, entry.digest, entry.sourceSize)) {
+  const u64 generation = guest_write_generation(key.data, dataSize);
+  if (guest_write_generation_matches(entry.sourceGeneration, generation)) {
+    entry.validationRevision = s_staticTextureCacheValidationRevision;
+    note_texture_cache_stamp();
+    return true;
+  }
+  if (!source_matches_digest(key.data, dataSize, entry.digest, entry.sourceSize, digestCache)) {
     return false;
   }
   entry.sourceGeneration = generation;
@@ -421,7 +484,9 @@ static bool validate_static_texture_source_entry(const StaticTextureKey& key,
 }
 
 static bool validate_static_palette_texture_source_entry(const StaticPaletteTextureKey& key,
-                                                        StaticPaletteTextureSourceEntry& entry) noexcept {
+                                                        StaticPaletteTextureSourceEntry& entry,
+                                                        SourceDigest* textureDigestCache = nullptr,
+                                                        SourceDigest* tlutDigestCache = nullptr) noexcept {
   if (entry.validationRevision == s_staticTextureCacheValidationRevision) {
     return true;
   }
@@ -433,9 +498,10 @@ static bool validate_static_palette_texture_source_entry(const StaticPaletteText
                          guest_write_generation_matches(entry.textureGeneration, textureGeneration) &&
                          guest_write_generation_matches(entry.tlutGeneration, tlutGeneration);
   if (!skippable) {
-    const bool textureOk =
-        source_matches_digest(key.texture.data, textureDataSize, entry.textureDigest, entry.textureSize);
-    const bool tlutOk = source_matches_digest(key.tlutData, tlutDataSize, entry.tlutDigest, entry.tlutSize);
+    const bool textureOk = source_matches_digest(key.texture.data, textureDataSize, entry.textureDigest,
+                                                 entry.textureSize, textureDigestCache);
+    const bool tlutOk =
+        source_matches_digest(key.tlutData, tlutDataSize, entry.tlutDigest, entry.tlutSize, tlutDigestCache);
     if (!textureOk || !tlutOk) {
       return false;
     }
@@ -448,21 +514,25 @@ static bool validate_static_palette_texture_source_entry(const StaticPaletteText
 }
 
 static StaticTextureSourceEntry make_static_texture_source_entry(const StaticTextureKey& key,
-                                                                const gfx::TextureHandle& handle) {
+                                                                const gfx::TextureHandle& handle,
+                                                                SourceDigest* digestCache = nullptr) {
   const u32 dataSize = static_texture_data_size(key);
   const u64 generation = guest_write_generation(key.data, dataSize);
   note_texture_cache_stamp();
-  return {
+  StaticTextureSourceEntry entry{
       .handle = handle,
-      .digest = digest_source_bytes(key.data, dataSize),
+      .digest = digest_source_bytes(key.data, dataSize, digestCache),
       .sourceSize = dataSize,
       .validationRevision = s_staticTextureCacheValidationRevision,
       .sourceGeneration = generation,
   };
+  compute_source_granules(key.data, dataSize, entry.granules);
+  return entry;
 }
 
 static StaticPaletteTextureSourceEntry make_static_palette_texture_source_entry(
-    const StaticPaletteTextureKey& key, const gfx::TextureHandle& handle) {
+    const StaticPaletteTextureKey& key, const gfx::TextureHandle& handle,
+    SourceDigest* textureDigestCache = nullptr, SourceDigest* tlutDigestCache = nullptr) {
   const u32 textureDataSize = static_texture_data_size(key.texture);
   const size_t tlutDataSize = static_cast<size_t>(key.tlutEntries) * sizeof(u16);
   const u64 textureGeneration = guest_write_generation(key.texture.data, textureDataSize);
@@ -470,8 +540,8 @@ static StaticPaletteTextureSourceEntry make_static_palette_texture_source_entry(
   note_texture_cache_stamp();
   return {
       .handle = handle,
-      .textureDigest = digest_source_bytes(key.texture.data, textureDataSize),
-      .tlutDigest = digest_source_bytes(key.tlutData, tlutDataSize),
+      .textureDigest = digest_source_bytes(key.texture.data, textureDataSize, textureDigestCache),
+      .tlutDigest = digest_source_bytes(key.tlutData, tlutDataSize, tlutDigestCache),
       .textureSize = textureDataSize,
       .tlutSize = static_cast<u32>(tlutDataSize),
       .validationRevision = s_staticTextureCacheValidationRevision,
@@ -552,6 +622,7 @@ void store_cached_texture(const GXTexObj_& obj, gfx::TextureHandle handle, u32 t
 
 gfx::TextureHandle get_tlut_texture(const GXTlutObj_& tlut) {
   const size_t tlutSize = static_cast<size_t>(tlut.numEntries) * sizeof(u16);
+  SourceDigest tlutDigest;
   if (tlut.tlutObjId != 0) {
     auto& cache = s_tlutObjectCaches[tlut.tlutObjId];
     auto& cached = cache.tlutTexture;
@@ -564,7 +635,7 @@ gfx::TextureHandle get_tlut_texture(const GXTlutObj_& tlut) {
       if (tlut.data != nullptr) {
         const u64 generation = guest_write_generation(tlut.data, tlutSize);
         if (!guest_write_generation_matches(cached.generation, generation)) {
-          stillValid = digest_source_bytes(tlut.data, tlutSize) == cached.digest;
+          stillValid = digest_source_bytes(tlut.data, tlutSize, &tlutDigest) == cached.digest;
           cached.generation = generation;
         }
       }
@@ -589,7 +660,7 @@ gfx::TextureHandle get_tlut_texture(const GXTlutObj_& tlut) {
     const u64 generation = guest_write_generation(tlut.data, tlutSize);
     cache.tlutTexture.handle = handle;
     cache.tlutTexture.tlutDataVersion = tlut.tlutDataVersion;
-    cache.tlutTexture.digest = digest_source_bytes(tlut.data, tlutSize);
+    cache.tlutTexture.digest = digest_source_bytes(tlut.data, tlutSize, &tlutDigest);
     cache.tlutTexture.generation = generation;
     cache.tlutTexture.validationRevision = s_staticTextureCacheValidationRevision;
     note_texture_cache_stamp();
@@ -657,6 +728,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
   const bool canUseSourceCache = canCacheUpload && obj.data != nullptr;
   const StaticTextureKey sourceKey = canUseSourceCache ? make_static_texture_key(obj) : StaticTextureKey{};
   const size_t sourceHash = canUseSourceCache ? absl::Hash<StaticTextureKey>{}(sourceKey) : 0;
+  SourceDigest sourceDigest;
   if (canUseSourceCache) {
     if (auto handle = lookup_static_source_front_cache(sourceKey, sourceHash)) {
       if (obj.texObjId != 0) {
@@ -665,7 +737,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
       return handle;
     }
     if (auto it = s_staticTextureSourceCache.find(sourceKey); it != s_staticTextureSourceCache.end()) {
-      if (!validate_static_texture_source_entry(sourceKey, it->second)) {
+      if (!validate_static_texture_source_entry(sourceKey, it->second, &sourceDigest)) {
         s_staticTextureSourceCache.erase(it);
         clear_static_source_front_cache();
       } else {
@@ -694,7 +766,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
                                             obj.has_mips() ? static_cast<u8>(obj.mip_count() - 1) : 0);
     const bool byContent = canUseSourceCache && dataSize != 0;
     const StaticTextureContentKey contentKey =
-        byContent ? StaticTextureContentKey{digest_source_bytes(obj.data, dataSize), dataSize, obj.width(),
+        byContent ? StaticTextureContentKey{digest_source_bytes(obj.data, dataSize, &sourceDigest), dataSize, obj.width(),
                                             obj.height(), obj.mip_count(), static_cast<u32>(obj.format())}
                   : StaticTextureContentKey{};
     if (byContent) {
@@ -737,7 +809,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
         absl::erase_if(s_staticTextureSourceCache, [](const auto& item) { return item.second.handle.use_count() <= 1; });
         clear_static_source_front_cache();
       }
-      s_staticTextureSourceCache[sourceKey] = make_static_texture_source_entry(sourceKey, handle);
+      s_staticTextureSourceCache[sourceKey] = make_static_texture_source_entry(sourceKey, handle, &sourceDigest);
       store_static_source_front_cache(sourceKey, sourceHash, handle);
       if (obj.texObjId != 0) {
         record_tex_obj_source_key(obj.texObjId, sourceKey);
@@ -764,10 +836,12 @@ gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GX
   const bool canUseSourceCache = !obj.no_cache() && !tlut.no_cache() && obj.data != nullptr && tlut.data != nullptr;
   const StaticPaletteTextureKey sourceKey =
       canUseSourceCache ? make_static_palette_texture_key(obj, tlut) : StaticPaletteTextureKey{};
+  SourceDigest textureDigest;
+  SourceDigest tlutDigest;
   if (canUseSourceCache) {
     if (auto it = s_staticPaletteTextureSourceCache.find(sourceKey);
         it != s_staticPaletteTextureSourceCache.end()) {
-      if (!validate_static_palette_texture_source_entry(sourceKey, it->second)) {
+      if (!validate_static_palette_texture_source_entry(sourceKey, it->second, &textureDigest, &tlutDigest)) {
         s_staticPaletteTextureSourceCache.erase(it);
       } else {
         const auto& handle = it->second.handle;
@@ -804,7 +878,8 @@ gfx::TextureHandle resolve_static_palette_texture(const GXTexObj_& obj, const GX
       if (s_staticPaletteTextureSourceCache.size() >= 256) {
         absl::erase_if(s_staticPaletteTextureSourceCache, [](const auto& item) { return item.second.handle.use_count() <= 1; });
       }
-      s_staticPaletteTextureSourceCache[sourceKey] = make_static_palette_texture_source_entry(sourceKey, handle);
+      s_staticPaletteTextureSourceCache[sourceKey] =
+          make_static_palette_texture_source_entry(sourceKey, handle, &textureDigest, &tlutDigest);
       if (obj.texObjId != 0) {
         record_tex_obj_palette_source_key(obj.texObjId, sourceKey);
       }

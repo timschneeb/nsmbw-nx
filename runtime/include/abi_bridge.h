@@ -310,7 +310,7 @@ struct KnownTypedNativeCpuCall {
 // a miss just re-runs the sorted lookup. 512 entries (12 KiB) covers the per-frame indirect
 // working set while staying L1/L2 resident, unlike 4096 which would thrash L2. Must stay a
 // power of two, the index masks with (size - 1).
-inline constexpr size_t kIndirectDispatchCacheEntries = 512;
+inline constexpr size_t kIndirectDispatchCacheEntries = 2048;
 
 // Namespace-scope `inline thread_local`, not function-local `static thread_local`, to avoid a
 // thread-static init epoch check on every bctrl (same as g_currentCpuContext in ppc_runtime.h).

@@ -7,6 +7,9 @@
 
 #if defined(MKW_PLATFORM_SWITCH)
 #include <switch.h>
+#elif defined(__linux__) && !defined(__ANDROID__)
+#include <sched.h>
+#include <time.h>
 #endif
 
 namespace PerfStats {
@@ -181,6 +184,16 @@ void Publish(int role) {
     }
     g_threads[role].cpuNanos.store(static_cast<uint64_t>(static_cast<double>(ticks) * g_nanosPerTick),
                                    std::memory_order_relaxed);
+#elif defined(__linux__) && !defined(__ANDROID__)
+    // Publish runs on the measured thread itself, so the thread cpu clock is exact.
+    g_threads[role].core.store(static_cast<int32_t>(sched_getcpu()), std::memory_order_relaxed);
+    struct timespec ts = {};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+        return;
+    }
+    const uint64_t now =
+        static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+    g_threads[role].cpuNanos.store(now, std::memory_order_relaxed);
 #endif
 }
 
