@@ -1,6 +1,7 @@
 #include "texture_convert.hpp"
 
 #include "../internal.hpp"
+#include "../thread_utils.hpp"
 #include "../gx/gx_fmt.hpp"
 
 #include <algorithm>
@@ -268,20 +269,22 @@ static ByteBuffer DecodeTiled(uint32_t width, uint32_t height, uint32_t mips, Ar
     // across a few threads. Each texel is written exactly as before.
     constexpr uint32_t kParallelTexels = 256 * 256;
     const uint32_t workers = w * h >= kParallelTexels && bheight >= 8
-                                 ? std::min(4u, std::max(1u, std::thread::hardware_concurrency()))
+                                 ? std::min(4u, std::max(1u, aurora::hardware_thread_count()))
                                  : 1u;
     if (workers > 1) {
       std::vector<std::thread> threads;
-      threads.reserve(workers - 1);
+      threads.reserve(workers);
       const uint32_t perWorker = (bheight + workers - 1) / workers;
-      for (uint32_t i = 1; i < workers; ++i) {
+      for (uint32_t i = 0; i < workers; ++i) {
         const uint32_t first = std::min(bheight, i * perWorker);
         const uint32_t end = std::min(bheight, first + perWorker);
         if (first < end) {
-          threads.emplace_back(decodeRows, first, end);
+          threads.emplace_back([&decodeRows, first, end] {
+            aurora::pin_current_thread(1);
+            decodeRows(first, end);
+          });
         }
       }
-      decodeRows(0, std::min(bheight, perWorker));
       for (auto& thread : threads) {
         thread.join();
       }

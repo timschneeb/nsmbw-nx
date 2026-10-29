@@ -4,6 +4,7 @@
 #include "../gx/pipeline.hpp"
 #include "../fs_helper.hpp"
 #include "../sqlite_utils.hpp"
+#include "../thread_utils.hpp"
 #include "../webgpu/gpu.hpp"
 
 #include <algorithm>
@@ -1118,7 +1119,7 @@ static void build_synchronous_pipelines_for_frame() {
 }
 
 static size_t pipeline_worker_count() {
-  const size_t logicalProcessors = std::thread::hardware_concurrency();
+  const size_t logicalProcessors = aurora::hardware_thread_count();
   if (logicalProcessors == 0) {
     return 1;
   }

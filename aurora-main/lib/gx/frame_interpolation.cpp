@@ -1,6 +1,7 @@
 ﻿#include "frame_interpolation.hpp"
 
 #include "../internal.hpp"
+#include "../thread_utils.hpp"
 #include "aurora/gfx.h"
 
 // Guest matrices really do carry NaN/Inf, and the isfinite guards here keep them
@@ -90,7 +91,7 @@ private:
   static constexpr size_t kChunk = 16;
 
   InterpolationWorkerPool() {
-    const unsigned hardware = std::thread::hardware_concurrency();
+    const unsigned hardware = aurora::hardware_thread_count();
     // The caller helps too. Cap the helpers: tasks are short memcpy+math, so dispatch
     // overhead and memory bandwidth dominate past a few threads.
     const unsigned helpers = hardware > 2 ? std::min(hardware - 1, 6u) : 0;

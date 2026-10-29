@@ -2,6 +2,7 @@
 #include "command_processor.hpp"
 #include "../gfx/common.hpp"
 #include "../internal.hpp"
+#include "../thread_utils.hpp"
 #include "../webgpu/gpu.hpp"
 
 #include <chrono>
@@ -119,6 +120,9 @@ GxThread& gx_thread() {
   static GxThread* t = [] {
     auto* state = new GxThread();
     state->thread = std::thread([state] {
+      if (!aurora::pin_current_thread(1)) {
+        Log.warn("GX thread could not be pinned to core 1");
+      }
       for (;;) {
         std::vector<uint8_t> job;
         {
@@ -141,7 +145,7 @@ GxThread& gx_thread() {
       }
     });
     state->thread.detach();
-    Log.info("GX thread started ({} hardware threads)", std::thread::hardware_concurrency());
+    Log.info("GX thread started ({} hardware threads)", aurora::hardware_thread_count());
     return state;
   }();
   return *t;
@@ -171,13 +175,17 @@ void hand_off() {
 } // namespace
 
 bool threaded() {
-  // On by default when there's a core to spare for it; NSMBW_GX_THREAD=0 or 1 forces it.
+  // On by default on Switch; NSMBW_GX_THREAD=0 or 1 forces it.
   static const bool wanted = [] {
     const char* value = std::getenv("NSMBW_GX_THREAD");
     if (value != nullptr && value[0] != '\0') {
       return value[0] == '1';
     }
-    return std::thread::hardware_concurrency() >= 4;
+#if defined(MKW_PLATFORM_SWITCH)
+    return true;
+#else
+    return aurora::hardware_thread_count() >= 4;
+#endif
   }();
   // Never on OpenGL (ES): its context belongs to one thread, so that renderer runs single-threaded.
   // Off until the renderer is up, too; turning on later is safe, as nothing is left queued then.
