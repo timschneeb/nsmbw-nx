@@ -1,7 +1,13 @@
 #pragma once
 #include <dolphin/gx.h>
 
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "common.hpp"
 
@@ -26,6 +32,19 @@ struct TextureUpload {
 };
 extern std::vector<TextureUpload> g_textureUploads;
 
+// A static texture's texels, written by the frame worker before the frame's commands run (see
+// TextureRef::lazy).
+struct DeferredTextureWrite {
+  TextureHandle texture;
+  uint32_t mip;
+  std::vector<uint8_t> data;
+  wgpu::TexelCopyBufferLayout layout;
+  wgpu::Extent3D size;
+};
+extern std::vector<DeferredTextureWrite> g_deferredTextureWrites;
+// At the seal (the frame worker, the producer excluded): makes the textures and writes their texels.
+void flush_deferred_texture_writes() noexcept;
+
 struct TextureFormatInfo {
   uint8_t blockWidth;
   uint8_t blockHeight;
@@ -46,6 +65,22 @@ struct TextureRef {
   u32 gxFormat;
   bool hasArbitraryMips = false;
   bool isReplacement = false;
+  // A static texture (new_static_texture_2d) is only described by the game thread that loads it: its
+  // Dawn texture is made, and its texels written, by the frame worker (materialize, then
+  // flush_deferred_texture_writes). Dawn takes one device-wide lock, which the worker holds through
+  // each frame's submit, so a texture the game thread made itself waited that out: 3-10 ms on a
+  // Snapdragon 6 Gen 1 whenever a new effect or HUD item first showed, a dropped frame (issue #13).
+  // Until then `texture` and the views are empty; only the worker reads them.
+  std::unique_ptr<std::string> lazy;  // the label, while the texture is still to be made
+  std::once_flag materialized;
+  void materialize() noexcept;
+  // Never reused, unlike the object's address: what the texture bind group cache keys on, as its
+  // groups outlive the handles they were made from (gx.cpp, resolve_texture_bind_group).
+  const uint64_t serial = next_serial();
+  static uint64_t next_serial() noexcept {
+    static std::atomic<uint64_t> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+  }
 
   TextureRef(wgpu::Texture texture, wgpu::TextureView sampleTextureView, wgpu::TextureView attachmentTextureView,
              wgpu::Extent3D size, wgpu::TextureFormat format, uint32_t mipCount, u32 gxFormat)

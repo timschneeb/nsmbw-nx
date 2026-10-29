@@ -2,6 +2,9 @@ package com.wither.nsmbw;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Build;
+
+import java.util.Locale;
 
 /** Player settings, kept in one SharedPreferences file shared by the launcher and the game. */
 final class AppSettings {
@@ -39,17 +42,58 @@ final class AppSettings {
     boolean autoUpdate() { return prefs.getBoolean("auto_update", false); }
     void setAutoUpdate(boolean on) { prefs.edit().putBoolean("auto_update", on).commit(); }
 
-    boolean showFps() { return prefs.getBoolean("show_fps", false); }
-    void setShowFps(boolean show) { prefs.edit().putBoolean("show_fps", show).commit(); }
+    /**
+     * Xiaomi Mode: the game in the app's main process (MainProcessGameActivity). Xiaomi's system closes
+     * an app's extra processes, the game's ":game" one included; on by default on its phones.
+     */
+    boolean gameInMainProcess() { return prefs.getBoolean("game_in_main_process", isXiaomi()); }
+    void setGameInMainProcess(boolean on) { prefs.edit().putBoolean("game_in_main_process", on).commit(); }
+
+    static boolean isXiaomi() {
+        final String maker = (Build.MANUFACTURER + " " + Build.BRAND).toLowerCase(Locale.ROOT);
+        return maker.contains("xiaomi") || maker.contains("redmi") || maker.contains("poco");
+    }
+
+    /** The game's Update button started an install: open the game again once it is done (UpdateReceiver). */
+    boolean reopenGameAfterUpdate() { return prefs.getBoolean("reopen_after_update", false); }
+    void setReopenGameAfterUpdate(boolean on) { prefs.edit().putBoolean("reopen_after_update", on).commit(); }
+
     boolean spinningCoins() { return prefs.getBoolean("spinning_coins", true); }
     void setSpinningCoins(boolean on) { prefs.edit().putBoolean("spinning_coins", on).commit(); }
 
-    boolean frameGraph() { return prefs.getBoolean("frame_graph", false); }
-    void setFrameGraph(boolean on) { prefs.edit().putBoolean("frame_graph", on).commit(); }
+    /** The Performance Monitor: FPS counter and frametime graph (the old FPS Counter switch turns it on). */
+    boolean performanceMonitor() {
+        return prefs.getBoolean("frame_graph", false) || prefs.getBoolean("show_fps", false);
+    }
+    void setPerformanceMonitor(boolean on) {
+        prefs.edit().putBoolean("frame_graph", on).putBoolean("show_fps", false).commit();
+    }
 
     /** V-Sync: frames go out in step with the display and the game's clock follows its vsync. */
     boolean vsync() { return prefs.getBoolean("vsync", true); }
+
+    /** The frametime graph's size in percent (5-200, 50 its original size), set in the game's Video tab. */
+    int frameGraphSize() { return prefs.getInt("frame_graph_size", 50); }
+    void setFrameGraphSize(int percent) { prefs.edit().putInt("frame_graph_size", percent).commit(); }
     void setVSync(boolean on) { prefs.edit().putBoolean("vsync", on).commit(); }
+
+    /** The renderer, as Config.toml's [video] graphics_api: "auto" (Vulkan, else OpenGL ES), "vulkan"
+     *  or "opengles". The game's Video tab and the Display menu both set it; it applies at the next start. */
+    static final String[] RENDERERS = {"auto", "vulkan", "opengles"};
+    static final String[] RENDERER_LABELS = {"Automatic", "Vulkan", "OpenGL ES"};
+    String graphicsApi() {
+        final String value = prefs.getString("graphics_api", "auto");
+        if (!OPENGLES_AVAILABLE && value.equals("opengles")) return "vulkan";
+        return java.util.Arrays.asList(RENDERERS).contains(value) ? value : "auto";
+    }
+    /** OpenGL ES is walled off for now (a later version): greyed out in the Renderer list, and a
+     *  saved choice of it runs Vulkan. */
+    static final boolean OPENGLES_AVAILABLE = false;
+    void setGraphicsApi(String value) { prefs.edit().putString("graphics_api", value).commit(); }
+    static String rendererLabel(String value) {
+        final int index = java.util.Arrays.asList(RENDERERS).indexOf(value);
+        return RENDERER_LABELS[Math.max(0, index)];
+    }
 
     boolean touchControls() { return prefs.getBoolean("touch_controls", true); }
     void setTouchControls(boolean on) { prefs.edit().putBoolean("touch_controls", on).commit(); }
@@ -72,7 +116,7 @@ final class AppSettings {
 
     /** "2× (960p)": the scale and the number of lines it renders, as the menu shows it. */
     static String resolutionLabel(float scale) {
-        if (scale <= 0f) return "Match screen";
+        if (scale <= 0f) return Lang.t("Match screen");
         final String factor = scale == Math.rint(scale)
                 ? String.valueOf((int) scale) : String.valueOf(scale);
         return factor + "× (" + Math.round(480 * scale) + "p)";

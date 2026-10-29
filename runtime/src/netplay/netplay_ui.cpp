@@ -13,10 +13,12 @@
 #include "display_settings.h"
 #include "keybinds.h"
 #include "settings_overlay.h"
+#include "updater.h"
 
 #include <imgui.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <map>
 #include <functional>
@@ -68,6 +70,7 @@ struct Ui {
     uint32_t events = 0;         // menu events since the last frame
     bool swallowConfirm = false; // keep a confirm press from the game until it is released
     uint32_t heldFromMenu = 0;   // buttons held when a menu handed the remote back: hidden till released
+    bool plusIsBack = false;     // + pressed on the Star Coins screen or a yes/no prompt: 1 till released
     bool countPicked = false;    // Create Room: the player confirmed a number on the game's screen
     std::string message;
     Screen afterMessage = Screen::Lan;
@@ -102,6 +105,7 @@ void AddHitEvent(float x, float y, float w, float h, int cursor, uint32_t event)
 
 std::atomic<uint64_t> g_tap{0};  // a tap for the next frame: bit 63, then x and y as 16-bit fractions
 std::atomic<bool> g_tapScreen{false};
+std::atomic<bool> g_playing{false};
 std::atomic<uint64_t> g_pointer{0};  // Android's finger, packed like g_tap: bit 63 while it is held
 
 // The pointer as Draw sees it this frame, in screen pixels: the finger, else the left mouse button.
@@ -115,7 +119,7 @@ PointerState g_pointerNow;
 // A tap on the game's own screens is played back as remote presses on channel 1: one press, or
 // D-pad steps toward a cursor position (checked against the game's cursor before each) and then
 // 2 to pick it.
-enum class NavKind { None, Press, File, Players, Cursor, MapWalk };
+enum class NavKind { None, Press, File, Players, Cursor, MapWalk, WorldSelect };
 struct Nav {
     NavKind kind = NavKind::None;
     int target = 0;           // the cursor position, or for Press the buttons
@@ -137,10 +141,44 @@ void WalkPanes(uint32_t pane, int depth, const std::function<void(uint32_t)>& vi
 struct CursorRect;
 CursorRect GameCursorRect();
 bool CursorStep(Nav& n, uint32_t& button);
+uint32_t FindRootPane(uint32_t object);
+
+// Whether the file select's layout stacks the three files (Newer's fileSelectBase: up and down move
+// between them) instead of putting them in a row (the game's own: left and right do). Read from
+// where the layout puts its first two files' anchors, N_posFile1_00 and N_posFile2_00.
+bool FilesStacked() {
+    static uint32_t s_object = 0;
+    static bool s_stacked = false;
+    const uint32_t object = GameMenus::FileSelectObject();
+    if (object == 0 || object == s_object) {
+        return s_stacked;
+    }
+    const uint32_t root = FindRootPane(object);
+    float x[2] = {}, y[2] = {};
+    int found = 0;
+    if (root != 0) {
+        WalkPanes(root, 0, [&](uint32_t pane) {
+            const std::string name = LivePaneName(pane);
+            const int i = name == "N_posFile1_00" ? 0 : name == "N_posFile2_00" ? 1 : -1;
+            if (i >= 0) {
+                x[i] = Memory::ReadFloat32(pane + 0x2C);
+                y[i] = Memory::ReadFloat32(pane + 0x30);
+                found |= 1 << i;
+            }
+        });
+    }
+    if (found != 3) {
+        return false;  // not built yet: look again next time
+    }
+    s_object = object;
+    s_stacked = std::fabs(y[1] - y[0]) > std::fabs(x[1] - x[0]);
+    return s_stacked;
+}
 
 
 void StartNav(NavKind kind, int target) {
-    static const char* const kKinds[] = {"none", "press", "file select", "select players", "menu cursor", "map walk"};
+    static const char* const kKinds[] = {"none",        "press",    "file select", "select players",
+                                         "menu cursor", "map walk", "world select"};
     RT_LOGF(RT_TAG_RUNTIME, "tap: %s 0x%X\n", kKinds[static_cast<int>(kind)], target);
     g_nav = Nav{};
     g_nav.kind = kind;
@@ -171,6 +209,23 @@ uint32_t NextNavButton(Nav& n) {
         n.kind = NavKind::None;
         return 0;
     }
+    if (n.kind == NavKind::WorldSelect) {
+        // Select a World: turn the ring a world at a time (it skips the ones not reached yet) the
+        // shorter way round its 8 islands, waiting out each turn, until the tapped one is at the front.
+        if (++n.stuck > 150 || !GameMenus::WorldSelectOpen()) {
+            n.kind = NavKind::None;
+            return 0;
+        }
+        if (!GameMenus::WorldSelectWaiting()) {
+            return 0;
+        }
+        const int world = GameMenus::WorldSelectWorld();
+        if (world < 0 || world > 7 || world == n.target || ++n.steps > 8) {
+            n.kind = NavKind::None;
+            return 0;
+        }
+        return (n.target - world + 8) % 8 <= 4 ? kScreenRight : kScreenLeft;
+    }
     if (n.confirming || ++n.steps > 16) {
         n.kind = NavKind::None;
         return 0;
@@ -181,12 +236,14 @@ uint32_t NextNavButton(Nav& n) {
         if (!GameMenus::FileSelectWaiting()) {
             return 0;  // still moving: wait
         }
-        // 0-2 the files in a row, 3 and 4 Free-for-All and Coin Battle below them.
+        // 0-2 the files in a row, 3 and 4 Free-for-All and Coin Battle below them; on a layout
+        // that stacks the files, one file per row.
         cursor = GameMenus::FileSelectRawCursor();
-        row = cursor <= 2 ? 0 : 1;
-        col = cursor <= 2 ? cursor : cursor - 3;
-        targetRow = n.target <= 2 ? 0 : 1;
-        targetCol = n.target <= 2 ? n.target : n.target - 3;
+        const int fileRows = FilesStacked() ? 3 : 1;
+        row = cursor <= 2 ? (fileRows == 3 ? cursor : 0) : fileRows;
+        col = cursor <= 2 ? (fileRows == 3 ? 0 : cursor) : cursor - 3;
+        targetRow = n.target <= 2 ? (fileRows == 3 ? n.target : 0) : fileRows;
+        targetCol = n.target <= 2 ? (fileRows == 3 ? 0 : n.target) : n.target - 3;
     } else {
         if (!GameMenus::SelectPlayersSettled()) {
             return 0;
@@ -318,6 +375,7 @@ void Window(const Canvas& c, float height, float width = 528.0f) {
     p.paneSize["P_bg_00"] = {width, height};
     p.paneSize["P_stripe_00"] = {width + 2, height};
     p.paneSize["W_yesnoWindow_00"] = {width + 14, height + 8};
+    a.yesNo.StretchSlices(p, "WindowLeft", "WindowCentre", "WindowRight", width - 528.0f, height - 322.0f);
     a.yesNo.Draw(c.list, c.view, "N_yesnoWindow_00", p);
 }
 
@@ -366,21 +424,28 @@ void Cursor(const Canvas& c, float x, float y, float w, float h, int frame) {
 // A green-to-yellow button pill like the game's yes/no buttons, w x 53 units, centred on (x, y).
 // fixedScale > 0 draws it at that scale instead of the menus' own (a gentle pulse when selected).
 void Button(const Canvas& c, const std::string& label, float x, float y, float w, bool selected, bool enabled,
-            int frame, float textSize = 30.0f, float h = 53.0f, float fixedScale = 0.0f) {
+            int frame, float textSize = 30.0f, float h = 53.0f, float fixedScale = 0.0f,
+            const std::array<float, 9>* recolor = nullptr) {
     Assets& a = GetAssets();
     GameLayout::DrawParams p;
     p.alpha = c.alpha * (enabled ? 1.0f : 0.55f);
-    p.offsetX = x;
-    p.offsetY = y + 118.0f;  // the pane is authored at (0, -118)
+    float authoredX = 0.0f, authoredY = -118.0f, authoredW = 240.0f, authoredH = 53.0f;
+    a.yesNo.PaneRect("P_centerBase_00", authoredX, authoredY, authoredW, authoredH);
+    p.offsetX = x - authoredX;
+    p.offsetY = y - authoredY;
     p.scale = fixedScale > 0.0f ? fixedScale : selected ? 1.0f + 0.04f * Pulse(frame) : 0.94f;
     p.paneScale["P_centerBase_00"] = 1.0f;  // authored at 0: it grows in through an animation
     p.paneSize["P_centerBase_00"] = {w, h};
     p.paneSize["W_button_02"] = {w + 5.0f, h + 10.0f};
     p.paneSize["P_shadow_02"] = {w, h};
+    a.yesNo.StretchSlices(p, "SingleBtnLeft", "SingleBtnMiddle", "SingleBtnRight", w - authoredW, h - authoredH);
     p.visible["T_center_00"] = false;
     p.visible["T_center_01"] = false;
     if (!enabled) {
         p.vertexTint["P_centerBase_00"] = 0xB0B0B0FFu;
+    }
+    if (recolor != nullptr) {
+        p.colorMatrix["P_centerBase_00"] = *recolor;
     }
     a.yesNo.Draw(c.list, c.view, "P_centerBase_00", p);
     const float scale = p.scale;
@@ -414,6 +479,10 @@ constexpr float kToggleX = 214.0f, kToggleY = 192.0f, kToggleW = 166.0f;
 constexpr float kGearY = kToggleY;
 
 constexpr float kGearX = kToggleX + kToggleW / 2 + 46.0f, kGearW = 62.0f;
+// The Update button, in the middle of the title bar when a newer release is out (updater.h).
+constexpr float kUpdateX = -15.0f, kUpdateW = 140.0f;
+// The game's green button turned orange: red takes most of the green, green drops to amber.
+constexpr std::array<float, 9> kOrange = {0.15f, 1.0f, 0.0f, 0.25f, 0.6f, 0.0f, 0.0f, 0.15f, 0.35f};
 
 ImVec2 ToScreen(const Canvas& c, float x, float y) {
     return ImVec2(c.view.centerX + x * c.view.scale, c.view.centerY - y * c.view.scale);
@@ -640,7 +709,7 @@ void ApplyMenuLayout() {
 // course can't be left yet (Exit Course greyed out, its P_shadowBlack shown), the controller stops on
 // Settings, as the game's own cursor stops on Continue.
 constexpr float kPauseGrow = 70.0f, kPauseRaise = 35.0f, kPauseLower = -35.0f;
-constexpr float kPauseSettingsY = -24.0f;  // window space: one pitch (70) under Continue at 11 + 35
+constexpr float kPauseSettingsY = -24.0f;  // window space: one pitch (70) under Continue at 11 + 35 (PauseSettingsY)
 MenuLayout g_pauseLayout;
 std::atomic<bool> g_pauseFocus{false};  // "Settings" holds the pause window's cursor
 int g_pauseFocusFrom = 0;               // the game's own cursor meanwhile: 0 Continue, 1 Exit Course
@@ -677,10 +746,12 @@ bool AttachPauseLayout() {
 }
 
 bool PauseShift(const std::string& name, float& dy) {
+    // LevelNumShadow and LevelNameShadow are Newer's own course title lines.
     static const std::map<std::string, float> kShifts = {
         {"N_worldText_00", kPauseRaise}, {"N_osusumeText_00", kPauseRaise}, {"N_multiText_00", kPauseRaise},
         {"P_SBBase_00", kPauseRaise},    {"N_posMulti_UP", kPauseRaise},
         {"P_SBBase_02", kPauseLower},    {"N_posMulti_Down", kPauseLower},
+        {"LevelNumShadow", kPauseRaise}, {"LevelNameShadow", kPauseRaise},
     };
     const auto it = kShifts.find(name);
     if (it == kShifts.end()) {
@@ -727,8 +798,22 @@ void HoldPauseButtonScale(bool hold) {
 
 void ApplyPauseLayout() {
     if (AttachPauseLayout()) {
-        ApplyLayoutEdit(g_pauseLayout, PauseShift, {"W_N_pauseMenu_00", "P_bg_00"}, kPauseGrow);
+        // Newer draws the window's background as three slices (BG_Left/Middle/Right) instead of P_bg_00.
+        ApplyLayoutEdit(g_pauseLayout, PauseShift, {"W_N_pauseMenu_00", "P_bg_00", "BG_Left", "BG_Middle", "BG_Right"},
+                        kPauseGrow);
     }
+}
+
+// Window space, halfway between Continue and Exit Course once they have moved apart: -24 on the
+// base game's window (Continue at -22 + 33 + 35), -31 on Newer's, whose buttons sit further apart.
+float PauseSettingsY() {
+    const auto& panes = g_pauseLayout.panes;
+    const auto first = panes.find("P_SBBase_00"), second = panes.find("P_SBBase_02");
+    const auto row = panes.find("N_pauseMenu_01");
+    if (first == panes.end() || second == panes.end() || row == panes.end()) {
+        return kPauseSettingsY;
+    }
+    return row->second.y + (first->second.y + kPauseRaise + second->second.y + kPauseLower) / 2;
 }
 
 // Exit Course can't be chosen in a course not yet cleared: the game shades it (P_shadowBlack).
@@ -838,7 +923,7 @@ bool CursorStep(Nav& n, uint32_t& button) {
     }
     const CursorRect r = GameCursorRect();
     if (!r.valid) {
-        return false;
+        return n.steps <= 3;  // a cursor Settings had hidden shows again a frame later
     }
     const float cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
     const bool first = n.lastCx > 1e8f;
@@ -971,7 +1056,7 @@ void DrawMenuSettings(ImDrawList* list) {
 
 void DrawPauseSettings(ImDrawList* list) {
     static const MatchButtons kPauseButtons{&g_pauseLayout, "P_SBBase_00", "P_SBBase_02", &g_pauseOnScale[0]};
-    DrawWindowSettings(list, PauseWindowTransform, kPauseSettingsY, g_pauseFocus.load(), &kPauseButtons);
+    DrawWindowSettings(list, PauseWindowTransform, PauseSettingsY(), g_pauseFocus.load(), &kPauseButtons);
 }
 
 // Which of the pause window's buttons the game's own cursor is on (0 Continue, 1 Exit Course), from
@@ -982,11 +1067,48 @@ int PauseGameCursor() {
     if (!r.valid || !PauseWindowTransform(cx, cy, scale, alpha)) {
         return -1;
     }
-    return (r.y0 + r.y1) / 2 > cy + kPauseSettingsY * scale ? 0 : 1;
+    return (r.y0 + r.y1) / 2 > cy + PauseSettingsY() * scale ? 0 : 1;
+}
+
+bool UpdateShown() {
+    return g_ui.screen == Screen::None && Updater::Get().state != Updater::State::Idle;
+}
+
+void DrawUpdate(const Canvas& c) {
+    if (!UpdateShown()) {
+        return;
+    }
+    const Updater::Status update = Updater::Get();
+    std::string label = "Update";
+    bool busy = true;
+    switch (update.state) {
+    case Updater::State::Downloading:
+        label = update.progress >= 0 ? "Updating " + std::to_string(static_cast<int>(update.progress * 100)) + "%"
+                                     : "Updating...";
+        break;
+    case Updater::State::Installing: label = "Installing..."; break;
+    case Updater::State::Restarting: label = "Restarting..."; break;
+    case Updater::State::Failed: label = "Retry Update"; busy = false; break;
+    default: busy = false; break;
+    }
+    // Busy, it stays orange (greyed out it reads as broken) and only pulses when the cursor is on it.
+    Button(c, label, kUpdateX, kToggleY, kUpdateW, g_ui.toggleFocus && g_ui.topItem == 2, true, g_ui.frame,
+           label.size() > 7 ? 22.0f : 30.0f, 53.0f, busy ? 0.94f : 0.0f, &kOrange);
+}
+
+// The Update button pressed (by the remote or a tap): installs the newer release, or tries again.
+void PressUpdate() {
+    const Updater::State state = Updater::Get().state;
+    if (state == Updater::State::Available || state == Updater::State::Failed) {
+        Updater::Install();
+    }
 }
 
 void DrawToggle(const Canvas& c) {
-    const bool lan = g_ui.screen != Screen::None;
+    DrawUpdate(c);
+    // Under a message that returns to Couch (a failed update), the toggle still says Couch.
+    const bool lan = g_ui.screen != Screen::None &&
+                     !(g_ui.screen == Screen::Message && g_ui.afterMessage == Screen::None);
     Text(c, "Play:", kToggleX - kToggleW / 2 - 12, kToggleY, 24, 2, 0xFFFFFFFFu);
     Button(c, lan ? "LAN" : "Couch", kToggleX, kToggleY, kToggleW, g_ui.toggleFocus && g_ui.topItem == 0, true,
            g_ui.frame);
@@ -1000,16 +1122,18 @@ void DrawToggle(const Canvas& c) {
 // screen with the game's view widened, and Match Screen Resolution the screen's own pixels across
 // the whole screen (the multiplier is greyed out meanwhile). Keybinds: the keyboard's remote.
 constexpr float kScales[] = {0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
-std::atomic<bool> g_settingsChanged{false};  // the Android app copies them into its own settings
+std::atomic<bool> g_settingsChanged{false};
+std::atomic<bool> g_touchControlsToggled{false};  // the Keybinds tab's Touch Controls, since the last take  // the Android app copies them into its own settings
 enum SettingsTab { kTabVideo, kTabAudio, kTabKeybinds, kTabLanguage };
 int g_settingsTab = kTabVideo;
 constexpr int kSettingsTabs = 4;
 float g_lastScale = 1.0f;                    // the multiplier Match Screen Resolution returns to
 bool g_lastWide = true;
 
-// Cursor rows. Video: 0 tabs, 1 resolution, 2 match screen, 3 fullscreen, then FPS, frametime
-// graph, spinning coins, V-Sync and OK. Keybinds: 0 tabs, 1-12 the controls (two columns of six),
-// 13 Reset Defaults, 14 OK.
+// Cursor rows. Video: 0 tabs, 1 resolution, 2 match screen, 3 fullscreen, then renderer,
+// Performance Monitor (FPS counter and frametime graph), spinning coins and V-Sync (one row, side by
+// side) and OK. Keybinds: 0 tabs, 1-12
+// the controls (two columns of six), 13 Reset Defaults, 14 OK.
 // V-Sync is a Windows and Android row (both can lock the game's clock to the display; on Android the
 // app keeps the choice through TakeSettingsChange). Fullscreen is a desktop row: a phone is always
 // fullscreen.
@@ -1024,14 +1148,59 @@ constexpr bool kFullscreenRow = false;
 constexpr bool kFullscreenRow = true;
 #endif
 constexpr int kVideoFullscreen = kFullscreenRow ? 3 : -1;
-constexpr int kVideoFps = kFullscreenRow ? 4 : 3;
-constexpr int kVideoGraph = kVideoFps + 1, kVideoCoins = kVideoFps + 2;
-constexpr int kVideoVSync = kVSyncRow ? kVideoFps + 3 : -1;
-constexpr int kVideoOk = kVideoFps + (kVSyncRow ? 4 : 3);
+constexpr int kVideoRenderer = kFullscreenRow ? 4 : 3;
+constexpr int kVideoGraph = kVideoRenderer + 1, kVideoCoins = kVideoGraph + 1;
+constexpr int kVideoVSync = kVSyncRow ? kVideoCoins + 1 : -1;
+constexpr int kVideoOk = (kVSyncRow ? kVideoVSync : kVideoCoins) + 1;
 constexpr const char* kFullscreenNames[] = {"Off", "Borderless", "Exclusive"};
+// The renderers to pick from ([video] graphics_api, the names main.cpp maps to aurora's backends);
+// Automatic tries them best first and falls back down the list.
+struct RendererChoice {
+    const char* configName;
+    const char* label;
+};
+#if defined(__APPLE__)
+constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"metal", "Metal"}};
+#elif defined(__ANDROID__)
+// OpenGL ES can't be picked for now (walled off for a later version); a saved one shows as Vulkan.
+constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"vulkan", "Vulkan"}};
+#elif defined(_WIN32)
+constexpr RendererChoice kRenderers[] = {
+    {"auto", "Automatic"}, {"d3d12", "Direct3D 12"}, {"vulkan", "Vulkan"}, {"d3d11", "Direct3D 11"}};
+#else
+constexpr RendererChoice kRenderers[] = {{"auto", "Automatic"}, {"vulkan", "Vulkan"}};
+#endif
+constexpr int kRendererCount = static_cast<int>(sizeof(kRenderers) / sizeof(kRenderers[0]));
+std::atomic<bool> g_rendererChanged{false};  // the Android app keeps the choice (TakeSettingsChange)
+
+int RendererIndex() {
+#if defined(__ANDROID__)
+    const std::string saved = settings_overlay::GraphicsApiChoice();
+    const std::string chosen = saved == "opengles" ? "vulkan" : saved;
+#else
+    const std::string chosen = settings_overlay::GraphicsApiChoice();
+#endif
+    for (int i = 0; i < kRendererCount; ++i) {
+        if (chosen == kRenderers[i].configName) {
+            return i;
+        }
+    }
+    return 0;
+}
 constexpr int kKeyRows = 6;
-constexpr int kKeySmartSpin = 1 + Keybinds::kActionCount;  // the Space Smart Spin QoL checkbox
-constexpr int kKeyReset = kKeySmartSpin + 1, kKeyOk = kKeyReset + 1;
+// The QoL checkboxes under the keys: Space Smart Spin, Reverse Tilt, and Touch Controls on Android or
+// Mouse as Gyro on the desktop.
+constexpr int kKeySmartSpin = 1 + Keybinds::kActionCount;
+constexpr int kKeyReverseTilt = kKeySmartSpin + 1;
+#if defined(__ANDROID__)
+constexpr bool kTouchToggle = true;
+#else
+constexpr bool kTouchToggle = false;
+#endif
+constexpr int kKeyThird = kKeyReverseTilt + 1;  // Touch Controls / Mouse as Gyro
+constexpr int kKeyReset = kKeyThird + 1, kKeyOk = kKeyReset + 1;
+constexpr int kKeyToggles[] = {kKeySmartSpin, kKeyReverseTilt, kKeyThird};
+constexpr int kKeyToggleCount = 3;
 
 struct VideoChoice {
     float scale;
@@ -1148,7 +1317,8 @@ constexpr float kSettingsHeight = 440.0f, kSettingsWidth = 720.0f;
 
 void DrawSettingsTabs(const Canvas& c) {
     const float y = kSettingsHeight / 2 - 42.0f;
-    const char* names[kSettingsTabs] = {"Video", "Audio", "Keybinds", "Language"};
+    const char* names[kSettingsTabs] = {"Video", "Audio",
+                                        settings_overlay::ControllerConnected() ? "Controller" : "Keybinds", "Language"};
     for (int tab = 0; tab < kSettingsTabs; ++tab) {
         const float x = (tab - 1.5f) * 168.0f;
         Button(c, names[tab], x, y, 156, g_ui.cursor == 0 && g_settingsTab == tab, g_settingsTab == tab, g_ui.frame,
@@ -1178,8 +1348,8 @@ float VolumeRowY(int row) {
     return 100.0f - 72.0f * row;
 }
 
-void DrawSlider(const Canvas& c, float y, int percent, bool selected) {
-    const ImVec2 a = ToScreen(c, kSliderX0, y), b = ToScreen(c, kSliderX1, y);
+void DrawSliderAt(const Canvas& c, float x0, float x1, float y, int percent, bool selected) {
+    const ImVec2 a = ToScreen(c, x0, y), b = ToScreen(c, x1, y);
     const float s = c.view.scale;
     const float half = 10.0f * s;
     const auto alpha = [&](int value) { return static_cast<int>(value * c.alpha); };
@@ -1195,6 +1365,19 @@ void DrawSlider(const Canvas& c, float y, int percent, bool selected) {
     c.list->AddCircleFilled(ImVec2(fill, a.y), knob,
                             selected ? IM_COL32(255, 230, 60, alpha(255)) : IM_COL32(255, 255, 255, alpha(255)));
     c.list->AddCircle(ImVec2(fill, a.y), knob, edge, 0, 3.5f * s);
+}
+
+void DrawSlider(const Canvas& c, float y, int percent, bool selected) {
+    DrawSliderAt(c, kSliderX0, kSliderX1, y, percent, selected);
+}
+
+// The Frametime Graph row's size slider (Video tab): 5% to 200%, 50% the graph's original size.
+constexpr float kGraphSliderX0 = 92.0f, kGraphSliderX1 = 232.0f;
+constexpr int kGraphSizeMin = 5, kGraphSizeMax = 200;
+bool g_dragGraphSize = false;
+
+int GraphSizeToFill(int size) {
+    return (size - kGraphSizeMin) * 100 / (kGraphSizeMax - kGraphSizeMin);
 }
 
 void DrawAudioTab(const Canvas& c) {
@@ -1285,8 +1468,8 @@ void DrawVideoTab(const Canvas& c) {
     const bool match = scale <= 0.0f;
     const std::vector<VideoChoice> choices = VideoChoices();
     const VideoChoice shown = choices[CurrentChoice(choices)];
-    // Five to seven rows between the tabs and the hint line.
-    constexpr int kRows = 5 + (kFullscreenRow ? 1 : 0) + (kVSyncRow ? 1 : 0);
+    // Five or six rows between the tabs and the hint line.
+    constexpr int kRows = 5 + (kFullscreenRow ? 1 : 0);
     const float kRowH = kRows >= 7 ? 33.0f : kRows == 6 ? 37.0f : 42.0f;
     const float step = kRows >= 7 ? 37.0f : kRows == 6 ? 43.0f : 50.0f;
     const float top = kRows >= 7 ? 125.0f : kRows == 6 ? 123.0f : 118.0f;
@@ -1315,12 +1498,58 @@ void DrawVideoTab(const Canvas& c) {
                g_ui.cursor == kVideoFullscreen, true, g_ui.frame, buttonSize, kRowH);
         AddHit(105, y, 276, step - 2, kVideoFullscreen);
     }
-    const int first = kFullscreenRow ? 3 : 2;
-    row("Show FPS Counter", first, kVideoFps, settings_overlay::ShowFps());
-    row("Frametime Graph", first + 1, kVideoGraph, settings_overlay::FrameGraph());
-    row("Spinning Coins", first + 2, kVideoCoins, settings_overlay::SpinningCoins());
+    {
+        // Renderer: each press moves to the next (left steps back); it takes effect at the next start.
+        const float y = top - (kFullscreenRow ? 3 : 2) * step;
+        Text(c, "Renderer", -300, y, labelSize, 0);
+        Button(c, kRenderers[RendererIndex()].label, 105, y, 270, g_ui.cursor == kVideoRenderer, kRendererCount > 1,
+               g_ui.frame, buttonSize, kRowH);
+        AddHit(105, y, 276, step - 2, kVideoRenderer);
+    }
+    const int first = kFullscreenRow ? 4 : 3;
+    {
+        // Performance Monitor (the FPS counter and frametime graph): the button turns it on and off;
+        // the slider beside it sets its size (a finger or the mouse drags it; left and right move it
+        // 5% at a time).
+        const float y = top - first * step;
+        const bool selected = g_ui.cursor == kVideoGraph;
+        Button(c, "Performance Monitor", -80, y, 320, selected, true, g_ui.frame, buttonSize * 0.9f, kRowH);
+        Checkbox(c, -214, y, settings_overlay::FrameGraph());
+        AddHit(-80, y, 324, step - 2, kVideoGraph);
+        const ImVec2 start = ToScreen(c, kGraphSliderX0, y), end = ToScreen(c, kGraphSliderX1, y);
+        const float reach = 24.0f * c.view.scale;
+        if (g_pointerNow.pressed && g_pointerNow.x >= start.x - reach && g_pointerNow.x <= end.x + reach &&
+            std::fabs(g_pointerNow.y - start.y) <= (step / 2) * c.view.scale) {
+            g_dragGraphSize = true;
+            g_ui.cursor = kVideoGraph;
+        }
+        if (g_dragGraphSize && g_pointerNow.held) {
+            const float t = std::clamp((g_pointerNow.x - start.x) / std::max(1.0f, end.x - start.x), 0.0f, 1.0f);
+            const int size = kGraphSizeMin + static_cast<int>(std::lround(t * (kGraphSizeMax - kGraphSizeMin) / 5.0f)) * 5;
+            settings_overlay::SetFrameGraphSize(size, false);
+        } else if (g_dragGraphSize) {
+            // The finger's gone, so its position is too: keep the last size and save it.
+            settings_overlay::SetFrameGraphSize(settings_overlay::FrameGraphSize(), true);
+            g_dragGraphSize = false;
+            g_settingsChanged = true;
+        }
+        const int size = settings_overlay::FrameGraphSize();
+        DrawSliderAt(c, kGraphSliderX0, kGraphSliderX1, y, GraphSizeToFill(size), selected);
+        Text(c, std::to_string(size) + "%", 290, y, labelSize, 1, selected ? 0xFFF0B0FFu : 0xFFFFFFFFu);
+    }
     if (kVSyncRow) {
-        row("V-Sync", first + 3, kVideoVSync, settings_overlay::VSync());
+        // Spinning Coins and V-Sync side by side, like the Keybinds tab's checkboxes.
+        const float y = top - (first + 1) * step;
+        constexpr float kWidth = 330.0f, kGap = 340.0f;
+        const auto half = [&](const char* label, float x, int cursor, bool on) {
+            Button(c, label, x + 18, y, kWidth, g_ui.cursor == cursor, true, g_ui.frame, buttonSize, kRowH);
+            Checkbox(c, x - kWidth / 2 + 24, y, on);
+            AddHit(x, y, kWidth + 6, step - 2, cursor);
+        };
+        half("Spinning Coins", -kGap / 2, kVideoCoins, settings_overlay::SpinningCoins());
+        half("V-Sync", kGap / 2, kVideoVSync, settings_overlay::VSync());
+    } else {
+        row("Spinning Coins", first + 1, kVideoCoins, settings_overlay::SpinningCoins());
     }
     const char* hint = match ? "The screen's own resolution, filling the whole screen."
                        : !DisplaySettings::SurfaceWide() ? "Rendered at this many lines, then scaled to the screen."
@@ -1330,8 +1559,11 @@ void DrawVideoTab(const Canvas& c) {
     const char* fullscreenNote = fullscreen == 1 ? "Borderless: a window covering the whole screen (F11)."
                                  : fullscreen == 2 ? "Exclusive: the game takes over the display."
                                                    : "Off: the game plays in a window.";
+    const std::string rendererNote = std::string(RendererIndex() == 0 ? "The best this device has. " : "") +
+                                     "Takes effect at the next start. Now: " + settings_overlay::RunningGraphicsApi() + ".";
     const char* note = g_ui.cursor == kVideoFullscreen ? fullscreenNote
-                       : g_ui.cursor == kVideoGraph ? "How long each frame took, under the FPS counter."
+                       : g_ui.cursor == kVideoRenderer ? rendererNote.c_str()
+                       : g_ui.cursor == kVideoGraph ? "FPS and each frame's time, top right. Left and right: its size."
                        : g_ui.cursor == kVideoCoins ? "Animated coins and blocks. Off saves a little GPU work."
                        : g_ui.cursor == kVideoVSync ? "No tearing: frames wait for the display, the game keeps its pace."
                                                     : hint;
@@ -1341,23 +1573,41 @@ void DrawVideoTab(const Canvas& c) {
 }
 
 void DrawKeybindsTab(const Canvas& c) {
-    const int capturing = Keybinds::Capturing();
+    // With a controller connected, the tab is its Controller Bindings: the same controls, on its buttons.
+    const bool pad = settings_overlay::ControllerConnected();
+    const int capturing = pad ? settings_overlay::ControllerCapturing() : Keybinds::Capturing();
     for (int action = 0; action < Keybinds::kActionCount; ++action) {
         const int column = action / kKeyRows, row = action % kKeyRows;
         const float x0 = column == 0 ? -178.0f : 178.0f;
         const float y = 126.0f - 40.0f * row;
         Text(c, Keybinds::ActionName(action), x0 - 168, y, 21, 0);
-        const std::string label = capturing == action ? "Press a key..." : Keybinds::KeyLabel(action);
-        const float size = label.size() > 16 ? 17.0f : label.size() > 11 ? 19.0f : 22.0f;
-        Button(c, label, x0 + 78, y, 172, g_ui.cursor == 1 + action, true, g_ui.frame, size, 35.0f);
+        const std::string label = capturing == action ? (pad ? "Press a button..." : "Press a key...")
+                                  : pad              ? settings_overlay::ControllerBindingLabel(action)
+                                                     : Keybinds::KeyLabel(action);
+        const float size = label.size() > 20 ? 14.0f : label.size() > 16 ? 17.0f : label.size() > 11 ? 19.0f : 22.0f;
+        const bool enabled = !pad || settings_overlay::ControllerActionRebindable(action);
+        Button(c, label, x0 + 78, y, 172, g_ui.cursor == 1 + action, enabled, g_ui.frame, size, 35.0f);
         AddHit(x0 + 78, y, 178, 38, 1 + action);
     }
     if (capturing >= 0) {
-        Text(c, "Press the new key (Esc cancels).", 0, -122, 22);
+#ifdef __ANDROID__
+        constexpr const char* kKeyPrompt = "Press the new key (Esc cancels).";
+#else
+        constexpr const char* kKeyPrompt = "Press the new key or mouse button (Esc cancels).";
+#endif
+        Text(c, pad ? "Press the new button (Esc cancels)." : kKeyPrompt, 0, -122, 22);
     } else {
-        Button(c, "Space Smart Spin QoL", 24, -122, 400, g_ui.cursor == kKeySmartSpin, true, g_ui.frame, 26.0f, 36.0f);
-        Checkbox(c, -150, -122, Keybinds::SmartSpin());
-        AddHit(0, -122, 410, 40, kKeySmartSpin);
+        // The QoL switches side by side.
+        const char* labels[] = {"Space Smart Spin", "Reverse Tilt", kTouchToggle ? "Touch Controls" : "Mouse as Gyro"};
+        const bool on[] = {Keybinds::SmartSpin(), Keybinds::ReverseTilt(),
+                           kTouchToggle ? settings_overlay::TouchControls() : Keybinds::MouseGyro()};
+        constexpr float width = 226.0f, gap = 232.0f;
+        for (int i = 0; i < kKeyToggleCount; ++i) {
+            const float x = (static_cast<float>(i) - (kKeyToggleCount - 1) * 0.5f) * gap;
+            Button(c, labels[i], x + 18, -122, width, g_ui.cursor == kKeyToggles[i], true, g_ui.frame, 21.0f, 36.0f);
+            Checkbox(c, x - width / 2 + 24, -122, on[i]);
+            AddHit(x, -122, width + 6, 40, kKeyToggles[i]);
+        }
     }
     const float y = -kSettingsHeight / 2 + 43.0f;
     Button(c, "Reset Defaults", -126, y, 232, g_ui.cursor == kKeyReset, true, g_ui.frame, 26.0f);
@@ -1395,6 +1645,10 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         Keybinds::PollCapture();  // the keyboard is the capture's until a key is picked
         return;
     }
+    if (settings_overlay::ControllerCapturing() >= 0) {
+        settings_overlay::PollControllerCapture();  // likewise the controller's buttons
+        return;
+    }
     int& cursor = g_ui.cursor;
     if (cursor == 0) {
         if (left || right) {
@@ -1414,9 +1668,25 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
     }
     if (g_settingsTab == kTabVideo) {
         const bool match = settings_overlay::RenderScale() <= 0.0f;
-        if (up) cursor = cursor == 2 && match ? 0 : cursor - 1;
-        if (down) cursor = std::min(kVideoOk, cursor + 1);
-        if (cursor == 1 && (left || right || confirm)) {
+        // Spinning Coins and V-Sync share a row: left and right move between them.
+        if (up) {
+            cursor = cursor == 2 && match              ? 0
+                     : cursor == kVideoOk && kVSyncRow ? kVideoCoins
+                     : cursor == kVideoVSync           ? kVideoGraph
+                                                       : cursor - 1;
+        }
+        if (down) cursor = cursor == kVideoCoins && kVSyncRow ? kVideoOk : std::min(kVideoOk, cursor + 1);
+        if (kVSyncRow && cursor == kVideoCoins && right) {
+            cursor = kVideoVSync;
+        } else if (kVSyncRow && cursor == kVideoVSync && left) {
+            cursor = kVideoCoins;
+        } else if (cursor == kVideoRenderer && (confirm || left || right)) {
+            const int next = (RendererIndex() + (left ? kRendererCount - 1 : 1)) % kRendererCount;
+            settings_overlay::SetGraphicsApiChoice(kRenderers[next].configName);
+            settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
+            g_rendererChanged = true;
+            g_settingsChanged = true;
+        } else if (cursor == 1 && (left || right || confirm)) {
             StepVideo(left ? -1 : 1, confirm);
         } else if (confirm && cursor == 2) {
             ToggleMatchScreen();
@@ -1424,11 +1694,11 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
             // Off -> Borderless -> Exclusive -> Off (left steps back), with the file select's sound.
             settings_overlay::SetFullscreen((settings_overlay::Fullscreen() + (left ? 2 : 1)) % 3);
             settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
-        } else if (confirm && cursor == kVideoFps) {
-            settings_overlay::SetShowFps(!settings_overlay::ShowFps());
-            g_settingsChanged = true;
         } else if (confirm && cursor == kVideoGraph) {
             settings_overlay::SetFrameGraph(!settings_overlay::FrameGraph());
+            g_settingsChanged = true;
+        } else if ((left || right) && cursor == kVideoGraph) {
+            settings_overlay::SetFrameGraphSize(settings_overlay::FrameGraphSize() + (left ? -5 : 5), true);
             g_settingsChanged = true;
         } else if (confirm && cursor == kVideoVSync) {
             settings_overlay::SetVSync(!settings_overlay::VSync());
@@ -1466,24 +1736,42 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         }
         return;
     }
-    if (cursor == kKeySmartSpin) {
-        if (up) cursor = kKeyRows;
+    if (const auto toggle = std::find(kKeyToggles, kKeyToggles + kKeyToggleCount, cursor);
+        toggle != kKeyToggles + kKeyToggleCount) {
+        const auto index = static_cast<int>(toggle - kKeyToggles);
+        if (left && index > 0) cursor = kKeyToggles[index - 1];
+        if (right && index + 1 < kKeyToggleCount) cursor = kKeyToggles[index + 1];
+        if (up) cursor = index == 0 ? kKeyRows : 2 * kKeyRows;  // the last key of the column above
         if (down) cursor = kKeyReset;
-        if (confirm) Keybinds::SetSmartSpin(!Keybinds::SmartSpin());
+        if (confirm && cursor == kKeySmartSpin) Keybinds::SetSmartSpin(!Keybinds::SmartSpin());
+        if (confirm && cursor == kKeyReverseTilt) Keybinds::SetReverseTilt(!Keybinds::ReverseTilt());
+        if (confirm && cursor == kKeyThird && kTouchToggle) {
+            settings_overlay::SetTouchControls(!settings_overlay::TouchControls());
+            g_touchControlsToggled = true;
+            g_settingsChanged = true;
+        } else if (confirm && cursor == kKeyThird) {
+            Keybinds::SetMouseGyro(!Keybinds::MouseGyro());
+        }
         return;
     }
     if (cursor >= kKeyReset) {
         if (left || right) cursor = cursor == kKeyReset ? kKeyOk : kKeyReset;
         if (up) cursor = kKeySmartSpin;
-        if (confirm && cursor == kKeyReset) Keybinds::ResetDefaults();
+        if (confirm && cursor == kKeyReset) {
+            if (settings_overlay::ControllerConnected()) settings_overlay::ResetControllerBindings();
+            else Keybinds::ResetDefaults();
+        }
         if (confirm && cursor == kKeyOk) CloseSettings();
         return;
     }
     const int action = cursor - 1, column = action / kKeyRows, row = action % kKeyRows;
     if (up) cursor = row == 0 ? 0 : cursor - 1;
-    if (down) cursor = row == kKeyRows - 1 ? kKeySmartSpin : cursor + 1;
+    if (down) cursor = row == kKeyRows - 1 ? (column == 0 ? kKeySmartSpin : kKeyReverseTilt) : cursor + 1;
     if ((left && column == 1) || (right && column == 0)) cursor = 1 + (1 - column) * kKeyRows + row;
-    if (confirm) Keybinds::BeginCapture(action);
+    if (confirm) {
+        if (settings_overlay::ControllerConnected()) settings_overlay::BeginControllerCapture(action);
+        else Keybinds::BeginCapture(action);
+    }
 }
 
 void DrawLan(const Canvas& c) {
@@ -1764,6 +2052,40 @@ void PressToggle() {
     }
 }
 
+// Select a World's ring of islands where TapAt measures, k = 0 the picked world's at the front and
+// k = 1-7 the worlds after it going right round the ring (read off the screen at 16:9).
+constexpr float kIslandX[8] = {-5, 164, 203, 116, 0, -121, -188, -179};
+constexpr float kIslandY[8] = {-75, -65, -7, 46, 90, 46, 2, -75};
+
+// A tap on Select a World: Back (1) at the bottom right, the front island picks its world (2), and
+// another island the game lets the player pick turns the ring to it.
+void TapWorldSelect(float lx, float ly) {
+    const float right = GameLayout::GameView().centerX / GameLayout::GameView().scale;
+    if (lx >= right - 150 && lx <= right - 20 && ly >= -190 && ly <= -135) {
+        StartNav(NavKind::Press, static_cast<int>(kOne));
+        return;
+    }
+    const int world = GameMenus::WorldSelectWorld();
+    if (world < 0 || world > 7 || !GameMenus::WorldSelectWaiting()) {
+        return;  // World 9 is off the ring; mid-turn the islands are moving
+    }
+    int island = -1;
+    float nearest = 130;
+    for (int k = 0; k < 8; ++k) {
+        // The front island is drawn the biggest: it reaches further.
+        const float distance = std::hypot(lx - kIslandX[k], ly - kIslandY[k]) * (k == 0 ? 0.6f : 1.0f);
+        if (distance < nearest) {
+            nearest = distance;
+            island = k;
+        }
+    }
+    if (island == 0) {
+        StartNav(NavKind::Press, static_cast<int>(kTwo));
+    } else if (island > 0 && GameMenus::WorldSelectCanPick((world + island) % 8)) {
+        StartNav(NavKind::WorldSelect, (world + island) % 8);
+    }
+}
+
 // A tap at (lx, ly) in layout units (y up, the game's 4:3 layout space centred on the screen). The
 // game's own buttons are where its layouts (fileSelectBase, fileSelectPlayer) put them.
 // `gx` is x in the game's own layout units, which differ from these menus' in Fill (View::gameScaleX).
@@ -1790,6 +2112,11 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         PressToggle();
         return;
     }
+    if (g_ui.toggleShown && UpdateShown() && in(kUpdateX, kToggleY, kUpdateW + 16, 66)) {
+        g_ui.toggleFocus = false;
+        PressUpdate();
+        return;
+    }
     if (g_ui.toggleShown && g_ui.screen == Screen::None && in(kGearX, kGearY, kGearW + 16, 66)) {
         g_ui.toggleFocus = false;
         Show(Screen::Settings);
@@ -1808,6 +2135,16 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         StartNav(NavKind::Press, static_cast<int>(kTwo | kA));  // the strap screen, "Press 2 to Start"
         return;
     }
+    if (scene == kSceneWorldMap && GameMenus::StarCoinsWaiting()) {
+        if (lx > 0 && ly < -170) {
+            StartNav(NavKind::Press, static_cast<int>(kOne));  // Back (1), below the panel on the right
+        }
+        return;  // nothing else on the Star Coins screen takes a tap
+    }
+    if (scene == kSceneWorldMap && GameMenus::WorldSelectOpen()) {
+        TapWorldSelect(lx, ly);
+        return;
+    }
     if (scene == kSceneWorldMap && g_ui.menuSettingsShown) {
         if (in(0, kMenuSettingsY, 345, 64)) {
             g_menuFocus = true;
@@ -1817,6 +2154,7 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         } else if (in(kMenuBackX, kMenuBackY, 210, 40)) {
             StartNav(NavKind::Press, static_cast<int>(kOne));  // Back (1)
         } else {
+            g_menuFocus = false;  // the game's own cursor (hidden while Settings has it) takes the tap
             StartCursorNav(lx, ly);  // one of the game's own buttons
         }
         return;
@@ -1824,7 +2162,7 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
     if (scene == kSceneStage && g_ui.pauseSettingsShown) {
         float cx = 0, cy = 0, scale = 1, alpha = 1;
         if (PauseWindowTransform(cx, cy, scale, alpha) &&
-            in(cx, cy + kPauseSettingsY * scale, 345 * scale, 62 * scale)) {
+            in(cx, cy + PauseSettingsY() * scale, 345 * scale, 62 * scale)) {
             const int cursor = PauseGameCursor();
             g_pauseFocus = true;
             g_pauseFocusFrom = cursor >= 0 ? cursor : g_pauseFocusFrom;
@@ -1926,17 +2264,25 @@ bool TapScreenUp() {
     return g_tapScreen.load(std::memory_order_acquire);
 }
 
+bool Playing() {
+    return g_playing.load(std::memory_order_acquire);
+}
+
 bool TakeSettingsChange(float& renderScale, bool& showFps, int& aspect, bool& spinningCoins, bool& frameGraph,
-                        bool& vsync) {
+                        bool& vsync, int& frameGraphSize, int& touchControls, int& renderer) {
     if (!g_settingsChanged.exchange(false)) {
         return false;
     }
     renderScale = settings_overlay::RenderScale();
-    showFps = settings_overlay::ShowFps();
+    showFps = settings_overlay::FrameGraph();  // the FPS counter is part of the Performance Monitor
     aspect = settings_overlay::Aspect();
     spinningCoins = settings_overlay::SpinningCoins();
     frameGraph = settings_overlay::FrameGraph();
     vsync = settings_overlay::VSync();
+    frameGraphSize = settings_overlay::FrameGraphSize();
+    // Only a change made here: the app's own menu changes it too, and tells the game.
+    touchControls = g_touchControlsToggled.exchange(false) ? (settings_overlay::TouchControls() ? 1 : 0) : -1;
+    renderer = g_rendererChanged.exchange(false) ? RendererIndex() : -1;
     return true;
 }
 
@@ -2027,23 +2373,65 @@ void DumpProfiles() {
     last = profiles;
 }
 
+// NSMBW_DUMP_EF=1: twice a second, the particle effects alive per nw4r::ef::EffectSystem group
+// (active/closing), to tell effects that are never created from effects that are not drawn.
+// The system is at 0x804170D4: group count at +0xC014, its ActivityList array (0x1C each) at +0xC018.
+void DumpEffects() {
+    static const bool on = std::getenv("NSMBW_DUMP_EF") != nullptr;
+    static int frame = 0;
+    if (!on || ++frame % 30 != 0) {
+        return;
+    }
+    constexpr uint32_t kEffectSystem = 0x804170D4u;
+    uint32_t groups = 0, lists = 0;
+    if (!Memory::TryRead32(kEffectSystem + 0xC014u, groups) || !Memory::TryRead32(kEffectSystem + 0xC018u, lists) ||
+        groups > 64) {
+        return;
+    }
+    std::string text;
+    for (uint32_t g = 0; g < groups; ++g) {
+        uint32_t active = 0, closing = 0;
+        Memory::TryRead32(lists + g * 0x1Cu + 0x08u, active);
+        Memory::TryRead32(lists + g * 0x1Cu + 0x14u, closing);
+        if ((active >> 16) != 0 || (closing >> 16) != 0) {
+            char item[32];
+            std::snprintf(item, sizeof(item), "g%u=%u/%u ", g, active >> 16, closing >> 16);
+            text += item;
+        }
+    }
+    // nw4r::ef::Resource (0x80423170): effect projects (ut::List) with their emitter total at +0xC,
+    // texture projects at +0x10 with their texture total at +0x1C.
+    constexpr uint32_t kResource = 0x80423170u;
+    uint32_t projects = 0, emitters = 0, texProjects = 0, textures = 0;
+    Memory::TryRead32(kResource + 0x08u, projects);
+    Memory::TryRead32(kResource + 0x0Cu, emitters);
+    Memory::TryRead32(kResource + 0x18u, texProjects);
+    Memory::TryRead32(kResource + 0x1Cu, textures);
+    RT_LOGF(RT_TAG_RUNTIME, "ef (scene %03X, %u groups, lists %08X, %u breff/%u emitters, %u breft/%u textures): %s\n",
+            GameMenus::CurrentScene(), groups, lists, projects >> 16, emitters, texProjects >> 16, textures,
+            text.c_str());
+}
+
 // NSMBW_WARP=<world>-<course> (debug.nsmbw.warp on Android): entering any course from the world map
 // enters that one instead (testing a level without a save that reaches it). Courses 1-9 are the
 // numbered ones; others are STAGE_e numbers: 20 ghost house, 21 tower, 23 castle, 32-34 the map
 // enemies' courses (5-32: World 5's giant Piranha Plant), 37 airship. Works by
 // rewriting dInfo_c::m_startGameInfo (0x80315B90; world/course shown at +0xC/+0xD and loaded at
 // +0xE/+0xF, all from 0)
-// while the map fades out to the course-in scene, which reads it.
+// while the map fades out to the course-in scene, which reads it. <world>-<course>:<area>:<entrance>
+// starts in that area (from 0) at that entrance id instead of the course's start.
 void Warp() {
-    static int world = -1, course = -1;
+    static int world = -1, course = -1, area = 0, entrance = 0;
     static bool parsed = false;
     if (!parsed) {
         parsed = true;
         if (const char* value = std::getenv("NSMBW_WARP"); value != nullptr && value[0] != 0) {
-            int w = 0, c = 0;
-            if (std::sscanf(value, "%d-%d", &w, &c) == 2 && w >= 1 && w <= 9 && c >= 1 && c <= 42) {
+            int w = 0, c = 0, a = 0, e = 0;
+            if (std::sscanf(value, "%d-%d:%d:%d", &w, &c, &a, &e) >= 2 && w >= 1 && w <= 9 && c >= 1 && c <= 42) {
                 world = w - 1;
                 course = c <= 9 ? c - 1 : c;  // 1-9 as shown, the rest as STAGE_e numbers
+                area = a;
+                entrance = e;
             }
         }
     }
@@ -2062,12 +2450,27 @@ void Warp() {
             Memory::Write8(0x80315B90u + 0xD, static_cast<uint8_t>(course));
             Memory::Write8(0x80315B90u + 0xE, static_cast<uint8_t>(world));  // the course loaded
             Memory::Write8(0x80315B90u + 0xF, static_cast<uint8_t>(course));
-            Memory::Write8(0x80315B90u + 0x5, 0);  // entrance
-            Memory::Write8(0x80315B90u + 0x6, 0);  // area
+            Memory::Write8(0x80315B90u + 0x5, static_cast<uint8_t>(entrance));
+            Memory::Write8(0x80315B90u + 0x6, static_cast<uint8_t>(area));
             RT_LOGF(RT_TAG_RUNTIME, "warp: course %d-%d\n", world + 1, course + 1);
             done = true;
         }
-    } else {
+    } else if ((now == 0x006 || next == 0x006) && (area != 0 || entrance != 0)) {
+        // RESTART_CRSIN (a save that boots back into its last course) starts from its own copy,
+        // dScRestartCrsin_c::m_startGameInfo: with an area given, boot straight into it.
+        constexpr uint32_t kRestart = 0x80373D60u;
+        Memory::Write8(kRestart + 0xC, static_cast<uint8_t>(world));
+        Memory::Write8(kRestart + 0xD, static_cast<uint8_t>(course));
+        Memory::Write8(kRestart + 0xE, static_cast<uint8_t>(world));
+        Memory::Write8(kRestart + 0xF, static_cast<uint8_t>(course));
+        Memory::Write8(kRestart + 0x5, static_cast<uint8_t>(entrance));
+        Memory::Write8(kRestart + 0x6, static_cast<uint8_t>(area));
+    } else if (now == 0x007 && done && (area != 0 || entrance != 0)) {
+        // The course-in scene can set its own start point after the map's: keep ours until the
+        // course loads.
+        Memory::Write8(0x80315B90u + 0x5, static_cast<uint8_t>(entrance));
+        Memory::Write8(0x80315B90u + 0x6, static_cast<uint8_t>(area));
+    } else if (now != 0x007) {
         done = false;
     }
 }
@@ -2137,6 +2540,7 @@ void ScriptedTaps() {
 
 void Draw() {
     DumpProfiles();
+    DumpEffects();
     Warp();
     if (std::getenv("NSMBW_DUMP_STATES") != nullptr) {
         static std::string lastStates;
@@ -2149,8 +2553,17 @@ void Draw() {
     DumpLayouts();
     ScriptedTaps();
     ImDrawList* list = ImGui::GetBackgroundDrawList();
+    // A pause menu: looked for every few frames (walking the object tree is not free).
+    static int pauseCheck = 0;
+    static int pauseKind = 0;
+    if (++pauseCheck % 6 == 0) {
+        pauseKind = GameMenus::PauseMenuKind();
+    }
     if (NetplaySession::Active()) {
         g_tapScreen.store(false, std::memory_order_release);
+        const uint16_t scene = GameMenus::CurrentScene();
+        g_playing.store((scene == kSceneStage || scene == kSceneWorldMap) && pauseKind == 0 && !Modal(),
+                        std::memory_order_release);
         DrawSession(list);
         return;
     }
@@ -2173,6 +2586,14 @@ void Draw() {
     if (!g_ui.toggleShown) {
         g_ui.toggleFocus = false;
     }
+    // A failed update says why, once, on the file select (the button then offers to try again).
+    static bool updateFailureShown = false;
+    if (const Updater::Status update = Updater::Get(); update.state != Updater::State::Failed) {
+        updateFailureShown = false;
+    } else if (!updateFailureShown && g_ui.toggleShown && g_ui.screen == Screen::None) {
+        updateFailureShown = true;
+        ShowMessage(update.message, Screen::None);
+    }
     if (g_ui.toggleFocus && !Modal()) {
         const uint32_t ev = g_ui.events;
         g_ui.events = 0;
@@ -2181,12 +2602,14 @@ void Draw() {
             g_ui.toggleFocus = false;
             g_ui.heldFromMenu = g_ui.prevHold;
         } else if (ev & kEvRight) {
-            g_ui.topItem = 1;
+            g_ui.topItem = g_ui.topItem == 2 ? 0 : 1;  // Update -> Couch -> gear
         } else if (ev & kEvLeft) {
-            g_ui.topItem = 0;
+            g_ui.topItem = g_ui.topItem == 1 || !UpdateShown() ? 0 : 2;
         } else if ((ev & kEvConfirm) && g_ui.topItem == 1) {
             g_ui.toggleFocus = false;
             Show(Screen::Settings);
+        } else if ((ev & kEvConfirm) && g_ui.topItem == 2) {
+            PressUpdate();
         } else if (ev & kEvConfirm) {
             PressToggle();
         }
@@ -2201,13 +2624,11 @@ void Draw() {
                players == GameMenus::SelectPlayers::Other) {
         Show(Screen::None);
     }
-    // The pause menus' gear: looked for every few frames (walking the object tree is not free).
-    static int pauseCheck = 0;
-    if (++pauseCheck % 6 == 0) {
-        const int kind = GameMenus::PauseMenuKind();
-        g_ui.pauseSettingsShown = scene == kSceneStage && kind == 2;
-        g_ui.menuSettingsShown = scene == kSceneWorldMap && kind == 1;
-        if (kind == 2) {
+    // The pause menus' gear.
+    if (pauseCheck % 6 == 0) {
+        g_ui.pauseSettingsShown = scene == kSceneStage && pauseKind == 2;
+        g_ui.menuSettingsShown = scene == kSceneWorldMap && pauseKind == 1;
+        if (pauseKind == 2) {
             DumpPanesOnce(GameMenus::PauseWindowObject(), "pause");
         }
     }
@@ -2246,9 +2667,12 @@ void Draw() {
     if (++titleCheck % 10 == 0) {
         title = scene == kSceneStage && GameMenus::HasProfile(kProfileOpeningTitle);
     }
-    g_tapScreen.store(Modal() || g_ui.toggleShown || scene == kSceneBoot || title ||
-                          (scene == kSceneGameSetup && players == GameMenus::SelectPlayers::Choosing),
-                      std::memory_order_release);
+    const bool tapScreen = Modal() || g_ui.toggleShown || scene == kSceneBoot || title ||
+                           (scene == kSceneGameSetup && players == GameMenus::SelectPlayers::Choosing);
+    g_tapScreen.store(tapScreen, std::memory_order_release);
+    g_playing.store((scene == kSceneStage || scene == kSceneWorldMap) && !title && !tapScreen && pauseKind == 0 &&
+                        g_ui.screen == Screen::None,
+                    std::memory_order_release);
     {
         const ImGuiIO& io = ImGui::GetIO();
         const uint64_t finger = g_pointer.load(std::memory_order_acquire);
@@ -2360,7 +2784,9 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         return;
     }
     if (chan == 0) {
-        // A tap on the game's own screens plays back as presses of the first remote.
+        // A tap on the game's own screens plays back as presses of the first remote. Those steer the
+        // game's cursor straight to the tapped button, so the Settings rows below leave them alone.
+        const bool tapping = g_nav.kind == NavKind::Cursor;
         if (!Modal()) {
             sample.hold |= NavButtons();
         }
@@ -2380,7 +2806,7 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
 
         // The world map's + menu: Settings sits between Quick Save and Title Screen. The game never
         // sees the presses that move onto or off it, and its own cursor is moved to match.
-        if (g_ui.menuSettingsShown && !Modal()) {
+        if (g_ui.menuSettingsShown && !Modal() && !tapping) {
             const uint32_t down = upright ? kDown : kLeft, up = upright ? kUp : kRight;
             const int cursor = GameMenus::CourseMenuCursor();
             if (!g_menuFocus) {
@@ -2421,7 +2847,7 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         }
 
         // A level's pause window: Settings sits between Continue and Exit Course, the same way.
-        if (g_ui.pauseSettingsShown && !Modal()) {
+        if (g_ui.pauseSettingsShown && !Modal() && !tapping) {
             const uint32_t down = upright ? kDown : kLeft, up = upright ? kUp : kRight;
             if (!g_pauseFocus) {
                 const int cursor = PauseGameCursor();
@@ -2463,12 +2889,26 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
             }
         }
 
+        // The Star Coins screen only leaves on 1, and the yes/no prompts cancel on it: + (Esc on a
+        // keyboard) does the same there. The game never sees that +, so it doesn't open the + menu
+        // again once the screen has closed.
+        if ((pressed & kPlus) != 0 && !Modal() && (GameMenus::StarCoinsWaiting() || GameMenus::YesNoWaiting())) {
+            g_ui.plusIsBack = true;
+        }
+        if ((hold & kPlus) == 0) {
+            g_ui.plusIsBack = false;
+        }
+        if (g_ui.plusIsBack) {
+            g_ui.heldFromMenu |= kPlus;
+        }
+
         // Up from any of the three files (also in Create Room's file pick) moves onto the LAN /
-        // Couch toggle above them; the game never sees that press, so its cursor stays put.
+        // Couch toggle above them; the game never sees that press, so its cursor stays put. Where
+        // the layout stacks the files, only from the top one: up from the others is the game's.
         const uint32_t screenUp = upright ? kUp : kRight;
         const int fileCursor = GameMenus::FileSelectRawCursor();
         if (g_ui.toggleShown && !g_ui.toggleFocus && !Modal() && (pressed & screenUp) != 0 && fileCursor >= 0 &&
-            fileCursor <= 2) {
+            fileCursor <= (FilesStacked() ? 0 : 2)) {
             g_ui.toggleFocus = true;
             g_ui.topItem = 0;
             g_ui.events &= ~kEvUp;
@@ -2488,6 +2928,9 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         }
         g_ui.heldFromMenu &= hold;
         sample.hold &= ~g_ui.heldFromMenu;
+        if (g_ui.plusIsBack) {
+            sample.hold |= kOne;
+        }
         if (g_ui.injectReads > 0 && !Modal()) {
             --g_ui.injectReads;
             sample.hold |= g_ui.injectButtons;

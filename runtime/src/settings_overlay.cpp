@@ -2,11 +2,13 @@
 #include "netplay_lobby.h"
 #include "netplay_ui.h"
 #include "settings_overlay.h"
+#include "runtime_product.h"
 #include "audio_backend.h"
 #include "aurora_events.h"
 #include "controller_button_names.h"
 #include "controller_mapping_wizard.h"
 #include "input_bindings.h"
+#include "keybinds.h"
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
@@ -120,8 +122,11 @@ int g_displayMode = [] {
 }();
 bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
-bool g_showFps = RuntimeConfigFile::ShowFps(false);  // off unless turned on
-bool g_frameGraph = RuntimeConfigFile::FrameGraph(false);
+// The Performance Monitor (FPS counter and frametime graph in one), off unless turned on. Configs
+// from before it had the two apart; either one on turns it on.
+bool g_frameGraph = RuntimeConfigFile::FrameGraph(false) || RuntimeConfigFile::ShowFps(false);
+bool g_touchControls = RuntimeConfigFile::TouchControls(true);
+int g_frameGraphSize = std::clamp(static_cast<int>(RuntimeConfigFile::FrameGraphSize(50)), 5, 200);
 std::atomic<bool> g_vsync{RuntimeConfigFile::VSync(false)};
 #if defined(__APPLE__)
 bool g_metalFxSpatialUpscaling = RuntimeConfigFile::MetalFxSpatialUpscaling(false);
@@ -496,6 +501,7 @@ struct RebindState {
     uint32_t mouse = 0;
     std::array<bool, SDL_GAMEPAD_BUTTON_COUNT> buttons{};
     std::array<bool, SDL_GAMEPAD_AXIS_COUNT> axesReady{};
+    bool inGame = false;  // from the game's settings window (Controller tab): no ImGui popup
 } g_rebind;
 
 void BeginRebind(RebindKind kind, uint16_t target, const char* label, bool secondary = false) {
@@ -562,6 +568,9 @@ void CompleteRebind(uint32_t value) {
 }
 
 void DrawRebindPrompt() {
+    if (g_rebind.inGame) {
+        return;  // the game's settings window polls it (PollControllerCapture)
+    }
     if (g_rebind.openPopup) {
         ImGui::OpenPopup("Rebind input");
         g_rebind.openPopup = false;
@@ -1225,8 +1234,8 @@ void DrawGraphicsSettings() {
         aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
         RuntimeConfigFile::SetSkipUnreadyPipelines(g_skipUnreadyPipelines);
     }
-    if (ImGui::Checkbox("Show FPS", &g_showFps)) {
-        RuntimeConfigFile::SetShowFps(g_showFps);
+    if (bool monitor = g_frameGraph; ImGui::Checkbox("Performance Monitor", &monitor)) {
+        SetFrameGraph(monitor);
     }
     ImGui::Separator();
     ImGui::Text("Graphics API: %s", GraphicsApiDisplayName());
@@ -1236,6 +1245,12 @@ void DrawGraphicsSettings() {
 constexpr int kFrameTimeCount = 180;
 float g_frameTimes[kFrameTimeCount] = {};
 int g_frameTimeNext = 0;
+
+// The monitor's text follows its size too, down to 60% of the overlay's own text (smaller is
+// unreadable).
+float MonitorFontScale() {
+    return std::max(0.6f, static_cast<float>(g_frameGraphSize) / 50.0f);
+}
 
 void DrawFrameGraph() {
     float last = g_frameTimes[(g_frameTimeNext + kFrameTimeCount - 1) % kFrameTimeCount];
@@ -1247,9 +1262,13 @@ void DrawFrameGraph() {
         sum += t;
         ++samples;
     }
+    // The Video tab's Performance Monitor size: 50% is the graph's original size.
+    const float sizeScale = static_cast<float>(g_frameGraphSize) / 50.0f;
+    ImGui::SetWindowFontScale(MonitorFontScale());
     ImGui::Text("Frame: %.1f ms", last);
     ImGui::TextDisabled("avg %.1f  max %.1f", samples > 0 ? sum / samples : 0.0f, peak);
-    const float scale = ImGui::GetFontSize() / 13.0f;
+    ImGui::SetWindowFontScale(1.0f);
+    const float scale = ImGui::GetFontSize() / 13.0f * sizeScale;
     const ImVec2 size(kFrameTimeCount * scale, 50.0f * scale);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::Dummy(size);
@@ -1314,7 +1333,7 @@ void DrawFpsOverlay() {
             }
         }
     }
-    if (!g_showFps && !g_frameGraph) {
+    if (!g_frameGraph) {
         return;
     }
 
@@ -1331,8 +1350,8 @@ void DrawFpsOverlay() {
                                          ImGuiWindowFlags_NoNav |
                                          ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("FPS Overlay", nullptr, kFlags)) {
-        if (!g_showFps) {
-        } else if (presentTiming.sampleCount == 0) {
+        ImGui::SetWindowFontScale(MonitorFontScale());
+        if (presentTiming.sampleCount == 0) {
             ImGui::TextUnformatted("FPS: --");
         } else {
             // Present timing includes the additional frames produced by
@@ -1347,9 +1366,8 @@ void DrawFpsOverlay() {
                                    presentTiming.effectiveFramesPerSecond);
             }
         }
-        if (g_frameGraph) {
-            DrawFrameGraph();
-        }
+        ImGui::SetWindowFontScale(1.0f);
+        DrawFrameGraph();
     }
     ImGui::End();
 }
@@ -1536,7 +1554,7 @@ void DrawTopBar() {
     ImGui::End();
     if (!ImGui::BeginMainMenuBar()) return;
 
-    ImGui::TextUnformatted("New Super Mario Bros. Wii");
+    ImGui::TextUnformatted(RuntimeProduct::Active().displayName.data());
     ImGui::Separator();
     const auto resolutionIt = std::find_if(kResolutions.begin(), kResolutions.end(), [](const ResolutionItem& item) {
         return std::fabs(item.scale - g_resolutionScale) < 0.001f;
@@ -1724,6 +1742,17 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+            // Which pad each player's remote now reads (player 1 is Mario).
+            std::string ports;
+            for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+                const s32 index = PADGetIndexForPort(port);
+                SDL_Gamepad* pad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
+                const char* name = pad != nullptr ? SDL_GetGamepadName(pad) : nullptr;
+                ports += " P" + std::to_string(port + 1) + "=" + (pad != nullptr ? (name != nullptr ? name : "pad") : "-");
+            }
+            RT_LOGF(RT_TAG_RUNTIME, "controller %s (id %d);%s\n",
+                    ev->type == AURORA_CONTROLLER_ADDED ? "connected" : "disconnected", static_cast<int>(ev->controller),
+                    ports.c_str());
         }
         if (ev->type != AURORA_SDL_EVENT) {
             continue;
@@ -1782,14 +1811,6 @@ bool SpinningCoins() noexcept {
     return g_spinningCoins;
 }
 
-void SetShowFps(bool show) noexcept {
-    g_showFps = show;
-    RuntimeConfigFile::SetShowFps(show);
-}
-
-bool ShowFps() noexcept {
-    return g_showFps;
-}
 
 void SetVSync(bool enabled) noexcept {
     g_vsync.store(enabled);
@@ -1845,6 +1866,161 @@ void FlushGameSound() noexcept {
 void SetFrameGraph(bool show) noexcept {
     g_frameGraph = show;
     RuntimeConfigFile::SetFrameGraph(show);
+    RuntimeConfigFile::SetShowFps(false);  // the old FPS-only switch would turn it back on
+}
+
+void SetFrameGraphSize(int percent, bool save) noexcept {
+    g_frameGraphSize = std::clamp(percent, 5, 200);
+    if (save) {
+        RuntimeConfigFile::SetFrameGraphSize(static_cast<uint32_t>(g_frameGraphSize));
+    }
+}
+
+int FrameGraphSize() noexcept {
+    return g_frameGraphSize;
+}
+
+namespace {
+// The Keybinds tab's rows (Keybinds::Action order) on a controller: the GameCube pad button the
+// virtual remote turns into each (virtual_remote.cpp PadIntent). Tilt is the right stick, fixed.
+constexpr std::array<uint16_t, 12> kActionPadButton = {
+    PAD_BUTTON_UP, PAD_BUTTON_DOWN, PAD_BUTTON_LEFT, PAD_BUTTON_RIGHT, PAD_BUTTON_A, PAD_BUTTON_B,
+    PAD_BUTTON_Y, PAD_TRIGGER_Z, 0, 0, PAD_BUTTON_START, PAD_TRIGGER_L,
+};
+constexpr int kActionTiltLeft = 8, kActionTiltRight = 9;
+
+// The first port with a gamepad on it, or -1. Wii Remotes (with or without an extension) reach the
+// game directly, not through these bindings.
+int GamepadPort() {
+    for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+        const auto kind = WiiRemoteInput::KindForPort(port);
+        if (PADGetIndexForPort(port) >= 0 &&
+            (kind == WiiRemoteInput::Kind::NotWii || kind == WiiRemoteInput::Kind::WiiUPro)) {
+            return static_cast<int>(port);
+        }
+    }
+    return -1;
+}
+
+// "South (A / Cross)" -> "A / Cross": the part in brackets, for the game window's small buttons.
+std::string ShortButtonLabel(const char* label) {
+    const std::string text = label;
+    const size_t open = text.find('('), close = text.rfind(')');
+    return open != std::string::npos && close != std::string::npos && close > open + 1
+               ? text.substr(open + 1, close - open - 1)
+               : text;
+}
+} // namespace
+
+bool ControllerConnected() noexcept {
+    return GamepadPort() >= 0;
+}
+
+std::string ControllerBindingLabel(int action) {
+    if (action == kActionTiltLeft) return "Right stick left";
+    if (action == kActionTiltRight) return "Right stick right";
+    const int port = GamepadPort();
+    if (port < 0 || action < 0 || action >= static_cast<int>(kActionPadButton.size())) return "None";
+    uint32_t count = 0;
+    const PADButtonMapping* mappings = PADGetButtonMappings(static_cast<uint32_t>(port), &count);
+    for (uint32_t i = 0; mappings != nullptr && i < count; ++i) {
+        if (mappings[i].padButton == kActionPadButton[action]) {
+            if (mappings[i].nativeButton == PAD_NATIVE_BUTTON_DISABLED) return "None";
+            return ShortButtonLabel(NativeButtonForValue(mappings[i].nativeButton).label);
+        }
+    }
+    return "None";
+}
+
+bool ControllerActionRebindable(int action) noexcept {
+    return action >= 0 && action < static_cast<int>(kActionPadButton.size()) && kActionPadButton[action] != 0;
+}
+
+void BeginControllerCapture(int action) noexcept {
+    const int port = GamepadPort();
+    if (port < 0 || !ControllerActionRebindable(action)) return;
+    g_controllerPort = port;
+    BeginRebind(RebindKind::Controller, kActionPadButton[action], Keybinds::ActionName(action));
+    g_rebind.openPopup = false;
+    g_rebind.inGame = true;
+}
+
+int ControllerCapturing() noexcept {
+    if (!g_rebind.active || !g_rebind.inGame) return -1;
+    for (size_t i = 0; i < kActionPadButton.size(); ++i) {
+        if (kActionPadButton[i] == g_rebind.target) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+bool PollControllerCapture() noexcept {
+    if (!g_rebind.active || !g_rebind.inGame) return true;
+    int keyCount = 0;
+    const bool* keys = SDL_GetKeyboardState(&keyCount);
+    // Escape or 10 seconds without a press leave the binding as it was.
+    if ((keys != nullptr && SDL_SCANCODE_ESCAPE < keyCount && keys[SDL_SCANCODE_ESCAPE]) || Clock::now() >= g_rebind.deadline) {
+        g_rebind.active = false;
+        return true;
+    }
+    auto* pad = SDL_GetGamepadFromID(g_rebind.instance);
+    if (pad == nullptr) {
+        g_rebind.active = false;  // unplugged meanwhile
+        return true;
+    }
+    for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && g_rebind.active; ++i) {
+        const bool pressed = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
+        if (pressed && !g_rebind.buttons[i]) CompleteRebind(static_cast<uint32_t>(i));
+        g_rebind.buttons[i] = pressed;
+    }
+    for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT && g_rebind.active; ++i) {
+        const int value = SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i));
+        if (std::abs(value) < 8000) g_rebind.axesReady[i] = true;
+        if (g_rebind.axesReady[i] && std::abs(value) >= 16384) CompleteRebind(PADEncodeAxisButton(i, value < 0));
+    }
+    return !g_rebind.active;
+}
+
+void ResetControllerBindings() noexcept {
+    const int port = GamepadPort();
+    if (port < 0) return;
+    PADRestoreDefaultMapping(static_cast<uint32_t>(port));
+    uint32_t count = 0;
+    if (PADButtonMapping* restored = PADGetButtonMappings(static_cast<uint32_t>(port), &count)) {
+        for (size_t i = 0; i < kControllerButtons.size(); ++i) {
+            const auto it = std::find_if(restored, restored + count, [&](const PADButtonMapping& mapping) {
+                return mapping.padButton == kControllerButtons[i].padButton;
+            });
+            if (it != restored + count) {
+                RuntimeConfigFile::SetControllerButton(i, NativeButtonForValue(it->nativeButton).configName);
+            }
+            PADSetAltButtonMapping(static_cast<uint32_t>(port),
+                                   PADButtonMapping{PAD_NATIVE_BUTTON_INVALID, kControllerButtons[i].padButton});
+        }
+    }
+    PADSerializeMappings();
+}
+
+void SetTouchControls(bool on) noexcept {
+    g_touchControls = on;
+}
+
+bool TouchControls() noexcept {
+    return g_touchControls;
+}
+
+std::string GraphicsApiChoice() {
+    return RuntimeConfigFile::GraphicsApi("auto");
+}
+
+void SetGraphicsApiChoice(const std::string& name) noexcept {
+    try {
+        RuntimeConfigFile::SetGraphicsApi(name);
+    } catch (...) {
+    }
+}
+
+const char* RunningGraphicsApi() noexcept {
+    return GraphicsApiDisplayName();
 }
 
 bool FrameGraph() noexcept {

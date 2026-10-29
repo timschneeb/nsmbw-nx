@@ -67,6 +67,11 @@ std::atomic_bool g_surfaceReady = true;
 #endif
 bool g_lastPaused = false;
 bool g_gotFocus = false;
+
+bool test_no_activate() {
+  static const bool value = SDL_getenv("AURORA_TEST_NOACTIVATE") != nullptr;
+  return value;
+}
 #if defined(_WIN32)
 WNDPROC g_prevWindowProc = nullptr;
 // Native window handle captured once when the hook is installed. The presenter checks the native
@@ -384,6 +389,11 @@ bool create_window(AuroraBackend backend) {
   if (g_config.startFullscreen) {
     flags |= SDL_WINDOW_FULLSCREEN;
   }
+  // AURORA_TEST_NOACTIVATE (automated runs on a PC someone is using): the window never takes focus.
+  if (test_no_activate()) {
+    flags |= SDL_WINDOW_NOT_FOCUSABLE;
+    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+  }
 #endif
   switch (backend) {
 #ifdef AURORA_ENABLE_GX
@@ -401,7 +411,8 @@ bool create_window(AuroraBackend backend) {
     flags |= SDL_WINDOW_METAL;
     break;
 #endif
-#ifdef DAWN_ENABLE_BACKEND_OPENGL
+#if defined(DAWN_ENABLE_BACKEND_OPENGL) && !defined(SDL_PLATFORM_ANDROID)
+  // (On Android, Dawn makes its own EGL surface on the native window, which can hold only one.)
   case BACKEND_OPENGL:
   case BACKEND_OPENGLES:
     flags |= SDL_WINDOW_OPENGL;
@@ -507,6 +518,13 @@ bool initialize() {
       SDL_HINT_SCREENSAVER_INHIBIT_ACTIVITY_NAME, SDL_GetError());
   TRY(SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE_RUMBLE_BRAKE, "1"), "Error setting {}: {}",
       SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE_RUMBLE_BRAKE, SDL_GetError());
+#if defined(SDL_PLATFORM_ANDROID)
+  // NSMBW: controllers through Android's own input stack, not SDL's USB/HID driver. HIDAPI opened a
+  // USB controller (a GameSir G8 plugged into the phone) itself, which needs USB permission again
+  // after every reconnect; while that was pending SDL also kept the device off Android's path, so a
+  // reconnected controller gave no input until the app restarted. Android handles hot-plugging.
+  TRY(SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0"), "Error setting {}: {}", SDL_HINT_JOYSTICK_HIDAPI, SDL_GetError());
+#endif
 
   TRY(SDL_DisableScreenSaver(), "Error disabling screensaver: {}", SDL_GetError());
   if (g_config.allowJoystickBackgroundEvents) {
@@ -651,7 +669,23 @@ bool native_window_size_matches(uint32_t width, uint32_t height) noexcept {
   return size.native_fb_width == width && size.native_fb_height == height;
 }
 
-void set_surface_ready(bool ready) noexcept { g_surfaceReady.store(ready, std::memory_order_release); }
+// NSMBW: a lost surface (Android destroys it when the screen turns off or the app leaves) also
+// means the Dawn surface built for it is dead. The game is paused meanwhile, so no frame notices the
+// loss; on return the new surface is "ready" at the same size and the old swapchain would be
+// presented to (Vulkan queueBuffer: unknown buffer, and the app exited). The flag makes the next
+// frame build a new surface, and the presenter wait for it.
+std::atomic_bool g_surfaceLost{false};
+
+void set_surface_ready(bool ready) noexcept {
+  if (!ready) {
+    g_surfaceLost.store(true, std::memory_order_release);
+  }
+  g_surfaceReady.store(ready, std::memory_order_release);
+}
+
+bool surface_lost_pending() noexcept { return g_surfaceLost.load(std::memory_order_acquire); }
+
+bool take_surface_lost() noexcept { return g_surfaceLost.exchange(false, std::memory_order_acq_rel); }
 
 SurfaceLock::SurfaceLock() noexcept {
 #if defined(SDL_PLATFORM_ANDROID)

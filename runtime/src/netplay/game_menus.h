@@ -28,6 +28,8 @@ bool FileSelectWaiting();
 int FileSelectCursor();
 // The file select's cursor as the game keeps it (0-2 the files, higher the buttons below), -1 if unknown.
 int FileSelectRawCursor();
+// The file select object (dFileSelect_c), 0 without one.
+uint32_t FileSelectObject();
 
 // Whether an object of this profile exists (0x2BB EVENT_OPENING_TITLE: the title screen is up).
 bool HasProfile(uint16_t profile);
@@ -49,12 +51,24 @@ int CourseMenuCursor();
 uint32_t PauseWindowObject();
 // The pause window is on screen (opening, waiting for a choice, or closing), not idling between pauses.
 bool PauseWindowShowing();
+// The world map's Star Coins screen (dCollectionCoin_c, from the + menu) is up, waiting for a button;
+// only 1 leaves it.
+bool StarCoinsWaiting();
+// One of the game's yes/no prompts (dYesNoWindow_c) is up, waiting for a choice; 1 picks the No / Cancel side.
+bool YesNoWaiting();
+// The world map's Select a World screen (dWorldSelect_c, from -): up at all; up and waiting for a
+// button; the world picked (0-8, -1 without the screen); whether a world can be picked yet.
+bool WorldSelectOpen();
+bool WorldSelectWaiting();
+int WorldSelectWorld();
+bool WorldSelectCanPick(int world);
 // The SELECT_CURSOR object (the menus' corner brackets), 0 without one.
 uint32_t SelectCursorObject();
 // Player `player` (0-3) is jumping or falling, where a shake spins him (Space Smart Spin QoL): not
-// on the ground, and not wall-sliding, swimming, on Yoshi or already spinning. Walks the object
-// tree: call it on a key press, not every frame.
-bool PlayerInSpinnableAir(int player, float* verticalSpeed = nullptr);
+// on the ground, and not wall-sliding, swimming, on Yoshi, on a springboard or already spinning.
+// onSpringboard: he is on a springboard (StateID_JumpDai), where 2 held bounces him higher. Walks
+// the object tree: call it on a key press, not every frame.
+bool PlayerInSpinnableAir(int player, float* verticalSpeed = nullptr, bool* onSpringboard = nullptr);
 // NSMBW_DUMP_STATES debugging: the StateIDs held by the listed profiles' objects.
 std::string DumpStates();
 

@@ -44,6 +44,7 @@
 #elif defined(__ANDROID__)
 #include <android/choreographer.h>
 #include <android/looper.h>
+#include <dlfcn.h>
 #endif
 
 #include <aurora/aurora.h>
@@ -205,9 +206,20 @@ std::atomic<int64_t> g_measuredPeriod{0}; // the shortest recent gap between cal
 int64_t g_previous = 0;
 int64_t g_shortest = 0;
 int g_gaps = 0;
+// While the game is paused in the background the callbacks stop (60 wake-ups a second for nothing);
+// Timing wakes the looper to start them again.
+std::atomic<bool> g_parked{false};
+std::atomic<ALooper*> g_looper{nullptr};
+
+void PostFrame(AChoreographer* choreographer);
 
 void OnFrame(int64_t frameTimeNanos, void* data) {
     auto* choreographer = static_cast<AChoreographer*>(data);
+    if (HostSuspend::Paused()) {
+        g_previous = 0;
+        g_parked.store(true, std::memory_order_release);
+        return;
+    }
     g_lastVsync.store(frameTimeNanos, std::memory_order_release);
     // Callbacks can skip vsyncs but never come closer together than one, so the shortest gap of a
     // batch is the period.
@@ -223,7 +235,27 @@ void OnFrame(int64_t frameTimeNanos, void* data) {
         }
     }
     g_previous = frameTimeNanos;
-    AChoreographer_postFrameCallback64(choreographer, OnFrame, choreographer);
+    PostFrame(choreographer);
+}
+
+// Before Android 10 the callback takes a long (64 bits on arm64 as well).
+void OnFrameLong(long frameTimeNanos, void* data) {
+    OnFrame(frameTimeNanos, data);
+}
+
+// The 64-bit callback is Android 10+ and the refresh rate callback Android 11+: looked up at run time,
+// so Android 8 and 9 take the old callback and measure the period from the callbacks' gaps.
+void PostFrame(AChoreographer* choreographer) {
+    using PostFrame64 = void (*)(AChoreographer*, AChoreographer_frameCallback64, void*);
+    static const auto post64 = reinterpret_cast<PostFrame64>(dlsym(RTLD_DEFAULT, "AChoreographer_postFrameCallback64"));
+    if (post64 != nullptr) {
+        post64(choreographer, OnFrame, choreographer);
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        AChoreographer_postFrameCallback(choreographer, OnFrameLong, choreographer);
+#pragma clang diagnostic pop
+    }
 }
 
 void OnRefreshRate(int64_t vsyncPeriodNanos, void*) {
@@ -239,10 +271,19 @@ void Start() {
             if (choreographer == nullptr) {
                 return;
             }
-            AChoreographer_registerRefreshRateCallback(choreographer, OnRefreshRate, nullptr);
-            AChoreographer_postFrameCallback64(choreographer, OnFrame, choreographer);
+            using RegisterRefreshRate = void (*)(AChoreographer*, AChoreographer_refreshRateCallback, void*);
+            if (const auto registerRefreshRate = reinterpret_cast<RegisterRefreshRate>(
+                    dlsym(RTLD_DEFAULT, "AChoreographer_registerRefreshRateCallback"))) {
+                registerRefreshRate(choreographer, OnRefreshRate, nullptr);
+            }
+            g_looper.store(ALooper_forThread(), std::memory_order_release);
+            PostFrame(choreographer);
             while (true) {
                 ALooper_pollOnce(-1, nullptr, nullptr, nullptr);
+                if (g_parked.load(std::memory_order_acquire) && !HostSuspend::Paused()) {
+                    g_parked.store(false, std::memory_order_release);
+                    PostFrame(choreographer);
+                }
             }
         }).detach();
     });
@@ -251,6 +292,11 @@ void Start() {
 // The display period and the time of a recent vsync, once both are known.
 bool Timing(int64_t* period, int64_t* vsync) {
     Start();
+    if (g_parked.load(std::memory_order_acquire)) {
+        if (ALooper* looper = g_looper.load(std::memory_order_acquire)) {
+            ALooper_wake(looper);  // the game runs again: take the vsync callbacks again
+        }
+    }
     *vsync = g_lastVsync.load(std::memory_order_acquire);
     *period = g_period.load(std::memory_order_acquire);
     if (*period <= 0) {
@@ -1219,12 +1265,15 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             const double n = times.frames;
             uint64_t gxNanos = 0, lockNanos = 0, draws = 0;
             AuroraTakeGxStats(&gxNanos, &lockNanos, &draws);
+            const uint64_t unmerged = AuroraTakeUnmergedDraws();
             uint64_t copies = 0, creates = 0;
             AuroraTakeCopyStats(&copies, &creates);
             RT_LOGF(RT_TAG_VI,
-                    "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.1f copies, %.1f new copy "
-                    "textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, %d over 20 ms\n",
+                    "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.0f unmerged, %.1f copies, "
+                    "%.1f new copy textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, "
+                    "%d over 20 ms\n",
                     n * 1000.0 / window, times.gameMs / n, gxNanos / 1e6 / n, lockNanos / 1e6 / n, draws / n,
+                    unmerged / n,
                     copies / n, creates / n, times.endFrameMs / n, times.paceMs / n, times.worstMs,
                     std::sqrt(std::max(0.0, times.sumSq / n - (window / n) * (window / n))), times.slow);
             uint32_t sceneWord = 0;

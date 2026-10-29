@@ -3,6 +3,8 @@
 #include <aurora/aurora.h>
 #include <aurora/event.h>
 
+#include <string>
+
 namespace settings_overlay {
 // Apply persistent controller settings once Aurora has discovered host devices.
 void InitializeRuntimeSettings() noexcept;
@@ -16,12 +18,32 @@ void NotifyStrapInputAccepted() noexcept;
 void AdvancePresentedFrame() noexcept;
 // Put host controllers back to a neutral state before the process ends.
 void ReleaseControllers() noexcept;
-// FPS counter on or off (the Android menu sets it through JNI); saved to Config.toml.
-void SetShowFps(bool show) noexcept;
-bool ShowFps() noexcept;
-// A frame-time graph under the FPS counter, off by default. Saved to Config.toml.
+// The Performance Monitor: the FPS counter and a frame-time graph in the top right, off by
+// default. Saved to Config.toml ([video] frame_graph; the old show_fps also turns it on).
 void SetFrameGraph(bool show) noexcept;
 bool FrameGraph() noexcept;
+// The Performance Monitor's size in percent, 5-200 (50 is the graph's original size), its text
+// included. `save` writes Config.toml (a slider being dragged saves when it is let go).
+void SetFrameGraphSize(int percent, bool save) noexcept;
+// The Keybinds tab with a controller connected (Controller Bindings): its rows are the keyboard's
+// actions (Keybinds::Action), bound to that controller's buttons through the [controller] mapping.
+bool ControllerConnected() noexcept;
+std::string ControllerBindingLabel(int action);
+bool ControllerActionRebindable(int action) noexcept;  // not the tilt rows (the right stick)
+// Waits for the next controller button pressed and binds it to `action`; Escape or 10 s cancel.
+void BeginControllerCapture(int action) noexcept;
+int ControllerCapturing() noexcept;  // the action waiting for a button, or -1
+bool PollControllerCapture() noexcept;  // true once the capture has ended
+void ResetControllerBindings() noexcept;
+// Android's on-screen controls (the app shows or hides them; the Keybinds tab's checkbox asks it to).
+void SetTouchControls(bool on) noexcept;
+bool TouchControls() noexcept;
+int FrameGraphSize() noexcept;
+// The renderer: [video] graphics_api as chosen for the next start ("auto", "vulkan", "d3d12", "d3d11",
+// "opengles"...), and the one this run uses ("Vulkan", "Direct3D 11"...).
+std::string GraphicsApiChoice();
+void SetGraphicsApiChoice(const std::string& name) noexcept;
+const char* RunningGraphicsApi() noexcept;
 // V-Sync: presents wait for the display, and the game's clock follows its refresh (hle/vi.cpp).
 // Off by default. Saved to Config.toml.
 void SetVSync(bool enabled) noexcept;

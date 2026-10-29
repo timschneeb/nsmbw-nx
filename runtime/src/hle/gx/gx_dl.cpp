@@ -6,6 +6,8 @@
 
 #include <chrono>
 
+#include <dolphin/gx/GXAurora.h>
+
 #include <cstdlib>
 #include <unordered_map>
 
@@ -1261,6 +1263,8 @@ static bool ApplyAuroraArraysForDisplayList(const std::array<uint32_t, GX_VA_MAX
             ApplyAuroraArrayIfChanged(gxAttr, hostPtr, span, static_cast<uint8_t>(arr.stride));
             continue;
         }
+        // The two scratch buffers take turns; a queued list may still point at the one reused here.
+        AuroraGxSync();
         auto& packed = s_packedArrays[attr][++s_packedArrayCursor[attr] & 1u];
         if (!PackIndexedAttrData(hostPtr, arr.stride, count, elemSize, packed)) {
             ok = false;
@@ -1295,7 +1299,8 @@ static bool ApplyAuroraIndexedXFArraysForDisplayList(const std::array<uint32_t, 
             ok = false;
             continue;
         }
-        ApplyAuroraArrayIfChanged(static_cast<GXAttr>(attr), hostPtr, span, static_cast<uint8_t>(arr.stride));
+        ApplyAuroraArrayIfChanged(static_cast<GXAttr>(attr), SnapshotForGxThread(hostPtr, span), span,
+                                  static_cast<uint8_t>(arr.stride));
     }
     return ok;
 }
@@ -1327,6 +1332,13 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
         const bool mayContainDraw =
             (cached != nullptr) ? cached->mayContainDraw : DisplayListMayContainDraw(list, nbytes);
         if (!mayContainDraw) {
+            // NSMBW: remembered too, so the next call skips the walk (G3D's material lists are
+            // half of all display-list calls and never contain a draw).
+            if (cached == nullptr && allowScanCache) {
+                StoreDlScanCache(listAddr, nbytes, scanLayoutHash,
+                                 probe.digestValid ? probe.contentDigest : DlContentDigest(list, nbytes),
+                                 probe.writeGeneration, /*mayContainDraw=*/false, DlScanCacheEntry{}, {}, nullptr, 0);
+            }
             EnsureAuroraFrameActive();
             GXMarkFrameWork();
             const DlSubmitScope submitScope;

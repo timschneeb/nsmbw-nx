@@ -88,6 +88,7 @@
 #include "perf_stats.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "updater.h"
 #include "runtime_product.h"
 #include "recomp_mod_loader.h"
 #include <aurora/aurora.h>
@@ -898,6 +899,10 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
     }
 }
 
+void EndProcessTranscript() {
+    ShutdownProcessTranscript();
+}
+
 namespace RuntimeCrash {
 
 void WriteCrashArtifacts(std::string_view reason, std::string_view extraDetails,
@@ -1578,7 +1583,8 @@ int RuntimeMain(int argc, char** argv) {
             NetplaySession::SetStallHandler(&NetplayUi::OnSessionStall);
         }
         if (RuntimeConfigFile::DiscordPresenceEnabled()) {
-            DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(), "New Super Mario Bros. Wii");
+            DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(),
+                                        RuntimeProduct::Active().displayName.data());
         }
         SystemBridge::Initialize();
         TranslatedFunctionRegistry::Finalize();
@@ -1651,6 +1657,12 @@ int RuntimeMain(int argc, char** argv) {
         static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
             {"auto", BACKEND_AUTO}, {"metal", BACKEND_METAL},
         }};
+#elif defined(__ANDROID__)
+        // NSMBW: OpenGL ES can't be picked for now (walled off for a later version); a saved
+        // "opengles" runs Vulkan.
+        static constexpr std::array<GraphicsBackendEntry, 3> kGraphicsBackends{{
+            {"auto", BACKEND_AUTO}, {"vulkan", BACKEND_VULKAN}, {"opengles", BACKEND_VULKAN},
+        }};
 // only vulkan for linux
 #elif defined(__linux__)
             static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
@@ -1661,8 +1673,8 @@ int RuntimeMain(int argc, char** argv) {
             {"auto", BACKEND_AUTO}, {"vulkan", BACKEND_VULKAN},
         }};
 #elif defined(_WIN32)
-        static constexpr std::array<GraphicsBackendEntry, 3> kGraphicsBackends{{
-            {"auto", BACKEND_AUTO}, {"d3d12", BACKEND_D3D12}, {"vulkan", BACKEND_VULKAN},
+        static constexpr std::array<GraphicsBackendEntry, 4> kGraphicsBackends{{
+            {"auto", BACKEND_AUTO}, {"d3d12", BACKEND_D3D12}, {"vulkan", BACKEND_VULKAN}, {"d3d11", BACKEND_D3D11},
         }};
 
 #endif
@@ -1753,6 +1765,7 @@ int RuntimeMain(int argc, char** argv) {
         DisplaySettings::OnFrameBoundary(auroraInfo.windowSize.native_fb_width,
                                          auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
+        Updater::Start();  // the file select's Update button: checks GitHub in the background
         static constexpr const char* kAspectNames[] = {"original 4:3", "16:9", "fill"};
         RT_LOG(RT_TAG_CONFIG) << "display aspect=" << kAspectNames[displaySettings.aspect]
                   << " SCGetAspectRatio=" << (configWidescreen ? 1 : 0)

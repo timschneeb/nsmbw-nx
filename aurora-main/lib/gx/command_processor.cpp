@@ -503,7 +503,11 @@ static bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian);
 
 // NSMBW: time spent decoding GX commands (and waiting for the renderer lock first), and draws
 // decoded, for the runtime's NSMBW_LOG_FPS breakdown.
-std::atomic<uint64_t> g_statProcessNanos{0}, g_statLockNanos{0}, g_statDraws{0};
+std::atomic<uint64_t> g_statProcessNanos{0}, g_statLockNanos{0}, g_statDraws{0}, g_statUnmerged{0};
+// AuroraBeginCommandDigest/AuroraEndCommandDigest (game thread only).
+bool g_commandDigestOn = false;
+uint64_t g_commandDigest = 0;
+uint32_t g_digestTexObjId = 0;
 std::atomic<uint64_t> g_statProcessTotalNanos{0};  // never reset: slow-frame breakdowns take deltas
 thread_local int t_statDepth = 0;  // only the outermost of nested process()/raw draws counts
 // Timed on Windows always (the slow-frame log splits a frame into GX and the rest), elsewhere only
@@ -557,6 +561,9 @@ static void note_write(u32 kind, u32 reg, u32 value, bool wasDirty) {
 uint32_t process(const u8* data, u32 size, bool bigEndian) {
   ZoneScoped;
   ProcessTimer timer;
+  if (g_commandDigestOn) UNLIKELY {
+    g_commandDigest = xxh3_hash_s(data, size, g_commandDigest);
+  }
   // Everything decoded here mutates renderer state (GX state, the recorded command lists and the mapped staging buffers), so take the renderer GPU mutex once for the whole drain rather than once per draw command.
   const auto lockStart = StatTiming() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   std::lock_guard gpuLock(aurora::renderer_gpu_mutex());
@@ -678,8 +685,12 @@ uint32_t process(const u8* data, u32 size, bool bigEndian) {
     }
 
     case GX_LOAD_AURORA: {
-      if (!handle_aurora(data, pos, size, bigEndian)) {
-        return size;
+      try {
+        if (!handle_aurora(data, pos, size, bigEndian)) {
+          return size;
+        }
+      } catch (const gfx::StagingBatchFull&) {
+        return commandStart;  // a queued raw draw that did not fit: split, then retry it
       }
       break;
     }
@@ -1497,6 +1508,13 @@ static void handle_bp(u32 value, bool bigEndian) {
 }
 
 extern "C" void GXApplyBPReg(u8 reg, u32 value) {
+  // NSMBW: with the GX thread a BP write applied here would overtake everything still queued (the
+  // game's own FIFO writes of material texture registers landed on earlier draws), so it is queued.
+  if (threaded()) {
+    GX_WRITE_U8(CP_CMD_LOAD_BP_REG);
+    GX_WRITE_U32((static_cast<u32>(reg) << 24) | (value & 0x00FFFFFFu));
+    return;
+  }
   const bool wasDirty = g_gxState.stateDirty;
   handle_bp((static_cast<u32>(reg) << 24) | (value & 0x00FFFFFFu), true);
   if (MergeSuspectsOn()) note_write(0, 0x100 | reg, value & 0x00FFFFFFu, wasDirty);
@@ -2228,6 +2246,61 @@ static bool admit_draw(GXPrimitive prim, GXVtxFmt fmt, u16 count, uint32_t verte
   return gfx::staging_has_space(demand);
 }
 
+// The last draw a new primitive can be appended to, or nullptr. FIFO and raw draws share these rules.
+static DrawData* merge_target(GXPrimitive prim, u16 vtxCount) {
+  // NSMBW debugging: NSMBW_NO_MERGE turns draw merging off.
+  static const int noMergeMode = [] {
+    const char* v = std::getenv("NSMBW_NO_MERGE");
+    return v == nullptr ? 0 : std::atoi(v);
+  }();
+  // 1: never merge; 2: not while drawing into the EFB below line 456 (light textures, tile frames);
+  // 3: only there.
+  const bool scratch =
+      noMergeMode >= 2 && g_gxState.xfViewport[4] - 340.0f + g_gxState.xfViewport[1] > 455.0f;
+  const bool noMerge = noMergeMode == 1 || (noMergeMode == 2 && scratch) || (noMergeMode == 3 && !scratch);
+  if (g_gxState.stateDirty || noMerge) {
+    return nullptr;
+  }
+  auto* lastDraw = gfx::get_last_draw_command<DrawData>();
+  // Expanded lines/points have different vertex interpretation even with one instance.
+  // Triangle-list output has no restart index; index 65535 is usable.
+  // Overflow would address earlier vertices instead of the appended geometry.
+  if (lastDraw != nullptr && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS &&
+      !lastDraw->expandedPrimitive && lastDraw->instanceCount == 1 &&
+      uint64_t(lastDraw->vtxCount) + vtxCount <= 65536u) LIKELY {
+    return lastDraw;
+  }
+  return nullptr;
+}
+
+// Appends a primitive's vertices and indices to `lastDraw` (admitted by the caller).
+static void merge_into(DrawData* lastDraw, GXPrimitive prim, u16 vtxCount, const u8* vertices, u32 totalVtxBytes,
+                       u32 vtxSize) {
+  const gfx::Range vertRange = gfx::push_verts(vertices, totalVtxBytes);
+  const auto& indexTemplate = cached_index_template(prim, vtxCount);
+  const auto indices = offset_index_template(indexTemplate, lastDraw->vtxCount);
+  const u32 numIndices = indexTemplate.indexCount;
+  const gfx::Range idxRange = gfx::push_indices(indices);
+  CHECK(lastDraw->vertRange.offset + lastDraw->vertRange.size == vertRange.offset,
+        "Non-consecutive vertex ranges ({} < {})", lastDraw->vertRange.offset + lastDraw->vertRange.size,
+        vertRange.offset);
+  CHECK(lastDraw->idxRange.offset + lastDraw->idxRange.size == idxRange.offset,
+        "Non-consecutive index ranges ({} < {})", lastDraw->idxRange.offset + lastDraw->idxRange.size,
+        idxRange.offset);
+  lastDraw->vertRange.size += vertRange.size;
+  lastDraw->idxRange.size += idxRange.size;
+  lastDraw->vtxCount += vtxCount;
+  lastDraw->indexCount += numIndices;
+  ++gfx::g_mergedDrawCallCount;
+  // This primitive now renders through the draw we merged into, so its palette slots belong to that draw's interpolation snapshot as well.
+  if (s_lastDrawRecordedInterpolation) UNLIKELY {
+    extend_interpolation_draw(pn_mtx_mask(vertices, vtxCount, vtxSize));
+  }
+}
+
+static bool raw_draw_locked(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
+                            uint32_t vertexBytes, std::unique_lock<std::recursive_mutex>* lock);
+
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
                      uint32_t vertexBytes) {
   ZoneScoped;
@@ -2246,9 +2319,34 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
     __GXSetDirtyState();
   }
 
+  // NSMBW: with the GX thread, the draw is queued behind everything before it, vertices and all.
+  if (threaded()) {
+    GX_WRITE_AURORA(GX_LOAD_AURORA_RAW_DRAW);
+    GX_WRITE_U8(static_cast<u8>(prim));
+    GX_WRITE_U8(static_cast<u8>(fmt));
+    GX_WRITE_U16(vtxCount);
+    GX_WRITE_U32(vertexBytes);
+    write_data(vertices, vertexBytes);
+    flush_async();
+    return true;
+  }
+  if (g_commandDigestOn) UNLIKELY {
+    g_commandDigest = xxh3_hash_s(vertices, vertexBytes, g_commandDigest ^ (u32(prim) << 8 | u32(fmt)));
+  }
+
   // Raw bridge draws consume live decoded GX state that is also maintained by the HLE producer.
   drain();
 
+  // This entry point bypasses process(), so it owns the renderer lock itself.
+  std::unique_lock gpuLock(aurora::renderer_gpu_mutex());
+  return raw_draw_locked(prim, fmt, vertices, vtxCount, vertexBytes, &gpuLock);
+}
+
+// A raw draw with the renderer lock held: from submit_raw_draw (`lock` set: a full staging batch is
+// split here) or from a queued GX_LOAD_AURORA_RAW_DRAW inside process() (`lock` null: a full batch
+// throws StagingBatchFull, and process() hands the command back to be split and retried).
+static bool raw_draw_locked(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
+                            uint32_t vertexBytes, std::unique_lock<std::recursive_mutex>* lock) {
   u32 vtxSize;
   if (g_gxState.lastVtxFmt == fmt) LIKELY {
     vtxSize = g_gxState.lastVtxSize;
@@ -2269,12 +2367,23 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
 
   if (!has_complete_primitive(prim, vtxCount)) return true;
 
-  // This entry point bypasses process(), so it owns the renderer lock itself.
-  std::unique_lock gpuLock(aurora::renderer_gpu_mutex());
+  // NSMBW: joins the last draw like a FIFO draw would (a run of tiles, glyphs or layout quads with
+  // nothing changed between them is one draw). Not in the EFB scratch area below line 456, where the
+  // game draws each animated tile frame and light texture before copying it out: merging there lost
+  // the ? blocks' marks (each copy then saw the last frame drawn), and those draws are few.
+  const bool scratch = g_gxState.xfViewport[4] - 340.0f + g_gxState.xfViewport[1] > 455.0f;
+  if (DrawData* target = scratch ? nullptr : merge_target(prim, vtxCount);
+      target != nullptr && admit_draw(prim, fmt, vtxCount, vertexBytes, true)) {
+    merge_into(target, prim, vtxCount, vertices, vertexBytes, vtxSize);
+    return true;
+  }
   if (!admit_draw(prim, fmt, vtxCount, vertexBytes)) {
-    gpuLock.unlock();
+    if (lock == nullptr) {
+      throw gfx::StagingBatchFull{};
+    }
+    lock->unlock();
     gfx::split_staging_batch();
-    gpuLock.lock();
+    lock->lock();
     if (!admit_draw(prim, fmt, vtxCount, vertexBytes))
       throw gfx::StagingCapacityError("Raw draw does not fit after capacity submission");
   }
@@ -2326,32 +2435,9 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
     return true;
   }
 
-  DrawData* mergeTarget = nullptr;
-  // NSMBW debugging: NSMBW_NO_MERGE turns draw merging off.
-  static const int noMergeMode = [] {
-    const char* v = std::getenv("NSMBW_NO_MERGE");
-    return v == nullptr ? 0 : std::atoi(v);
-  }();
-  // 1: never merge; 2: not while drawing into the EFB below line 456 (light textures, tile frames);
-  // 3: only there.
-  const bool scratch =
-      noMergeMode >= 2 && g_gxState.xfViewport[4] - 340.0f + g_gxState.xfViewport[1] > 455.0f;
-  const bool noMerge = noMergeMode == 1 || (noMergeMode == 2 && scratch) || (noMergeMode == 3 && !scratch);
   // Decide admission before allocating anything. The merged path needs only
   // vertices and indices; it must not resolve pipelines or upload arrays.
-  // Try to merge with previous draw call
-  if (!g_gxState.stateDirty && !noMerge) LIKELY {
-    auto* lastDraw = gfx::get_last_draw_command<DrawData>();
-    // Expanded lines/points have different vertex interpretation even with one instance.
-    // Triangle-list output has no restart index; index 65535 is usable.
-    // Overflow would address earlier vertices instead of the appended geometry.
-    if (lastDraw != nullptr && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS &&
-        !lastDraw->expandedPrimitive && lastDraw->instanceCount == 1 &&
-        uint64_t(lastDraw->vtxCount) +
-            vtxCount <= 65536u) LIKELY {
-      mergeTarget = lastDraw;
-    }
-  }
+  DrawData* mergeTarget = merge_target(prim, vtxCount);
   if (MergeSuspectsOn()) {
     if (mergeTarget != nullptr && !g_mergeSuspects.empty()) {
       static absl::flat_hash_set<u32> logged;
@@ -2367,30 +2453,12 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
   }
   if (!admit_draw(prim, fmt, vtxCount, totalVtxBytes, mergeTarget != nullptr)) throw gfx::StagingBatchFull{};
   const uint8_t* vertices = data + pos;
-  gfx::Range vertRange = gfx::push_verts(vertices, totalVtxBytes);
   pos += totalVtxBytes;
-  if (auto* lastDraw = mergeTarget) {
-      const auto& indexTemplate = cached_index_template(prim, vtxCount);
-      const auto indices = offset_index_template(indexTemplate, lastDraw->vtxCount);
-      const u32 numIndices = indexTemplate.indexCount;
-      const gfx::Range idxRange = gfx::push_indices(indices);
-      CHECK(lastDraw->vertRange.offset + lastDraw->vertRange.size == vertRange.offset,
-            "Non-consecutive vertex ranges ({} < {})", lastDraw->vertRange.offset + lastDraw->vertRange.size,
-            vertRange.offset);
-      CHECK(lastDraw->idxRange.offset + lastDraw->idxRange.size == idxRange.offset,
-            "Non-consecutive index ranges ({} < {})", lastDraw->idxRange.offset + lastDraw->idxRange.size,
-            idxRange.offset);
-      lastDraw->vertRange.size += vertRange.size;
-      lastDraw->idxRange.size += idxRange.size;
-      lastDraw->vtxCount += vtxCount;
-      lastDraw->indexCount += numIndices;
-      ++gfx::g_mergedDrawCallCount;
-      // This primitive now renders through the draw we merged into, so its palette slots belong to that draw's interpolation snapshot as well.
-      if (s_lastDrawRecordedInterpolation) UNLIKELY {
-        extend_interpolation_draw(pn_mtx_mask(vertices, vtxCount, vtxSize));
-      }
-      return true;
+  if (mergeTarget != nullptr) {
+    merge_into(mergeTarget, prim, vtxCount, vertices, totalVtxBytes, vtxSize);
+    return true;
   }
+  gfx::Range vertRange = gfx::push_verts(vertices, totalVtxBytes);
 
   const bool interpolationIdentityActive = frame_interpolation_identity_needed();
   const PnMtxUsage matrixUsage = interpolationIdentityActive
@@ -2408,6 +2476,9 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
                                  HashType matrixTopologySignature,
                                  HashType geometrySignature, bool interpolationIdentityActive) {
   ZoneScoped;
+  if (StatTiming()) {
+    g_statUnmerged.fetch_add(1, std::memory_order_relaxed);
+  }
   // GX_CULL_ALL rasterizes nothing on hardware - no color, no depth.
   if (g_gxState.cullMode == GX_CULL_ALL && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS)
       UNLIKELY {
@@ -2633,6 +2704,32 @@ bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     pos += 8;
   } else if (subCmd == GX_LOAD_AURORA_INVALIDATE_TEX_ALL) {
     invalidate_static_texture_cache();
+  } else if (subCmd == GX_LOAD_AURORA_RAW_DRAW) {
+    CHECK(pos + 8 <= size, "GX_LOAD_AURORA_RAW_DRAW read overrun");
+    const auto prim = static_cast<GXPrimitive>(data[pos]);
+    const auto fmt = static_cast<GXVtxFmt>(data[pos + 1]);
+    const u16 vtxCount = read_u16(data + pos + 2, bigEndian);
+    const u32 vertexBytes = read_u32(data + pos + 4, bigEndian);
+    CHECK(pos + 8 + vertexBytes <= size, "GX_LOAD_AURORA_RAW_DRAW vertex overrun");
+    raw_draw_locked(prim, fmt, data + pos + 8, vtxCount, vertexBytes, nullptr);  // may throw StagingBatchFull
+    pos += 8 + vertexBytes;
+  } else if (subCmd == GX_LOAD_AURORA_SOURCE_VTXDESC) {
+    CHECK(pos + 2 <= size, "GX_LOAD_AURORA_SOURCE_VTXDESC read overrun");
+    const u8 attr = data[pos];
+    if (attr >= GX_VA_PNMTXIDX && attr < GX_VA_MAX_ATTR) {
+      g_gxState.sourceVtxDesc[attr] = static_cast<GXAttrType>(data[pos + 1]);
+    }
+    pos += 2;
+  } else if (subCmd == GX_LOAD_AURORA_Z_SCALE_OFFSET) {
+    CHECK(pos + 8 <= size, "GX_LOAD_AURORA_Z_SCALE_OFFSET read overrun");
+    g_gxState.zScale = read_f32(data + pos, bigEndian);
+    g_gxState.zOffset = read_f32(data + pos + 4, bigEndian);
+    pos += 8;
+  } else if (subCmd == GX_LOAD_AURORA_SCISSOR_OFFSET) {
+    CHECK(pos + 8 <= size, "GX_LOAD_AURORA_SCISSOR_OFFSET read overrun");
+    g_gxState.scissorOffsetX = static_cast<s32>(read_u32(data + pos, bigEndian));
+    g_gxState.scissorOffsetY = static_cast<s32>(read_u32(data + pos + 4, bigEndian));
+    pos += 8;
   } else if (subCmd == GX_LOAD_AURORA_DEBUG_GROUP_PUSH) {
     auto label = read_string(data, pos, size, bigEndian);
     gfx::push_debug_group(std::move(label));
@@ -2671,6 +2768,25 @@ extern "C" void AuroraTakeGxStats(uint64_t* processNanos, uint64_t* lockNanos, u
   *processNanos = aurora::gx::fifo::g_statProcessNanos.exchange(0, std::memory_order_relaxed);
   *lockNanos = aurora::gx::fifo::g_statLockNanos.exchange(0, std::memory_order_relaxed);
   *draws = aurora::gx::fifo::g_statDraws.exchange(0, std::memory_order_relaxed);
+}
+
+extern "C" uint64_t AuroraTakeUnmergedDraws() {
+  return aurora::gx::fifo::g_statUnmerged.exchange(0, std::memory_order_relaxed);
+}
+
+extern "C" void AuroraGxSync() { aurora::gx::fifo::sync_if_threaded(); }
+
+extern "C" void AuroraBeginCommandDigest() {
+  aurora::gx::fifo::drain();
+  aurora::gx::fifo::g_commandDigest = 0;
+  aurora::gx::fifo::g_digestTexObjId = 0xF0000000u;
+  aurora::gx::fifo::g_commandDigestOn = true;
+}
+
+extern "C" uint64_t AuroraEndCommandDigest() {
+  aurora::gx::fifo::drain();
+  aurora::gx::fifo::g_commandDigestOn = false;
+  return aurora::gx::fifo::g_commandDigest;
 }
 
 extern "C" void AuroraSetWidePerspectiveAspect(float aspect) {

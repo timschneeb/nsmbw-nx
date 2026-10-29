@@ -12,6 +12,7 @@
 #include "ppc_runtime.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "wpad_speaker.h"
 
 #include <algorithm>
 #include <array>
@@ -1283,7 +1284,7 @@ private:
                                 m_bus[kBusAuxCL].data(), kAxSamplesPerFrame);
         }
         std::array<int16_t, kAxSamplesPerFrame * 2> pcm{};
-        if (m_splitMix) {
+        if (m_splitMix || RemotesPlayOnHost()) {
             RecordSpeakerFrame(lrAddr, ramp);
         }
         for (uint32_t i = 0; i < kAxSamplesPerFrame; ++i) {
@@ -1311,6 +1312,39 @@ private:
         }
     }
 
+    static bool RemotesPlayOnHost() {
+        for (uint32_t chan = 0; chan < kAxWiimoteBusCount / 2; ++chan) {
+            if (WpadSpeaker::PlaysOnHost(chan)) return true;
+        }
+        return false;
+    }
+
+    // The remote speakers no real Wii Remote plays (wpad_speaker.h), for the PC or phone speakers:
+    // each remote's main bus, 18 samples at 6 kHz, stretched over this frame's 96 at 32 kHz
+    // (linear, from the last sample of the frame before). Played at 70%: the remotes' sounds were
+    // made for a small speaker of their own, and at full level they stand out over the TV mix.
+    void MixHostRemotes(std::array<float, kAxSamplesPerFrame>& out) {
+        constexpr float kGain = 0.7f;
+        constexpr float kStep = static_cast<float>(kAxWiimoteSamplesPerFrame) / kAxSamplesPerFrame;
+        for (uint32_t chan = 0; chan < kAxWiimoteBusCount / 2; ++chan) {
+            const int* bus = m_wmBus[chan * 2].data();  // kBusWm<chan>Main
+            float& last = m_hostRemoteLast[chan];
+            if (!WpadSpeaker::PlaysOnHost(chan)) {
+                last = 0.0f;
+                continue;
+            }
+            for (uint32_t i = 0; i < kAxSamplesPerFrame; ++i) {
+                const float position = (i + 1) * kStep;  // 0 < position <= 18, 0 being `last`
+                const uint32_t index = static_cast<uint32_t>(position);
+                const float frac = position - static_cast<float>(index);
+                const float a = index == 0 ? last : static_cast<float>(ClampS16(bus[index - 1]));
+                const float b = index >= kAxWiimoteSamplesPerFrame ? a : static_cast<float>(ClampS16(bus[index]));
+                out[i] += (a + (b - a) * frac) * kGain;
+            }
+            last = static_cast<float>(ClampS16(bus[kAxWiimoteSamplesPerFrame - 1]));
+        }
+    }
+
     // What the speakers play of this frame: the music share at the Music volume and the rest
     // (effects, and the aux returns, which carry the effects' reverb) at the Sound Effects
     // volume. The frame the game sees is written as before; the speaker frame is kept here, with
@@ -1319,11 +1353,13 @@ private:
         SpeakerFrame& frame = m_speakerFrames[m_nextSpeakerFrame];
         m_nextSpeakerFrame = (m_nextSpeakerFrame + 1) % m_speakerFrames.size();
         frame.addr = lrAddr;
-        const auto speaker = [&](int bus, int music, uint16_t gain) {
+        std::array<float, kAxSamplesPerFrame> remote{};
+        MixHostRemotes(remote);
+        const auto speaker = [&](int bus, int music, uint16_t gain, float remoteSample) {
             const int64_t all = (static_cast<int64_t>(bus) * gain) >> 15;
             const int64_t musicPart = (static_cast<int64_t>(music) * gain) >> 15;
             const float mixed = static_cast<float>(musicPart) * m_musicVolume +
-                                static_cast<float>(all - musicPart) * m_effectsVolume;
+                                (static_cast<float>(all - musicPart) + remoteSample * gain / 32768.0f) * m_effectsVolume;
             return ClampS16(static_cast<int64_t>(mixed));
         };
         for (uint32_t i = 0; i < kAxSamplesPerFrame; ++i) {
@@ -1333,9 +1369,9 @@ private:
             BigEndian::Write16(frame.guest.data() + i * 4, static_cast<uint16_t>(right));
             BigEndian::Write16(frame.guest.data() + i * 4 + 2, static_cast<uint16_t>(left));
             BigEndian::Write16(frame.speaker.data() + i * 4,
-                               static_cast<uint16_t>(speaker(m_bus[kBusMainR][i], m_musicR[i], ramp[i])));
+                               static_cast<uint16_t>(speaker(m_bus[kBusMainR][i], m_musicR[i], ramp[i], remote[i])));
             BigEndian::Write16(frame.speaker.data() + i * 4 + 2,
-                               static_cast<uint16_t>(speaker(m_bus[kBusMainL][i], m_musicL[i], ramp[i])));
+                               static_cast<uint16_t>(speaker(m_bus[kBusMainL][i], m_musicL[i], ramp[i], remote[i])));
         }
         frame.valid = true;
         m_musicL.fill(0);
@@ -1343,8 +1379,11 @@ private:
     }
 
 public:
-    // The speaker version of the AI block at [addr, addr + bytes), when every frame in it was
-    // recorded and the guest memory there still holds exactly what the mix wrote.
+    // The speaker version of the AI block at [addr, addr + bytes): each frame the mix recorded and
+    // the guest memory there still holds exactly. A frame it can't match (played later than the
+    // recorded frames reach, after a hitch) is the guest's own frame at the lower of the Music and
+    // Sound Effects volumes, a short dip, where playing the whole block unscaled put the music
+    // back at 100% for a moment.
     const uint8_t* SpeakerBlock(uint32_t addr, uint32_t bytes) {
         constexpr uint32_t kFrameBytes = kAxSamplesPerFrame * 4;
         if (bytes == 0 || bytes % kFrameBytes != 0 || bytes > m_speakerBlock.size()) {
@@ -1360,11 +1399,25 @@ public:
                     found = &frame;
                 }
             }
-            const uint8_t* guest = found != nullptr ? MixResolveRange(addr + offset, kFrameBytes) : nullptr;
-            if (guest == nullptr || std::memcmp(guest, found->guest.data(), kFrameBytes) != 0) {
+            const uint8_t* guest = MixResolveRange(addr + offset, kFrameBytes);
+            if (guest == nullptr) {
                 return nullptr;
             }
-            std::memcpy(m_speakerBlock.data() + offset, found->speaker.data(), kFrameBytes);
+            if (found != nullptr && std::memcmp(guest, found->guest.data(), kFrameBytes) == 0) {
+                std::memcpy(m_speakerBlock.data() + offset, found->speaker.data(), kFrameBytes);
+                continue;
+            }
+            const float scale = std::min(m_musicVolume, m_effectsVolume);
+            for (uint32_t i = 0; i < kFrameBytes; i += 2) {
+                const auto sample = static_cast<int16_t>(BigEndian::Read16(guest + i));
+                BigEndian::Write16(m_speakerBlock.data() + offset + i,
+                                   static_cast<uint16_t>(ClampS16(static_cast<int64_t>(sample * scale))));
+            }
+            static uint32_t s_unmatched = 0;
+            if ((++s_unmatched & 255) == 1) {
+                RT_LOGF(RT_TAG_AUDIO, "speaker frames: %u played from the guest frame (not recorded or changed)\n",
+                        s_unmatched);
+            }
         }
         return m_speakerBlock.data();
     }
@@ -1531,6 +1584,7 @@ private:
     // are 18 samples per frame rather than 96.
     std::array<std::array<int, kAxSamplesPerFrame>, kAxRegularBusCount> m_bus{};
     std::array<std::array<int, kAxWiimoteSamplesPerFrame>, kAxWiimoteBusCount> m_wmBus{};
+    std::array<float, kAxWiimoteBusCount / 2> m_hostRemoteLast{};  // MixHostRemotes
     uint16_t m_lastMainVolume = 0x8000;
     std::array<uint16_t, 3> m_lastAuxVolumes{};
 
@@ -1546,7 +1600,8 @@ private:
     float m_effectsVolume = 1.0f;
     std::array<int, kAxSamplesPerFrame> m_musicL{};
     std::array<int, kAxSamplesPerFrame> m_musicR{};
-    std::array<SpeakerFrame, 8> m_speakerFrames{};
+    // About 200 ms of AX frames: the AI can play a block well after it was mixed when a frame hitches.
+    std::array<SpeakerFrame, 64> m_speakerFrames{};
     size_t m_nextSpeakerFrame = 0;
     std::array<uint8_t, kAxSamplesPerFrame * 4 * 8> m_speakerBlock{};
 
