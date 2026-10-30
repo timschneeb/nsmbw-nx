@@ -43,7 +43,8 @@ def symbol_at(address, symbols, starts):
     return None
 
 
-def load(path, scene, elf, name_filter=None, guest_only=False, function_filter=None):
+def load(path, scene, elf, name_filter=None, guest_only=False, function_filter=None,
+         exclude_sampler=True, exclude_foreign=False):
     symbols = starts = None
     module = None
     if elf:
@@ -53,6 +54,7 @@ def load(path, scene, elf, name_filter=None, guest_only=False, function_filter=N
     threads = collections.Counter()
     cores = collections.Counter()
     guests = collections.Counter()
+    stats = collections.Counter()
     rows = 0
     with Path(path).open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
@@ -65,6 +67,7 @@ def load(path, scene, elf, name_filter=None, guest_only=False, function_filter=N
             if guest_only and row["guest"] == "0":
                 continue
             function = row["function"]
+            resolved_from_elf = False
             if symbols and module and "+" in row["pc"]:
                 module_name, offset = row["pc"].rsplit("+", 1)
                 if module_name == module:
@@ -74,6 +77,18 @@ def load(path, scene, elf, name_filter=None, guest_only=False, function_filter=N
                         resolved = None
                     if resolved:
                         function = resolved
+                        resolved_from_elf = True
+                    else:
+                        stats["unresolved"] += 1
+                else:
+                    stats["foreign"] += 1
+            elif symbols:
+                stats["foreign"] += 1
+            if exclude_sampler and function.startswith("__cyg_profile_"):
+                stats["sampler"] += 1
+                continue
+            if exclude_foreign and symbols and not resolved_from_elf:
+                continue
             if function_filter and function_filter not in function:
                 continue
             rows += 1
@@ -82,7 +97,7 @@ def load(path, scene, elf, name_filter=None, guest_only=False, function_filter=N
             threads[thread] += 1
             cores[row["core"]] += 1
             guests[row["guest"]] += 1
-    return rows, counts, threads, cores, guests
+    return rows, counts, threads, cores, guests, stats
 
 
 def top(counter, rows, limit):
@@ -103,12 +118,17 @@ def main():
     parser.add_argument("--name", help="host thread name substring, e.g. ax-mix")
     parser.add_argument("--function", help="function name substring, e.g. AxfxDelay")
     parser.add_argument("--guest-only", action="store_true", help="drop samples from non-guest host threads")
+    parser.add_argument("--include-sampler", action="store_true",
+                        help="keep __cyg_profile_* instrumentation samples (excluded by default)")
+    parser.add_argument("--exclude-foreign", action="store_true",
+                        help="drop samples outside the ELF module (idle waits, libc, SDL)")
     parser.add_argument("--json")
     args = parser.parse_args()
 
     scene = args.scene or None
-    rows, counts, threads, cores, guests = load(args.samples, scene, args.elf, args.name,
-                                                args.guest_only, args.function)
+    rows, counts, threads, cores, guests, stats = load(
+        args.samples, scene, args.elf, args.name, args.guest_only, args.function,
+        exclude_sampler=not args.include_sampler, exclude_foreign=args.exclude_foreign)
     if rows == 0:
         raise SystemExit(f"no samples for scene {scene or 'all'} in {args.samples}")
 
@@ -118,16 +138,20 @@ def main():
         "rows": rows,
         "scene": scene or "all",
         "by": args.by,
+        "excluded": dict(stats),
         "top": top(counters[args.by], rows, args.top),
     }
     print(f"samples {args.samples}")
     print(f"rows    {rows} ({scene or 'all scenes'})")
+    if stats:
+        print("excluded " + ", ".join(f"{name} {value}" for name, value in sorted(stats.items())))
     for item in result["top"]:
         print(f"{item['percent']:6.2f}%  {item['samples']:8d}  {item['name']}")
 
     if args.compare:
-        base_rows, base_counts, _, _, _ = load(args.compare, scene, args.elf, args.name,
-                                               args.guest_only, args.function)
+        base_rows, base_counts, _, _, _, _ = load(
+            args.compare, scene, args.elf, args.name, args.guest_only, args.function,
+            exclude_sampler=not args.include_sampler, exclude_foreign=args.exclude_foreign)
         if base_rows:
             print(f"compare {args.compare} ({base_rows} samples)")
             keys = collections.Counter()
