@@ -479,7 +479,7 @@ inline void EnsureConfigFile() {
               "# retro_rewind_root = \"D:\\\\RetroRewind\\\\RetroRewind6\"\n"
               "# overlay_roots = [\"D:\\\\RetroRewind\"]\n\n"
               "[debug]\n"
-              "# Statistics and thread placement, Switch only.\n"
+              "# Statistics and thread placement, Switch and Linux PC.\n"
               "# stats = \"light\"  # off, light (frame numbers for A/B) or full (attribution)\n"
               "# env = \"NSMBW_LOG_FPS=full;NAME=value\"\n"
               "# affinity = true  # pin the guest to main_core and the mixer to audio_core\n"

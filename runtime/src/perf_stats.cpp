@@ -4,6 +4,13 @@
 #include "runtime_log.h"
 
 #include <string>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <cerrno>
+#include <cstdio>
+#include <dirent.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 #if defined(MKW_PLATFORM_SWITCH)
 #include <switch.h>
@@ -103,7 +110,7 @@ void ApplyConfig() {
     } else {
         return;
     }
-    RT_LOGF(RT_TAG_RUNTIME, "affinity: %s (guest core %d, audio core %d)\n",
+    RT_LOGF(RT_TAG_RUNTIME, "affinity: %s (guest core %d, host core 1, audio core %d)\n",
             RuntimeConfigFile::Affinity() ? "on" : "off", static_cast<int>(RuntimeConfigFile::MainCore()),
             static_cast<int>(RuntimeConfigFile::AudioCore()));
 }
@@ -124,11 +131,82 @@ void Pin(int role) {
         return;
     }
     RT_LOGF(RT_TAG_RUNTIME, "affinity: %s thread pinned to core %d\n", RoleName(role), core);
+#elif defined(__linux__) && !defined(__ANDROID__)
+    // The PC profile mirrors the Switch cores: guest 0, host texture/GX 1, AX 2.
+    if (!RuntimeConfigFile::Affinity()) {
+        return;
+    }
+    const int core = role == RoleAudio ? RuntimeConfigFile::AudioCore() : RuntimeConfigFile::MainCore();
+    if (core < 0 || core >= CPU_SETSIZE) {
+        return;
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(core, &set);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        RT_LOGF(RT_TAG_RUNTIME, "affinity: cannot pin the %s thread to core %d (%s)\n", RoleName(role), core,
+                std::strerror(errno));
+        return;
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "affinity: %s thread pinned to core %d\n", RoleName(role), core);
 #endif
 }
 
-void AddGxFifo(uint64_t nanos, uint64_t bytes) {
-    g_gxFifoNanos += nanos;
+void PinHostThreads() {
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (!RuntimeConfigFile::Affinity()) {
+        return;
+    }
+    static uint64_t s_lastScanMs = 0;
+    struct timespec now = {};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    const uint64_t nowMs =
+        static_cast<uint64_t>(now.tv_sec) * 1000ull + static_cast<uint64_t>(now.tv_nsec) / 1000000ull;
+    if (nowMs - s_lastScanMs < 2000ull) {
+        return;
+    }
+    s_lastScanMs = nowMs;
+
+    DIR* tasks = opendir("/proc/self/task");
+    if (tasks == nullptr) {
+        return;
+    }
+    const long self = static_cast<long>(syscall(SYS_gettid));
+    const int audioCore = RuntimeConfigFile::AudioCore();
+    while (const dirent* entry = readdir(tasks)) {
+        char* end = nullptr;
+        const long tid = std::strtol(entry->d_name, &end, 10);
+        if (entry->d_name[0] == '.' || end == entry->d_name || *end != '\0' || tid <= 0 || tid == self) {
+            continue;
+        }
+        char path[64] = {};
+        std::snprintf(path, sizeof(path), "/proc/self/task/%ld/comm", tid);
+        char comm[32] = {};
+        if (FILE* file = std::fopen(path, "r")) {
+            if (std::fgets(comm, sizeof(comm), file) == nullptr) {
+                comm[0] = '\0';
+            }
+            std::fclose(file);
+        }
+        if (std::strcmp(comm, "ax-mix\n") == 0) {
+            continue;
+        }
+        const bool audio = std::strstr(comm, "Audio") != nullptr || std::strstr(comm, "audio") != nullptr ||
+                           std::strstr(comm, "module-rt") != nullptr;
+        const int core = audio ? audioCore : 1;
+        if (core < 0 || core >= CPU_SETSIZE) {
+            continue;
+        }
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(core, &set);
+        sched_setaffinity(static_cast<pid_t>(tid), sizeof(set), &set);
+    }
+    closedir(tasks);
+#endif
+}
+
+void AddGxFifo(uint64_t nanos, uint64_t bytes) {    g_gxFifoNanos += nanos;
     g_gxFifoBytes += bytes;
     ++g_gxFifoCalls;
 }
@@ -173,6 +251,9 @@ GxFifoBreakdown TakeGxFifoBreakdown() {
 }
 
 void Publish(int role) {
+    if (role == RoleGuest) {
+        PinHostThreads();
+    }
 #if defined(MKW_PLATFORM_SWITCH)
     g_threads[role].core.store(svcGetCurrentProcessorNumber(), std::memory_order_relaxed);
     if (g_nanosPerTick < 0.0) {

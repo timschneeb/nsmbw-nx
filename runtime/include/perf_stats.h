@@ -50,6 +50,9 @@ void Publish(int role);
 void ApplyConfig();
 // Pins the calling thread when [debug] affinity is on.
 void Pin(int role);
+// Linux PC: keeps every non-guest, non-mixer host thread on the host core, so
+// the guest core matches the Switch split. Throttled internally.
+void PinHostThreads();
 
 // Guest-thread GX FIFO translation cost, accumulated by gx_fifo.cpp and read
 // from the same thread by the stats line.

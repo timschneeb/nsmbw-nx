@@ -20,6 +20,7 @@
 #include <magic_enum.hpp>
 
 #include "system_info.hpp"
+#include "thread_utils.hpp"
 #include "tracy/Tracy.hpp"
 
 #if defined(_WIN32)
@@ -317,6 +318,8 @@ void frame_worker_main() noexcept {
 #if defined(__linux__)
   // Named for profilers and /proc (NSMBW_PROFILE_THREAD=FrameWorker samples this thread).
   pthread_setname_np(pthread_self(), "FrameWorker");
+  // Mirror the Switch split on the PC: guest 0, AX 2, host encode/present 1.
+  pin_current_thread(1);
 #endif
 
 #ifdef AURORA_ENABLE_GX
