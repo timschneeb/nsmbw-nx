@@ -99,6 +99,17 @@ struct Sample {
     uint32_t frame = 0;
 };
 
+#if defined(MKW_PLATFORM_SWITCH)
+// NSMBW_SAMPLE_HOST: sample the guest thread's host PC by pausing it briefly.
+// The handle is captured on the guest thread at init.
+std::atomic<Handle> g_guestThread{0};
+
+struct HostSample {
+    uint64_t tick = 0;
+    uintptr_t pc = 0;
+};
+#endif
+
 void SleepMs(uint32_t ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
@@ -146,6 +157,67 @@ void WriteReport(const std::vector<Sample>& samples, uint64_t startTick, uint64_
 }
 
 
+#if defined(MKW_PLATFORM_SWITCH)
+void WriteHostReport(const std::vector<HostSample>& samples, uint64_t startTick, uint64_t endTick) {
+    const std::filesystem::path path = g_logDirectory / "host-samples.tsv";
+    const uintptr_t ref = reinterpret_cast<uintptr_t>(&NsmbwShadowSamplerInit);
+    if (FILE* file = std::fopen(path.string().c_str(), "w")) {
+        std::fprintf(file, "# ref %llX module WiiCompiled\n", static_cast<unsigned long long>(ref));
+        std::fprintf(file, "tick_us\tpc\n");
+        for (const HostSample& sample : samples) {
+            const uint64_t micros = (sample.tick - startTick) * 1000000ull / g_tickFrequency;
+            std::fprintf(file, "%llu\t%llX\n", static_cast<unsigned long long>(micros),
+                         static_cast<unsigned long long>(sample.pc));
+        }
+        std::fclose(file);
+        RT_LOGF(RT_TAG_RUNTIME, "sample: %zu host samples over %.2f s written to %s\n", samples.size(),
+                static_cast<double>(endTick - startTick) / static_cast<double>(g_tickFrequency),
+                path.string().c_str());
+    }
+}
+
+void RunHostSampler(uint32_t targetScene, uint64_t startTick, uint64_t endTick) {
+    const Handle thread = g_guestThread.load(std::memory_order_acquire);
+    if (thread == 0) {
+        RT_LOGF(RT_TAG_RUNTIME, "sample: host mode has no guest thread handle\n");
+        return;
+    }
+    const uint32_t hz = std::min<uint32_t>(g_sampleHz, 1000u);
+    const uint32_t intervalUs = std::max<uint32_t>(1u, 1000000u / hz);
+    const size_t capacity = static_cast<size_t>(g_lengthSeconds * (hz + 500.0)) + 1000;
+    std::vector<HostSample> samples;
+    samples.reserve(capacity);
+    RT_LOGF(RT_TAG_RUNTIME, "sample: host recording scene 0x%03X for %.1f s at %u Hz\n", targetScene,
+            g_lengthSeconds, hz);
+    auto nextSample = Clock::now();
+    while (!g_stop.load(std::memory_order_relaxed) && NowTick() < endTick) {
+        nextSample += std::chrono::microseconds(intervalUs);
+        std::this_thread::sleep_until(nextSample);
+        if (targetScene != 0 && g_scene.load(std::memory_order_relaxed) != targetScene) {
+            break;
+        }
+        if (R_FAILED(svcSetThreadActivity(thread, ThreadActivity_Paused))) {
+            SleepMs(1);
+            continue;
+        }
+        ThreadContext context{};
+        const Result rc = svcGetThreadContext3(&context, thread);
+        svcSetThreadActivity(thread, ThreadActivity_Runnable);
+        if (R_FAILED(rc)) {
+            continue;
+        }
+        samples.push_back(HostSample{NowTick(), static_cast<uintptr_t>(context.pc.x)});
+        if (samples.size() >= capacity) {
+            break;
+        }
+        if (Clock::now() > nextSample + std::chrono::milliseconds(10)) {
+            nextSample = Clock::now();
+        }
+    }
+    WriteHostReport(samples, startTick, NowTick());
+}
+#endif
+
 void Shutdown() {
     g_stop.store(true, std::memory_order_release);
     g_sampling.store(false, std::memory_order_release);
@@ -187,6 +259,12 @@ void SamplerThread() {
 
     const uint64_t startTick = NowTick();
     const uint64_t endTick = startTick + static_cast<uint64_t>(g_lengthSeconds * g_tickFrequency);
+#if defined(MKW_PLATFORM_SWITCH)
+    if (EnvU64("NSMBW_SAMPLE_HOST", 0) != 0) {
+        RunHostSampler(targetScene, startTick, endTick);
+        return;
+    }
+#endif
     const size_t capacity = static_cast<size_t>(g_lengthSeconds * (g_sampleHz + 500.0)) + 1000;
     std::vector<Sample> samples;
     samples.reserve(capacity);
@@ -257,6 +335,9 @@ void NsmbwShadowSamplerInit(const std::filesystem::path& logDirectory) {
     if (g_enabled.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
+#if defined(MKW_PLATFORM_SWITCH)
+    g_guestThread.store(threadGetCurHandle(), std::memory_order_release);
+#endif
     const char* value = std::getenv("NSMBW_SAMPLE");
     if (value == nullptr || value[0] == '\0' ||
         std::sscanf(value, "%lf:%lf", &g_startSeconds, &g_lengthSeconds) != 2 ||
