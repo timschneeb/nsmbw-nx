@@ -48,6 +48,8 @@ std::filesystem::path g_logDirectory;
 std::thread g_samplerThread;
 double g_startSeconds = 0.0;
 double g_lengthSeconds = 0.0;
+uint32_t g_sampleHz = 1000;
+uint32_t g_sampleIntervalUs = 1000;
 uint64_t g_staleTicks = 0;
 uint64_t g_tickFrequency = 1;
 
@@ -185,15 +187,18 @@ void SamplerThread() {
 
     const uint64_t startTick = NowTick();
     const uint64_t endTick = startTick + static_cast<uint64_t>(g_lengthSeconds * g_tickFrequency);
-    const size_t capacity = static_cast<size_t>(g_lengthSeconds * 1100.0) + 1000;
+    const size_t capacity = static_cast<size_t>(g_lengthSeconds * (g_sampleHz + 500.0)) + 1000;
     std::vector<Sample> samples;
     samples.reserve(capacity);
 
     g_sampling.store(true, std::memory_order_release);
-    RT_LOGF(RT_TAG_RUNTIME, "sample: recording scene 0x%03X for %.1f s\n", targetScene, g_lengthSeconds);
+    RT_LOGF(RT_TAG_RUNTIME, "sample: recording scene 0x%03X for %.1f s at %u Hz\n", targetScene,
+            g_lengthSeconds, g_sampleHz);
 
+    auto nextSample = Clock::now();
     while (!g_stop.load(std::memory_order_relaxed) && NowTick() < endTick) {
-        SleepMs(1);
+        nextSample += std::chrono::microseconds(g_sampleIntervalUs);
+        std::this_thread::sleep_until(nextSample);
         const uint32_t scene = g_scene.load(std::memory_order_relaxed);
         if (targetScene != 0 && scene != targetScene) {
             break;
@@ -217,6 +222,9 @@ void SamplerThread() {
         samples.push_back(sample);
         if (samples.size() >= capacity) {
             break;
+        }
+        if (Clock::now() > nextSample + std::chrono::milliseconds(10)) {
+            nextSample = Clock::now();
         }
     }
 
@@ -260,6 +268,9 @@ void NsmbwShadowSamplerInit(const std::filesystem::path& logDirectory) {
     g_tickFrequency = TickFrequency();
     g_targetScene.store(static_cast<uint32_t>(EnvU64("NSMBW_SAMPLE_SCENE", 0x005)),
                         std::memory_order_relaxed);
+    g_sampleHz = static_cast<uint32_t>(EnvU64("NSMBW_SAMPLE_HZ", 1000));
+    g_sampleHz = std::max<uint32_t>(100, std::min<uint32_t>(8000, g_sampleHz));
+    g_sampleIntervalUs = std::max<uint32_t>(1, 1000000u / g_sampleHz);
     g_staleTicks = static_cast<uint64_t>(
         EnvDouble("NSMBW_SAMPLE_STALE_MS", 3.0) * static_cast<double>(g_tickFrequency) / 1000.0);
     g_stop.store(false, std::memory_order_relaxed);
@@ -272,8 +283,8 @@ void NsmbwShadowSamplerInit(const std::filesystem::path& logDirectory) {
         RT_LOGF(RT_TAG_RUNTIME, "sample: cannot start sampler: %s\n", error.what());
         return;
     }
-    RT_LOGF(RT_TAG_RUNTIME, "sample: enabled, scene 0x%03X, start %.1f s, length %.1f s\n",
-            g_targetScene.load(std::memory_order_relaxed), g_startSeconds, g_lengthSeconds);
+    RT_LOGF(RT_TAG_RUNTIME, "sample: enabled, scene 0x%03X, start %.1f s, length %.1f s, %u Hz\n",
+            g_targetScene.load(std::memory_order_relaxed), g_startSeconds, g_lengthSeconds, g_sampleHz);
 #else
     (void)logDirectory;
 #endif
