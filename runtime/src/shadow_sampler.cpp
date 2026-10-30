@@ -133,6 +133,11 @@ void WriteReport(const std::vector<Sample>& samples, uint64_t startTick, uint64_
 
     const std::filesystem::path path = g_logDirectory / "shadow-samples.tsv";
     if (FILE* file = std::fopen(path.string().c_str(), "w")) {
+        // The guest address comes from the registry's host index, which only knows entry points.
+        // Every sample also carries the raw host PC so it can be re-symbolized against the ELF.
+        const uintptr_t ref = reinterpret_cast<uintptr_t>(&NsmbwShadowSamplerInit);
+        std::fprintf(file, "# ref %llX module %s\n", static_cast<unsigned long long>(ref),
+                     "WiiCompiled");
         std::fprintf(file, "scene\tframe\ttick_us\tguest\thost\tfunction\n");
         for (const Sample& sample : samples) {
             const TranslatedFunctionInfo* info = TranslatedFunctionRegistry::FindByAddressPtr(sample.guest);
