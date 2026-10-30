@@ -100,6 +100,53 @@ def load(path, scene, elf, name_filter=None, guest_only=False, function_filter=N
     return rows, counts, threads, cores, guests, stats
 
 
+def resolve_stack_frame(frame, symbols, starts):
+    if "+" in frame:
+        return frame, False
+    try:
+        address = int(frame, 16)
+    except ValueError:
+        return frame, False
+    name = symbol_at(address, symbols, starts)
+    return (name or f"?+0x{address:X}"), True
+
+
+def load_blocked(path, scene, elf, exclude_sampler=True):
+    symbols, starts = load_symbols(str(elf))
+    chains = collections.Counter()
+    leaves = collections.Counter()
+    callers = collections.Counter()
+    total = 0
+    blocked = 0
+    with Path(path).open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.split()
+            if scene and parts[0] != scene:
+                continue
+            total += 1
+            frames = parts[1:]
+            if not frames:
+                continue
+            leaf, leaf_self = resolve_stack_frame(frames[0], symbols, starts)
+            if leaf_self:
+                continue
+            if exclude_sampler and leaf.startswith("__cyg_profile_"):
+                continue
+            caller = "<unknown>"
+            for frame in frames[1:]:
+                name, is_self = resolve_stack_frame(frame, symbols, starts)
+                if is_self and not name.startswith("__cyg_profile_"):
+                    caller = name
+                    break
+            blocked += 1
+            chains[f"{leaf} <- {caller}"] += 1
+            leaves[leaf] += 1
+            callers[caller] += 1
+    return total, blocked, chains, leaves, callers
+
+
 def top(counter, rows, limit):
     result = []
     for name, count in counter.most_common(limit):
@@ -122,10 +169,39 @@ def main():
                         help="keep __cyg_profile_* instrumentation samples (excluded by default)")
     parser.add_argument("--exclude-foreign", action="store_true",
                         help="drop samples outside the ELF module (idle waits, libc, SDL)")
+    parser.add_argument("--blocked", action="store_true",
+                        help="attribute blocked (foreign-leaf) samples to the first guest frame "
+                             "from profile-stacks.txt")
+    parser.add_argument("--stacks", help="profile-stacks.txt (default: next to --samples)")
     parser.add_argument("--json")
     args = parser.parse_args()
 
     scene = args.scene or None
+    if args.blocked:
+        if not args.elf:
+            raise SystemExit("--blocked requires --elf")
+        stacks_path = Path(args.stacks) if args.stacks else Path(args.samples).with_name("profile-stacks.txt")
+        if not stacks_path.is_file():
+            raise SystemExit(f"missing stacks file: {stacks_path}")
+        total, blocked, chains, leaves, callers = load_blocked(
+            stacks_path, scene, args.elf, exclude_sampler=not args.include_sampler)
+        if total == 0:
+            raise SystemExit(f"no samples for scene {scene or 'all'} in {stacks_path}")
+        print(f"stacks  {stacks_path}")
+        print(f"rows    {total} ({scene or 'all scenes'})")
+        print(f"blocked {blocked} ({100.0 * blocked / total:.1f}% of samples)")
+        if blocked == 0:
+            return
+        print("blocked chains (share of blocked samples):")
+        for chain, count in chains.most_common(args.top):
+            print(f"{100.0 * count / blocked:6.2f}%  {count:6d}  {chain}")
+        print("blocked leaves:")
+        for leaf, count in leaves.most_common(min(args.top, 10)):
+            print(f"{100.0 * count / blocked:6.2f}%  {count:6d}  {leaf}")
+        print("guest callers:")
+        for caller, count in callers.most_common(min(args.top, 10)):
+            print(f"{100.0 * count / blocked:6.2f}%  {count:6d}  {caller}")
+        return
     rows, counts, threads, cores, guests, stats = load(
         args.samples, scene, args.elf, args.name, args.guest_only, args.function,
         exclude_sampler=not args.include_sampler, exclude_foreign=args.exclude_foreign)
