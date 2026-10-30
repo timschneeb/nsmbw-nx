@@ -109,7 +109,9 @@ void WriteReport(const std::vector<Sample>& samples, uint64_t startTick, uint64_
 
     std::unordered_map<uint32_t, uint32_t> byGuest;
     for (const Sample& sample : samples) {
-        byGuest[sample.guest]++;
+        if (sample.guest != 0) {
+            byGuest[sample.guest]++;
+        }
     }
 
     const std::filesystem::path path = g_logDirectory / "shadow-samples.tsv";

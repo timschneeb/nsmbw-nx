@@ -55,6 +55,8 @@ def load(path, scene):
                 address = int(address_text, 16)
             except ValueError:
                 address = 0
+            if address == 0:
+                continue
             by_function[(address, function)] += 1
             by_scene[sample_scene] += 1
     return rows, by_function, by_scene
