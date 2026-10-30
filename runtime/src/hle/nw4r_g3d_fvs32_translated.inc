@@ -1,12 +1,9 @@
-// Kept copy of the translated nw4r::g3d::CalcAnimationFVS<FVS32> body, used to verify the
-// native override bit-for-bit (NSMBW_NATIVE_VERIFY). Not registered as a guest function.
-#include <cstdint>
-#include "ppc_runtime.h"
-#include "abi_bridge.h"
-#include "memory.h"
-#include "recomp_mod_loader.h"
-
-extern "C" void CalcAnimationFVS_ReferenceTranslated(CpuContext* MKW_RESTRICT ctx)
+// Verbatim copy of the translator's output for 0x802403C0
+// (nw4r::g3d::CalcAnimationFVS<CAnmFmtTraits<ResAnmChrFVS32Data>>), kept only as
+// the reference for NSMBW_G3D_COMPARE=on. The native override replaces the guest
+// address, so emit-build-shards no longer generates this body; nothing else may
+// change here, or the comparison stops being bit-exact ground truth.
+void CalcAnimationFVS32Translated(CpuContext* MKW_RESTRICT ctx)
 {
     uint32_t cr0_0 = 0;
     uint32_t r0_rot_0 = 0;
@@ -342,4 +339,3 @@ loc_802405A4:
 }
 
 }
-
