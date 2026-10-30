@@ -98,4 +98,7 @@ MKW_KNOWN_NATIVE_CPU_CALL(0x802B71E0u, nw4r__lyt__detail__DrawQuad_80084d20);
 extern "C" void NW4R_G3D_CalcAnimationFVS32_HLE(CpuContext* ctx);
 MKW_KNOWN_NATIVE_CPU_CALL(0x802403C0u, NW4R_G3D_CalcAnimationFVS32_HLE);
 
+extern "C" void NW4R_G3D_AnmObjChrBlendGetResult_HLE(CpuContext* ctx);
+MKW_KNOWN_NATIVE_CPU_CALL(0x80248330u, NW4R_G3D_AnmObjChrBlendGetResult_HLE);
+
 #undef MKW_KNOWN_NATIVE_CPU_CALL
