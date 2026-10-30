@@ -53,6 +53,11 @@ def main():
     parser.add_argument("--top", type=int, default=30)
     parser.add_argument("--include-sampler", action="store_true",
                         help="keep __cyg_profile_* instrumentation samples (excluded by default)")
+    parser.add_argument("--chains", action="store_true",
+                        help="print call chains for --leaf")
+    parser.add_argument("--leaf", default="svcSendSyncRequest",
+                        help="leaf symbol to attribute chains for (default: svcSendSyncRequest)")
+    parser.add_argument("--depth", type=int, default=4, help="frames in a printed chain")
     args = parser.parse_args()
 
     symbols, starts = load_symbols(args.elf)
@@ -68,9 +73,11 @@ def main():
             if line.startswith("tick_us"):
                 continue
             parts = line.split()
-            if len(parts) != 2:
+            if len(parts) < 2:
                 continue
-            rows.append(int(parts[1], 16))
+            frames = [int(value, 16) for value in parts[1:] if value != "0"]
+            if frames:
+                rows.append(frames)
     if ref is None:
         raise SystemExit("missing '# ref <hex>' header")
     if not rows:
@@ -86,8 +93,8 @@ def main():
 
     counts = collections.Counter()
     total = 0
-    for pc in rows:
-        name = symbol_at(pc - base, symbols, starts) or f"?+0x{pc - base:X}"
+    for frames in rows:
+        name = symbol_at(frames[0] - base, symbols, starts) or f"?+0x{frames[0] - base:X}"
         if not args.include_sampler and "cyg_profile" in name:
             continue
         counts[name] += 1
@@ -99,6 +106,23 @@ def main():
     print(f"base    0x{base:X} (ref 0x{ref:X}, {ref_symbol[1]} 0x{ref_symbol[0]:X})")
     for name, count in counts.most_common(args.top):
         print(f"{100.0 * count / total:6.2f}%  {count:6d}  {name}")
+
+    if args.chains:
+        chains = collections.Counter()
+        for frames in rows:
+            names = []
+            for pc in frames:
+                name = symbol_at(pc - base, symbols, starts) or f"?+0x{pc - base:X}"
+                if "cyg_profile" in name:
+                    continue
+                if not names or names[-1] != name:
+                    names.append(name)
+            if names and args.leaf in names[0]:
+                chains[" <- ".join(names[:args.depth])] += 1
+        chain_total = sum(chains.values())
+        print(f"chains (leaf contains {args.leaf}, {chain_total} samples):")
+        for chain, count in chains.most_common(args.top):
+            print(f"{100.0 * count / chain_total:6.2f}%  {count:6d}  {chain}")
 
 
 if __name__ == "__main__":

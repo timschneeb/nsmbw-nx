@@ -5,9 +5,11 @@
 
 #include "abi_bridge.h"
 #include "fiber_manager.h"
+#include "memory.h"
 #include "runtime_log.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -104,9 +106,11 @@ struct Sample {
 // The handle is captured on the guest thread at init.
 std::atomic<Handle> g_guestThread{0};
 
+constexpr size_t kHostFrameCount = 6;
+
 struct HostSample {
     uint64_t tick = 0;
-    uintptr_t pc = 0;
+    std::array<uintptr_t, kHostFrameCount> frames{};
 };
 #endif
 
@@ -163,11 +167,14 @@ void WriteHostReport(const std::vector<HostSample>& samples, uint64_t startTick,
     const uintptr_t ref = reinterpret_cast<uintptr_t>(&NsmbwShadowSamplerInit);
     if (FILE* file = std::fopen(path.string().c_str(), "w")) {
         std::fprintf(file, "# ref %llX module WiiCompiled\n", static_cast<unsigned long long>(ref));
-        std::fprintf(file, "tick_us\tpc\n");
+        std::fprintf(file, "tick_us\tpc\tlr\tfp0\tfp1\tfp2\tfp3\n");
         for (const HostSample& sample : samples) {
             const uint64_t micros = (sample.tick - startTick) * 1000000ull / g_tickFrequency;
-            std::fprintf(file, "%llu\t%llX\n", static_cast<unsigned long long>(micros),
-                         static_cast<unsigned long long>(sample.pc));
+            std::fprintf(file, "%llu", static_cast<unsigned long long>(micros));
+            for (uintptr_t frame : sample.frames) {
+                std::fprintf(file, "\t%llX", static_cast<unsigned long long>(frame));
+            }
+            std::fputc('\n', file);
         }
         std::fclose(file);
         RT_LOGF(RT_TAG_RUNTIME, "sample: %zu host samples over %.2f s written to %s\n", samples.size(),
@@ -202,11 +209,37 @@ void RunHostSampler(uint32_t targetScene, uint64_t startTick, uint64_t endTick) 
         }
         ThreadContext context{};
         const Result rc = svcGetThreadContext3(&context, thread);
+        std::array<uintptr_t, kHostFrameCount> frames{};
+        frames[0] = static_cast<uintptr_t>(context.pc.x);
+        frames[1] = static_cast<uintptr_t>(context.lr);
+        uint64_t fp = context.fp;
+        for (size_t i = 2; i < frames.size(); ++i) {
+            if (fp == 0 || fp > 0xFFFFFFFFull || (fp & 7u) != 0) {
+                break;
+            }
+            uint32_t nextLo = 0, nextHi = 0, retLo = 0, retHi = 0;
+            if (!Memory::TryRead32(static_cast<uint32_t>(fp), nextLo) ||
+                !Memory::TryRead32(static_cast<uint32_t>(fp) + 4u, nextHi) ||
+                !Memory::TryRead32(static_cast<uint32_t>(fp) + 8u, retLo) ||
+                !Memory::TryRead32(static_cast<uint32_t>(fp) + 12u, retHi)) {
+                break;
+            }
+            const uint64_t next = (static_cast<uint64_t>(nextHi) << 32) | nextLo;
+            const uint64_t ret = (static_cast<uint64_t>(retHi) << 32) | retLo;
+            if (ret == 0) {
+                break;
+            }
+            frames[i] = static_cast<uintptr_t>(ret);
+            if (next <= fp || next - fp > (1ull << 20)) {
+                break;
+            }
+            fp = next;
+        }
         svcSetThreadActivity(thread, ThreadActivity_Runnable);
         if (R_FAILED(rc)) {
             continue;
         }
-        samples.push_back(HostSample{NowTick(), static_cast<uintptr_t>(context.pc.x)});
+        samples.push_back(HostSample{NowTick(), frames});
         if (samples.size() >= capacity) {
             break;
         }
