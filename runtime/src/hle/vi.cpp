@@ -1310,7 +1310,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             if (frame > 20.0 && frame < 2000.0 && s_logged++ < 30) {
                 uint32_t sceneWord = 0;
                 Memory::TryRead32(0x80428730u, sceneWord);
-                RT_LOGF(RT_TAG_VI,
+                StatsLog(
                         "slow frame %.1f ms (scene 0x%03X): game %.2f (gx %.2f, disc %.2f in %u reads), present %.2f, "
                         "end_frame %.2f, pace %.2f; thread cpu %.1f user + %.1f kernel, %u page faults\n",
                         frame, sceneWord & 0xFFFFu, ms(presentStart - s_lastEnd), gxMs, dvdMs, frameReads,
@@ -1345,7 +1345,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             const uint64_t unmerged = AuroraTakeUnmergedDraws();
             uint64_t copies = 0, creates = 0;
             AuroraTakeCopyStats(&copies, &creates);
-            RT_LOGF(RT_TAG_VI,
+            StatsLog(
                     "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.0f unmerged, %.1f copies, "
                     "%.1f new copy textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, "
                     "%d over 20 ms\n",

@@ -189,7 +189,8 @@ void RunHostSampler(uint32_t targetScene, uint64_t startTick, uint64_t endTick) 
         RT_LOGF(RT_TAG_RUNTIME, "sample: host mode has no guest thread handle\n");
         return;
     }
-    const uint32_t hz = std::min<uint32_t>(g_sampleHz, 1000u);
+    const uint32_t hz = std::max<uint32_t>(
+        1u, std::min<uint32_t>(static_cast<uint32_t>(EnvU64("NSMBW_SAMPLE_HOST_HZ", 20)), 1000u));
     const uint32_t intervalUs = std::max<uint32_t>(1u, 1000000u / hz);
     const size_t capacity = static_cast<size_t>(g_lengthSeconds * (hz + 500.0)) + 1000;
     std::vector<HostSample> samples;
