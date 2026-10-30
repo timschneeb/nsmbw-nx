@@ -308,7 +308,12 @@ void Compare(uint32_t stateAddress, uint32_t buffers, CpuContext* ctx,
 
 Mode ReadMode() {
     const char* value = std::getenv("NSMBW_AX_DELAY");
-    if (value == nullptr || value[0] == '\0' || std::strcmp(value, "off") == 0) {
+    if (value == nullptr || value[0] == '\0') {
+        // Default couch-play path: the delay state is processed on the AX worker so the
+        // guest DSP callback does not carry it.
+        return Mode::Worker;
+    }
+    if (std::strcmp(value, "off") == 0) {
         return Mode::Off;
     }
     if (std::strcmp(value, "inline") == 0) {
