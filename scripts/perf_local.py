@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCENARIOS = {
     "title": ("5000:TWO:300,8500:TWO:300", 20, "0x000"),
     "stage": ("5000:TWO:300,8500:TWO:300,11500:TWO:300", 37, "0x005"),
+    # Strap warning dismissed, then idle: the attract mode loads a random level by itself.
+    "demo": ("5000:TWO:300,8500:TWO:300", 300, "0x005"),
 }
 
 PERF_RE = re.compile(
