@@ -84,6 +84,8 @@ public:
     static uint32_t GetCurrentGuestThread();
     // Same value for the calling host thread. Worker threads read 0.
     static uint32_t GetCurrentGuestThreadLocal();
+    // True on the host thread that owns the guest fiber scheduler and guest CPU core.
+    static bool IsGuestHostThread();
     
     // Get fiber info for a guest thread (may be null)
     static GuestFiber* GetFiber(uint32_t guestThreadAddr);
@@ -134,5 +136,7 @@ private:
 // this on the guest thread so VI callbacks still run with guest state/locking
 // expectations.
 extern std::atomic<uint32_t> g_viRetracePendingCount;
+// True only on the host thread that owns the guest fiber scheduler.
+extern thread_local bool t_isGuestHostThread;
 
 } // namespace Fiber

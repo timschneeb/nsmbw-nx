@@ -20,6 +20,7 @@ namespace Fiber {
 namespace {
 thread_local uint32_t t_currentGuestThread = 0;
 }
+thread_local bool t_isGuestHostThread = false;
 
 std::mutex GuestFiberManager::s_mutex;
 std::unordered_map<uint32_t, GuestFiber> GuestFiberManager::s_fibers;
@@ -201,6 +202,7 @@ void GuestFiberManager::Initialize() {
     
     s_currentGuestThread.store(0, std::memory_order_relaxed);
     t_currentGuestThread = 0;
+    t_isGuestHostThread = true;
     s_initialized = true;
 }
 
@@ -469,6 +471,10 @@ uint32_t GuestFiberManager::GetCurrentGuestThread() {
 
 uint32_t GuestFiberManager::GetCurrentGuestThreadLocal() {
     return t_currentGuestThread;
+}
+
+bool GuestFiberManager::IsGuestHostThread() {
+    return t_isGuestHostThread;
 }
 
 GuestFiber* GuestFiberManager::GetFiber(uint32_t guestThreadAddr) {

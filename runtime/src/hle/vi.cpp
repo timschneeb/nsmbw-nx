@@ -16,6 +16,7 @@
 #include "guest_profiler.h"
 #include "perf_stats.h"
 #include "runtime_config.h"
+#include "shadow_sampler.h"
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
@@ -619,6 +620,7 @@ void LogSceneChanges() {
     }
     s_lastScene = now;
     GuestProfiler::NoteScene(now);
+    NsmbwShadowSamplerSetScene(now);
     char name[48] = "?";
     uint32_t namePtr = 0;
     if (now < 0x300u && Memory::TryRead32(0x80320840u + now * 4u, namePtr) && namePtr != 0) {
@@ -1106,6 +1108,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         return;
     }
     GuestProfiler::OnFramePresented();
+    NsmbwShadowSamplerFrame(static_cast<uint64_t>(s_presentedXfbFrames.load(std::memory_order_relaxed)));
     static FrameTimes times;
     const Clock::time_point presentStart = Clock::now();
     const auto ms = [](Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };

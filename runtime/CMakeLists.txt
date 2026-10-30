@@ -62,6 +62,7 @@ endif()
 
 option(MKW_BUILD_PRODUCTS "Build translated WiiCompiled product targets" ON)
 option(MKW_BUILD_PSQ_TESTS "Build focused PSQ ISA tests" OFF)
+option(MKW_ENABLE_SHADOW_SAMPLER "Instrument translated functions for the Switch shadow sampler" OFF)
 
 # Preprocessor definitions that belong to this project's own code (the runtime,
 # the translated shards and the product glue) and to nothing else. They are
@@ -239,6 +240,8 @@ set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
     COMPILE_OPTIONS "${MKW_TRANSLATED_PPC_FP_OPTIONS}")
 # The NSMBW sampling profiler includes <windows.h>; keep it out of the unity batches.
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/guest_profiler.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+# The Switch shadow sampler defines the instrumentation callbacks directly.
+set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/shadow_sampler.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 # Match the optimization policy of the translated callers as well as their FP policy.
 # The SLP flag is spelled per compiler (Clang accepts only its own).
 set_property(SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/ppc_quantized.cpp" APPEND PROPERTY
@@ -322,11 +325,16 @@ else()
         # ${CMAKE_DL_LIBS}. Strip it at product layer; vendor stays untouched.
         foreach(t TracyClient dawn::webgpu_dawn dawn_native dawn_common)
             if(TARGET ${t})
-                get_target_property(_mkw_dl_libs ${t} INTERFACE_LINK_LIBRARIES)
+                set(_mkw_target ${t})
+                get_target_property(_mkw_alias ${t} ALIASED_TARGET)
+                if(_mkw_alias)
+                    set(_mkw_target ${_mkw_alias})
+                endif()
+                get_target_property(_mkw_dl_libs ${_mkw_target} INTERFACE_LINK_LIBRARIES)
                 if(_mkw_dl_libs)
                     # Dawn's installed config wraps it as $<LINK_ONLY:dl>.
                     list(REMOVE_ITEM _mkw_dl_libs dl -ldl "$<LINK_ONLY:dl>")
-                    set_target_properties(${t} PROPERTIES INTERFACE_LINK_LIBRARIES "${_mkw_dl_libs}")
+                    set_target_properties(${_mkw_target} PROPERTIES INTERFACE_LINK_LIBRARIES "${_mkw_dl_libs}")
                 endif()
             endif()
         endforeach()

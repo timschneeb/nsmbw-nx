@@ -38,6 +38,7 @@ endfunction()
 function(mkw_apply_translated_compile_options target)
     target_compile_options(${target} PRIVATE
         -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS}
+        $<$<BOOL:${MKW_ENABLE_SHADOW_SAMPLER}>:-finstrument-functions>
         $<$<CXX_COMPILER_ID:Clang>:-fno-slp-vectorize>
         $<$<CXX_COMPILER_ID:GNU>:-fno-tree-slp-vectorize> -w -pipe)
 endfunction()
@@ -82,6 +83,9 @@ target_compile_features(mkw_runtime_common PRIVATE cxx_std_20)
 target_compile_definitions(mkw_runtime_common PRIVATE
     SDL_MAIN_HANDLED
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
+if(MKW_ENABLE_SHADOW_SAMPLER)
+    target_compile_definitions(mkw_runtime_common PRIVATE MKW_SHADOW_SAMPLER=1)
+endif()
 target_link_libraries(mkw_runtime_common PRIVATE
     aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
 target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)

@@ -88,6 +88,7 @@
 #include "hle_stubs.h"
 #include "perf_stats.h"
 #include "runtime_config.h"
+#include "shadow_sampler.h"
 #include "runtime_log.h"
 #include "updater.h"
 #include "runtime_product.h"
@@ -1512,6 +1513,7 @@ int RuntimeMain(int argc, char** argv) {
         // [debug] env and stats must be in place before the runtime reads any NSMBW_* switch.
         PerfStats::ApplyConfig();
         PerfStats::Pin(PerfStats::RoleGuest);
+        NsmbwShadowSamplerInit(GetRunLogDirectory());
         // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.
         if (!GameFolder::EnsureConfigured()) {
             SetRuntimeExitCodeImpl(0);
