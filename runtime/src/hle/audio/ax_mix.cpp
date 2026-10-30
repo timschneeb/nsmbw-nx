@@ -1615,6 +1615,10 @@ private:
                     ReportReverbWorkerFailure("unknown exception");
                 }
                 PerfStats::Publish(PerfStats::RoleAudio);
+#if defined(MKW_PLATFORM_SWITCH)
+                g_mixCpu.store(PerfStats::Thread(PerfStats::RoleAudio).core.load(std::memory_order_relaxed),
+                               std::memory_order_relaxed);
+#endif
 #if defined(__linux__)
                 g_mixCpu.store(sched_getcpu(), std::memory_order_relaxed);
 #endif
