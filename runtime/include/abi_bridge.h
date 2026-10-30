@@ -66,6 +66,9 @@ struct TranslatedFunctionInfo {
     void (*rawCpuInvoker)(CpuContext*) = nullptr;
     bool mustRemainDynamicallyDispatchable = true;
     FunctionKind kind = FunctionKind::BaseTranslated;
+    // False for native overrides whose ABI is plain scalar arguments: they never
+    // receive the guest CpuContext and cannot write nonvolatile guest GPRs.
+    bool nativeTouchesCpuContext = true;
 };
 
 struct RawDispatchRecord {
@@ -260,7 +263,8 @@ private:
 inline constexpr uint32_t kOSLoadContextAddress = 0x801ACE30u;
 
 inline bool ShouldPreserveNonvolatileGprsForRawCpuCall(const TranslatedFunctionInfo* info) noexcept {
-    return info->kind == FunctionKind::Native && info->address != kOSLoadContextAddress;
+    return info->kind == FunctionKind::Native && info->address != kOSLoadContextAddress &&
+           info->nativeTouchesCpuContext;
 }
 
 inline uint32_t NonvolatileFprGuardMaskFor(const TranslatedFunctionInfo* info) noexcept {
@@ -730,6 +734,7 @@ public:
         info.rawCpuInvoker = rawCpuInvoker;
         info.mustRemainDynamicallyDispatchable = mustRemainDynamicallyDispatchable;
         info.kind = kind;
+        info.nativeTouchesCpuContext = false;
         TranslatedFunctionRegistry::Register(std::move(info));
     }
 
