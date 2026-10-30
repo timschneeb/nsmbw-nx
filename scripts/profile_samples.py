@@ -15,9 +15,13 @@ def load_symbols(path):
     symbols = []
     for line in output.splitlines():
         parts = line.split(None, 3)
-        if len(parts) != 4:
+        if len(parts) == 3:
+            address, kind, name = parts
+            size = "0"
+        elif len(parts) == 4:
+            address, size, kind, name = parts
+        else:
             continue
-        address, size, kind, name = parts
         if kind.lower() not in ("t", "w"):
             continue
         try:

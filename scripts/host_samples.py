@@ -14,9 +14,13 @@ def load_symbols(path):
     symbols = []
     for line in output.splitlines():
         parts = line.split(None, 3)
-        if len(parts) != 4:
+        if len(parts) == 3:
+            address, kind, name = parts
+            size = "0"
+        elif len(parts) == 4:
+            address, size, kind, name = parts
+        else:
             continue
-        address, size, kind, name = parts
         if kind.lower() not in ("t", "w"):
             continue
         try:
@@ -47,6 +51,8 @@ def main():
     parser.add_argument("samples", help="host-samples.tsv from the run log directory")
     parser.add_argument("--elf", required=True, help="unstripped ELF that produced the samples")
     parser.add_argument("--top", type=int, default=30)
+    parser.add_argument("--include-sampler", action="store_true",
+                        help="keep __cyg_profile_* instrumentation samples (excluded by default)")
     args = parser.parse_args()
 
     symbols, starts = load_symbols(args.elf)
@@ -79,10 +85,15 @@ def main():
         raise SystemExit(f"invalid base 0x{base:X} (ref below symbol)")
 
     counts = collections.Counter()
+    total = 0
     for pc in rows:
-        name = symbol_at(pc - base, symbols, starts)
-        counts[name or f"?+0x{pc - base:X}"] += 1
-    total = len(rows)
+        name = symbol_at(pc - base, symbols, starts) or f"?+0x{pc - base:X}"
+        if not args.include_sampler and "cyg_profile" in name:
+            continue
+        counts[name] += 1
+        total += 1
+    if total == 0:
+        raise SystemExit("no non-sampler samples")
     print(f"samples {args.samples}")
     print(f"rows    {total}")
     print(f"base    0x{base:X} (ref 0x{ref:X}, {ref_symbol[1]} 0x{ref_symbol[0]:X})")
