@@ -24,6 +24,8 @@ union PPC_FPR {
     } paired;
 };
 
+struct IndirectDispatchMemo;
+
 // PowerPC CPU Context
 struct CpuContext {
     // Standard GPRs
@@ -51,6 +53,11 @@ struct CpuContext {
     uint32_t srr0;      // Save/Restore Register 0
     uint32_t srr1;      // Save/Restore Register 1
     uint32_t msr;       // Machine State Register
+
+    // Per-context indirect-dispatch memo. The dispatcher already holds this context, so the
+    // bctrl path reaches its cache without touching thread-local storage, which devkitA64
+    // compiles into a call to __aarch64_read_tp on Switch.
+    IndirectDispatchMemo* dispatchMemo = nullptr;
 };
 
 inline thread_local CpuContext* g_currentCpuContext = nullptr;
