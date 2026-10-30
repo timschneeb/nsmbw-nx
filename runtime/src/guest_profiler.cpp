@@ -9,6 +9,7 @@
 #include "guest_profiler.h"
 
 #include "abi_bridge.h"
+#include "fiber_manager.h"
 #include "runtime_log.h"
 
 #include <algorithm>
@@ -30,9 +31,11 @@
 #include <psapi.h>
 #elif defined(__linux__)
 #include <atomic>
+#include <cerrno>
 #include <dlfcn.h>
 #include <link.h>
 #include <csignal>
+#include <sched.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <ucontext.h>
@@ -293,6 +296,9 @@ struct Sample {
     int depth;
     unsigned scene;
     uint32_t frame;  // frames presented so far, to group samples by frame (profile-frames.txt)
+    pid_t tid;
+    int core;
+    uint32_t guest;
 };
 Sample* g_samples = nullptr;
 size_t g_capacity = 0;
@@ -320,6 +326,13 @@ void OnSample(int, siginfo_t*, void* context) {
     Sample& sample = g_samples[index];
     sample.scene = g_scene.load(std::memory_order_relaxed);
     sample.frame = g_presentedFrames.load(std::memory_order_relaxed);
+    sample.tid = static_cast<pid_t>(syscall(SYS_gettid));
+#if defined(__ANDROID__)
+    sample.core = -1;
+#else
+    sample.core = sched_getcpu();
+#endif
+    sample.guest = Fiber::GuestFiberManager::GetCurrentGuestThreadLocal();
 #if defined(__aarch64__)
     uintptr_t fp = uc->uc_mcontext.regs[29];
     sample.frames[0] = uc->uc_mcontext.pc;
@@ -431,35 +444,89 @@ void ReportLinux(size_t count) {
         }
     }
 
-    // A rough self-time table on the device: by the translated function a sample stopped in (the
-    // nearest entry point at or below it, so runtime code between translated functions lands on its
-    // neighbour; the offline report has it exact).
     const std::vector<Entry> entries = TranslatedEntries();
-    std::unordered_map<std::string, uint32_t> byFunction;
-    for (size_t i = 0; i < count; ++i) {
-        const uintptr_t pc = g_samples[i].frames[0];
-        std::string key;
+    const auto functionLabel = [&](uintptr_t pc) -> std::string {
         auto it = std::upper_bound(entries.begin(), entries.end(), pc,
                                    [](uintptr_t value, const Entry& e) { return value < e.host; });
         if (inSelf(pc) && it != entries.begin() && it != entries.end()) {
             --it;
             char text[200];
             std::snprintf(text, sizeof(text), "%08X %s", it->guest, GuestName(it->guest));
-            key = text;
-        } else {
-            key = inSelf(pc) ? selfName : foreignFrame(pc).substr(0, foreignFrame(pc).find('+'));
+            return text;
         }
-        byFunction[key]++;
+        return inSelf(pc) ? selfName : foreignFrame(pc).c_str();
+    };
+    const auto pcLabel = [&](uintptr_t pc) -> std::string {
+        if (inSelf(pc)) {
+            char text[160];
+            std::snprintf(text, sizeof(text), "%s+%llX", selfName.c_str(),
+                          static_cast<unsigned long long>(pc - selfBase));
+            return text;
+        }
+        return foreignFrame(pc);
+    };
+
+    // Per-sample trace: one row per sample, with the host thread and guest fiber that ran it.
+    std::unordered_map<pid_t, std::string> threadNames;
+    const auto threadName = [&](pid_t tid) -> const std::string& {
+        auto [it, inserted] = threadNames.try_emplace(tid);
+        if (inserted) {
+            char text[64] = {};
+            const std::filesystem::path comm =
+                std::filesystem::path("/proc/self/task") / std::to_string(tid) / "comm";
+            if (FILE* file = std::fopen(comm.string().c_str(), "r")) {
+                if (std::fgets(text, sizeof(text), file) != nullptr) {
+                    text[std::strcspn(text, "\n")] = 0;
+                }
+                std::fclose(file);
+            }
+            it->second = text[0] != 0 ? text : "?";
+        }
+        return it->second;
+    };
+    const std::filesystem::path samplesPath = ::RuntimeRunLogDirectory() / "profile-samples.tsv";
+    if (FILE* samples = std::fopen(samplesPath.string().c_str(), "w")) {
+        std::fprintf(samples, "tid\tname\tcore\tguest\tscene\tframe\tpc\tfunction\n");
+        for (size_t i = 0; i < count; ++i) {
+            const Sample& sample = g_samples[i];
+            const uintptr_t pc = sample.frames[0];
+            std::fprintf(samples, "%d\t%s\t%d\t%u\tS%03X\t%u\t%s\t%s\n",
+                         static_cast<int>(sample.tid), threadName(sample.tid).c_str(), sample.core,
+                         sample.guest, sample.scene, sample.frame, pcLabel(pc).c_str(),
+                         functionLabel(pc).c_str());
+        }
+        std::fclose(samples);
+        RT_LOGF(RT_TAG_RUNTIME, "profile: samples written to %s\n", samplesPath.string().c_str());
     }
-    std::vector<std::pair<std::string, uint32_t>> sorted(byFunction.begin(), byFunction.end());
-    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
-    for (size_t i = 0; i < sorted.size() && i < 40; ++i) {
-        RT_LOGF(RT_TAG_RUNTIME, "profile: %5.1f%%  %s\n", 100.0 * sorted[i].second / count, sorted[i].first.c_str());
+
+    // A rough self-time table on the device. The offline report has the exact per-thread view.
+    std::unordered_map<std::string, uint32_t> byFunction;
+    std::unordered_map<std::string, uint32_t> byThread;
+    for (size_t i = 0; i < count; ++i) {
+        const Sample& sample = g_samples[i];
+        byFunction[functionLabel(sample.frames[0])]++;
+        char thread[160];
+        std::snprintf(thread, sizeof(thread), "%s tid %d core %d guest %u",
+                      threadName(sample.tid).c_str(), static_cast<int>(sample.tid), sample.core,
+                      sample.guest);
+        byThread[thread]++;
     }
+    const auto printTop = [&](const char* title, const std::unordered_map<std::string, uint32_t>& counts,
+                              size_t limit) {
+        std::vector<std::pair<std::string, uint32_t>> sorted(counts.begin(), counts.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (size_t i = 0; i < sorted.size() && i < limit; ++i) {
+            RT_LOGF(RT_TAG_RUNTIME, "profile %s: %5.1f%%  %s\n", title,
+                    100.0 * sorted[i].second / count, sorted[i].first.c_str());
+        }
+    };
+    printTop("thread", byThread, 12);
+    printTop("function", byFunction, 40);
 }
 
 // NSMBW_PROFILE_THREAD=<name>: sample the thread of that name (as /proc lists it, e.g. FrameWorker)
-// instead of the game thread.
+// instead of the game thread. NSMBW_PROFILE_THREADS=game,ax-mix samples several threads at once;
+// "game" is the thread that presents frames.
 pid_t ThreadNamed(const char* name) {
     for (const auto& task : std::filesystem::directory_iterator("/proc/self/task")) {
         if (FILE* comm = std::fopen((task.path() / "comm").string().c_str(), "r")) {
@@ -477,17 +544,53 @@ pid_t ThreadNamed(const char* name) {
     return 0;
 }
 
-void RunLinux(pid_t thread, double startSeconds, double lengthSeconds) {
-    std::this_thread::sleep_for(std::chrono::duration<double>(startSeconds));
-    if (const char* name = std::getenv("NSMBW_PROFILE_THREAD"); name != nullptr && *name != 0) {
-        thread = ThreadNamed(name);
-        RT_LOGF(RT_TAG_RUNTIME, "profile: sampling thread %s (%d)\n", name, static_cast<int>(thread));
-        if (thread == 0) {
-            return;
-        }
-        g_stacksName = std::string("profile-stacks-") + name + ".txt";
+struct TargetSpec {
+    std::string name;
+    pid_t tid;
+};
+
+std::vector<TargetSpec> ProfileTargets(pid_t gameThread) {
+    std::string list;
+    if (const char* value = std::getenv("NSMBW_PROFILE_THREADS"); value != nullptr && *value != 0) {
+        list = value;
+    } else if (const char* value = std::getenv("NSMBW_PROFILE_THREAD"); value != nullptr && *value != 0) {
+        list = value;
     }
-    g_capacity = static_cast<size_t>(lengthSeconds * 1100) + 1000;
+
+    std::vector<TargetSpec> targets;
+    if (list.empty()) {
+        targets.push_back({"game", gameThread});
+        return targets;
+    }
+
+    size_t start = 0;
+    while (start <= list.size()) {
+        const size_t end = list.find(',', start);
+        std::string name = list.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        const size_t first = name.find_first_not_of(" \t");
+        const size_t last = name.find_last_not_of(" \t");
+        name = first == std::string::npos ? std::string() : name.substr(first, last - first + 1);
+        if (!name.empty()) {
+            targets.push_back({name, name == "game" ? gameThread : ThreadNamed(name.c_str())});
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return targets;
+}
+
+void RunLinux(pid_t gameThread, double startSeconds, double lengthSeconds) {
+    std::this_thread::sleep_for(std::chrono::duration<double>(startSeconds));
+    std::vector<TargetSpec> targets = ProfileTargets(gameThread);
+    for (const TargetSpec& target : targets) {
+        RT_LOGF(RT_TAG_RUNTIME, "profile: target %s (%d)\n", target.name.c_str(), static_cast<int>(target.tid));
+    }
+    if (targets.size() == 1 && targets[0].name != "game") {
+        g_stacksName = std::string("profile-stacks-") + targets[0].name + ".txt";
+    }
+    g_capacity = static_cast<size_t>(lengthSeconds * 1100) * std::max<size_t>(targets.size(), 1) + 1000;
     g_samples = new Sample[g_capacity];
     struct sigaction action {};
     action.sa_sigaction = OnSample;
@@ -497,13 +600,27 @@ void RunLinux(pid_t thread, double startSeconds, double lengthSeconds) {
     g_sampling.store(true);
     auto next = std::chrono::steady_clock::now();
     const auto end = next + std::chrono::duration<double>(lengthSeconds);
+    uint32_t ticks = 0;
     while (next < end) {
         next += std::chrono::microseconds(1000);
         std::this_thread::sleep_until(next);
         if (HitchNanos() > 0 && !InHitch()) {
             continue;  // NSMBW_PROFILE_HITCH: only while no frame has been presented for that long
         }
-        syscall(SYS_tgkill, getpid(), thread, SIGPROF);
+        if ((++ticks % 100) == 0) {
+            for (TargetSpec& target : targets) {
+                if (target.tid <= 0 && target.name != "game") {
+                    target.tid = ThreadNamed(target.name.c_str());
+                }
+            }
+        }
+        for (TargetSpec& target : targets) {
+            if (target.tid > 0 && syscall(SYS_tgkill, getpid(), target.tid, SIGPROF) != 0) {
+                if (errno == ESRCH) {
+                    target.tid = 0;
+                }
+            }
+        }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     g_sampling.store(false);
@@ -512,7 +629,21 @@ void RunLinux(pid_t thread, double startSeconds, double lengthSeconds) {
 }
 #endif
 
+void InstallSamplingStack() {
+#if defined(__linux__)
+    thread_local std::vector<char> signalStack(64 * 1024);
+    stack_t alternate{};
+    alternate.ss_sp = signalStack.data();
+    alternate.ss_size = signalStack.size();
+    sigaltstack(&alternate, nullptr);
+#endif
+}
+
 } // namespace
+
+void PrepareSamplingThread() {
+    InstallSamplingStack();
+}
 
 void NoteScene(unsigned scene) {
 #if defined(__linux__)
@@ -568,11 +699,7 @@ void OnFramePresented() {
 #else
     // The handler runs on whatever stack the game thread is on, a guest thread's fiber stack among
     // them: give it one of its own.
-    static std::vector<char> signalStack(64 * 1024);
-    stack_t alternate{};
-    alternate.ss_sp = signalStack.data();
-    alternate.ss_size = signalStack.size();
-    sigaltstack(&alternate, nullptr);
+    InstallSamplingStack();
     RT_LOGF(RT_TAG_RUNTIME, "profile: sampling the game thread from %.0f s for %.0f s\n", start, length);
     std::thread(RunLinux, static_cast<pid_t>(syscall(SYS_gettid)), start, length).detach();
 #endif

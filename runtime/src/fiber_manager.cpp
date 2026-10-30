@@ -17,11 +17,15 @@
 
 namespace Fiber {
 
+namespace {
+thread_local uint32_t t_currentGuestThread = 0;
+}
+
 std::mutex GuestFiberManager::s_mutex;
 std::unordered_map<uint32_t, GuestFiber> GuestFiberManager::s_fibers;
 std::vector<void*> GuestFiberManager::s_fibersPendingDelete;
 void* GuestFiberManager::s_schedulerFiber = nullptr;
-uint32_t GuestFiberManager::s_currentGuestThread = 0;
+std::atomic<uint32_t> GuestFiberManager::s_currentGuestThread{0};
 bool GuestFiberManager::s_initialized = false;
 thread_local CpuContext* GuestFiberManager::s_cpuContext = nullptr;
 
@@ -195,7 +199,8 @@ void GuestFiberManager::Initialize() {
         std::abort();
     }
     
-    s_currentGuestThread = 0;
+    s_currentGuestThread.store(0, std::memory_order_relaxed);
+    t_currentGuestThread = 0;
     s_initialized = true;
 }
 
@@ -319,8 +324,9 @@ void GuestFiberManager::ExitGuestThread(uint32_t guestThreadAddr, ThreadState fi
     
     it->second.state = finalState;
     it->second.terminated = true;
-    if (s_currentGuestThread == guestThreadAddr) {
-        s_currentGuestThread = 0;
+    if (s_currentGuestThread.load(std::memory_order_relaxed) == guestThreadAddr) {
+        s_currentGuestThread.store(0, std::memory_order_relaxed);
+        t_currentGuestThread = 0;
     }
     
     if (it->second.fiber && !it->second.isSchedulerFiber) {
@@ -370,18 +376,19 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
         }
         
         // Remember what thread we're switching from
-        previousThread = s_currentGuestThread;
+        previousThread = s_currentGuestThread.load(std::memory_order_relaxed);
         
         // Save current thread's CPU context if switching from a guest thread
-        if (s_currentGuestThread != 0 && cpu) {
-            auto currentIt = s_fibers.find(s_currentGuestThread);
+        if (previousThread != 0 && cpu) {
+            auto currentIt = s_fibers.find(previousThread);
             if (currentIt != s_fibers.end()) {
                 currentIt->second.cpuContext = *cpu;
             }
         }
         
         // Update current thread
-        s_currentGuestThread = guestThreadAddr;
+        s_currentGuestThread.store(guestThreadAddr, std::memory_order_relaxed);
+        t_currentGuestThread = guestThreadAddr;
         it->second.state = ThreadState::RUNNING;
 
         if (cpu) {
@@ -443,19 +450,25 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
                 }
                 it->second.state = ThreadState::RUNNING;
             }
-            s_currentGuestThread = previousThread;
+            s_currentGuestThread.store(previousThread, std::memory_order_relaxed);
+            t_currentGuestThread = previousThread;
         } else {
             if (cpu && haveCallerContext) {
                 *cpu = callerContext;
                 MkwApplyHostNiMode(cpu->fpscr);
             }
-            s_currentGuestThread = 0;
+            s_currentGuestThread.store(0, std::memory_order_relaxed);
+            t_currentGuestThread = 0;
         }
     }
 }
 
 uint32_t GuestFiberManager::GetCurrentGuestThread() {
-    return s_currentGuestThread;
+    return s_currentGuestThread.load(std::memory_order_relaxed);
+}
+
+uint32_t GuestFiberManager::GetCurrentGuestThreadLocal() {
+    return t_currentGuestThread;
 }
 
 GuestFiber* GuestFiberManager::GetFiber(uint32_t guestThreadAddr) {
@@ -476,7 +489,7 @@ void GuestFiberManager::DumpGuestThreads(std::ostream& os) {
         return;
     }
     os << "[fiber] " << s_fibers.size() << " guest thread(s); current 0x" << std::hex << std::uppercase
-       << s_currentGuestThread << std::dec << std::nouppercase << std::endl;
+       << s_currentGuestThread.load(std::memory_order_relaxed) << std::dec << std::nouppercase << std::endl;
     // The guest OS's own view (NSMBW addresses): which threads it can run and who sleeps on the VI
     // retrace queue. A thread the host calls READY but the OS never queues is waiting on something.
     const auto word = [](uint32_t addr) {
@@ -491,7 +504,7 @@ void GuestFiberManager::DumpGuestThreads(std::ostream& os) {
         os << "[fiber] thread 0x" << std::hex << std::uppercase << thread << " entry 0x" << fiber.entryPoint
            << std::dec << std::nouppercase << " state " << static_cast<uint32_t>(fiber.state)
            << (fiber.isSchedulerFiber ? " (scheduler)" : "") << (fiber.terminated ? " (terminated)" : "")
-           << (thread == s_currentGuestThread ? " (current)" : "") << std::endl;
+           << (thread == s_currentGuestThread.load(std::memory_order_relaxed) ? " (current)" : "") << std::endl;
         // OSThread: state (u16) +0x2C8, suspend +0x2CC, priority +0x2D0, queue (waiting on) +0x2DC.
         os << "[fiber]   OSThread state=" << (word(thread + 0x2C8u) >> 16) << " suspend="
            << static_cast<int32_t>(word(thread + 0x2CCu)) << " priority="
@@ -536,7 +549,8 @@ bool GuestFiberManager::RegisterMainThreadAsFiber(uint32_t guestThreadAddr, CpuC
     }
     
     s_fibers[guestThreadAddr] = gf;
-    s_currentGuestThread = guestThreadAddr;
+    s_currentGuestThread.store(guestThreadAddr, std::memory_order_relaxed);
+    t_currentGuestThread = guestThreadAddr;
     
     return true;
 }
@@ -566,6 +580,7 @@ void GuestFiberManager::FiberProc(void* param)
 #endif
 {
     uint32_t guestThreadAddr = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(param));
+    t_currentGuestThread = guestThreadAddr;
 
 
     // Get our fiber info
@@ -578,6 +593,7 @@ void GuestFiberManager::FiberProc(void* param)
         auto it = s_fibers.find(guestThreadAddr);
         if (it == s_fibers.end()) {
             RT_LOG(RT_TAG_OS) << "FiberProc: fiber not found!" << std::endl;
+            t_currentGuestThread = 0;
             HostContext::Switch(s_schedulerFiber);
             return;
         }
@@ -694,7 +710,8 @@ void GuestFiberManager::FiberProc(void* param)
             it->second.terminated = true;
             it->second.state = ThreadState::MORIBUND;
         }
-        s_currentGuestThread = 0;
+        s_currentGuestThread.store(0, std::memory_order_relaxed);
+        t_currentGuestThread = 0;
     }
     
     // Return to scheduler

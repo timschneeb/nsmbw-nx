@@ -82,6 +82,8 @@ public:
     
     // Get the currently running guest thread address (0 if in scheduler)
     static uint32_t GetCurrentGuestThread();
+    // Same value for the calling host thread. Worker threads read 0.
+    static uint32_t GetCurrentGuestThreadLocal();
     
     // Get fiber info for a guest thread (may be null)
     static GuestFiber* GetFiber(uint32_t guestThreadAddr);
@@ -120,7 +122,7 @@ private:
     // The scheduler's own host context. Its opaque handle is supplied by the
     // active HostContext backend, so one field serves every supported host.
     static void* s_schedulerFiber;
-    static uint32_t s_currentGuestThread;
+    static std::atomic<uint32_t> s_currentGuestThread;
     static bool s_initialized;
     // Stored CPU context pointer for fiber switches
     static thread_local CpuContext* s_cpuContext;

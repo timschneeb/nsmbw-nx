@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Summarize GuestProfiler's per-thread sample trace."""
+
+import argparse
+import bisect
+import collections
+import csv
+import json
+import subprocess
+from pathlib import Path
+
+
+def load_symbols(path):
+    output = subprocess.check_output(["nm", "-n", "-S", "--defined-only", path], text=True, errors="replace")
+    symbols = []
+    for line in output.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) != 4:
+            continue
+        address, size, kind, name = parts
+        if kind.lower() not in ("t", "w"):
+            continue
+        try:
+            address = int(address, 16)
+            size = int(size, 16)
+        except ValueError:
+            continue
+        symbols.append((address, size, name))
+    symbols.sort()
+    for index, (address, size, name) in enumerate(symbols):
+        if size == 0:
+            size = max(1, (symbols[index + 1][0] if index + 1 < len(symbols) else address + 1) - address)
+        symbols[index] = (address, size, name)
+    return symbols, [entry[0] for entry in symbols]
+
+
+def symbol_at(address, symbols, starts):
+    index = bisect.bisect_right(starts, address) - 1
+    if index >= 0:
+        base, size, name = symbols[index]
+        if base <= address < base + size:
+            return name
+    return None
+
+
+def load(path, scene, elf, name_filter=None, guest_only=False, function_filter=None):
+    symbols = starts = None
+    module = None
+    if elf:
+        symbols, starts = load_symbols(str(elf))
+        module = Path(elf).name
+    counts = collections.Counter()
+    threads = collections.Counter()
+    cores = collections.Counter()
+    guests = collections.Counter()
+    rows = 0
+    with Path(path).open(newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            if scene and row["scene"] != scene:
+                continue
+            name = row.get("name", "?")
+            if name_filter and name_filter not in name:
+                continue
+            if guest_only and row["guest"] == "0":
+                continue
+            function = row["function"]
+            if symbols and module and "+" in row["pc"]:
+                module_name, offset = row["pc"].rsplit("+", 1)
+                if module_name == module:
+                    try:
+                        resolved = symbol_at(int(offset, 16), symbols, starts)
+                    except ValueError:
+                        resolved = None
+                    if resolved:
+                        function = resolved
+            if function_filter and function_filter not in function:
+                continue
+            rows += 1
+            counts[function] += 1
+            thread = f"{name} tid {row['tid']} core {row['core']} guest {row['guest']}"
+            threads[thread] += 1
+            cores[row["core"]] += 1
+            guests[row["guest"]] += 1
+    return rows, counts, threads, cores, guests
+
+
+def top(counter, rows, limit):
+    result = []
+    for name, count in counter.most_common(limit):
+        result.append({"name": name, "samples": count, "percent": 100.0 * count / rows})
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("samples", help="profile-samples.tsv from the run log directory")
+    parser.add_argument("--scene", default="S005", help="scene tag to keep, e.g. S005 (default), or empty for all")
+    parser.add_argument("--top", type=int, default=30)
+    parser.add_argument("--by", choices=("function", "thread", "core", "guest"), default="function")
+    parser.add_argument("--compare", help="baseline profile-samples.tsv")
+    parser.add_argument("--elf", help="unstripped binary for runtime symbol names")
+    parser.add_argument("--name", help="host thread name substring, e.g. ax-mix")
+    parser.add_argument("--function", help="function name substring, e.g. AxfxDelay")
+    parser.add_argument("--guest-only", action="store_true", help="drop samples from non-guest host threads")
+    parser.add_argument("--json")
+    args = parser.parse_args()
+
+    scene = args.scene or None
+    rows, counts, threads, cores, guests = load(args.samples, scene, args.elf, args.name,
+                                                args.guest_only, args.function)
+    if rows == 0:
+        raise SystemExit(f"no samples for scene {scene or 'all'} in {args.samples}")
+
+    counters = {"function": counts, "thread": threads, "core": cores, "guest": guests}
+    result = {
+        "samples": args.samples,
+        "rows": rows,
+        "scene": scene or "all",
+        "by": args.by,
+        "top": top(counters[args.by], rows, args.top),
+    }
+    print(f"samples {args.samples}")
+    print(f"rows    {rows} ({scene or 'all scenes'})")
+    for item in result["top"]:
+        print(f"{item['percent']:6.2f}%  {item['samples']:8d}  {item['name']}")
+
+    if args.compare:
+        base_rows, base_counts, _, _, _ = load(args.compare, scene, args.elf, args.name,
+                                               args.guest_only, args.function)
+        if base_rows:
+            print(f"compare {args.compare} ({base_rows} samples)")
+            keys = collections.Counter()
+            for item in result["top"]:
+                keys[item["name"]] = item["samples"]
+            base_sorted = base_counts.most_common(args.top)
+            for name, base_count in base_sorted:
+                now = keys.get(name, 0)
+                old_pct = 100.0 * base_count / base_rows
+                new_pct = 100.0 * now / rows
+                print(f"{old_pct:6.2f}% -> {new_pct:6.2f}%  {new_pct - old_pct:+6.2f}  {name}")
+
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=2) + "\n")
+
+
+if __name__ == "__main__":
+    main()

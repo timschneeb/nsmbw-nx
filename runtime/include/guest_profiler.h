@@ -5,6 +5,8 @@
 namespace GuestProfiler {
 // From the thread that presents frames, at each present: the first call starts the sampler.
 void OnFramePresented();
+// Give a host worker thread its own signal stack before the sampler can target it.
+void PrepareSamplingThread();
 // The game's current scene (vi.cpp, on each change): every sample carries it, so the report can be
 // split by scene.
 void NoteScene(unsigned scene);

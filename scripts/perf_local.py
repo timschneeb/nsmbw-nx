@@ -88,6 +88,7 @@ def main():
     parser.add_argument("--last", type=int, default=6)
     parser.add_argument("--label", default="run")
     parser.add_argument("--profile", help="value for NSMBW_PROFILE, e.g. 15:11")
+    parser.add_argument("--profile-threads", help="value for NSMBW_PROFILE_THREADS, e.g. game,ax-mix")
     parser.add_argument("--save")
     parser.add_argument("--compare")
     args = parser.parse_args()
@@ -110,6 +111,10 @@ def main():
         env["NSMBW_PROFILE"] = args.profile
     else:
         env.pop("NSMBW_PROFILE", None)
+    if args.profile_threads:
+        env["NSMBW_PROFILE_THREADS"] = args.profile_threads
+    else:
+        env.pop("NSMBW_PROFILE_THREADS", None)
 
     summaries = []
     for run in range(args.runs):
