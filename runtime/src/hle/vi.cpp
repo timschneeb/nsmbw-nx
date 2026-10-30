@@ -38,6 +38,9 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
+#if defined(MKW_PLATFORM_SWITCH)
+#include <switch.h>
+#endif
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
