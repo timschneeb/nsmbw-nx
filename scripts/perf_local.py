@@ -58,6 +58,8 @@ def medians(rows):
         "rows": len(rows),
         "p50_ms": statistics.median(row["p50"] for row in rows),
         "p95_ms": statistics.median(row["p95"] for row in rows),
+        "p99_ms": statistics.median(row["p99"] for row in rows),
+        "worst_ms": statistics.median(row["worst"] for row in rows),
         "guest_ms": statistics.median(row["guest"] for row in rows),
         "gx_ms": statistics.median(row["gx"] for row in rows),
         "fifo_ms": statistics.median(row["fifo"] for row in rows),
@@ -70,7 +72,7 @@ def medians(rows):
 
 def compare(label, current, baseline):
     print(f"compare {label} vs {baseline.get('label', 'baseline')}:")
-    for key in ("guest_ms", "p50_ms", "p95_ms", "gx_ms", "fifo_ms", "fps"):
+    for key in ("guest_ms", "p50_ms", "p95_ms", "p99_ms", "worst_ms", "gx_ms", "fifo_ms", "fps"):
         old = baseline.get(key)
         new = current.get(key)
         if not old or not new:
@@ -150,14 +152,15 @@ def main():
         summaries.append(summary)
         print(
             f"{args.label} run {run}: scene {expected_scene}, rows {summary['rows']}, "
-            f"p50 {summary['p50_ms']:.2f}, guest {summary['guest_ms']:.2f}, "
+            f"p50 {summary['p50_ms']:.2f}, p95 {summary['p95_ms']:.2f}, p99 {summary['p99_ms']:.2f}, "
+            f"worst {summary['worst_ms']:.2f}, guest {summary['guest_ms']:.2f}, "
             f"gx {summary['gx_ms']:.2f}, fifo {summary['fifo_ms']:.2f}, "
             f"fps {summary['fps']:.1f}"
         )
 
     combined = {
         key: statistics.median(summary[key] for summary in summaries)
-        for key in ("p50_ms", "p95_ms", "guest_ms", "gx_ms", "fifo_ms", "draws", "over20")
+        for key in ("p50_ms", "p95_ms", "p99_ms", "worst_ms", "guest_ms", "gx_ms", "fifo_ms", "draws", "over20")
     }
     combined["fps"] = 1000.0 / combined["p50_ms"] if combined["p50_ms"] else 0.0
     combined["label"] = args.label
