@@ -26,6 +26,9 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstdarg>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1001,36 +1004,104 @@ static double PercentileMs(std::vector<double> values, double fraction) {
 }
 
 // One CSV row per two second window so a run can be diffed by scripts/perf_compare.py.
+// The guest thread only formats and enqueues: on Switch, stderr and perf.csv are
+// unbuffered SD writes, and doing them inline stalled the guest for 150-200 ms at
+// every window boundary. This sink owns both writes on core 1.
+class StatsSink {
+public:
+    static StatsSink& Instance() {
+        static StatsSink* sink = new StatsSink();
+        return *sink;
+    }
+
+    void Csv(std::string text) { Push(true, std::move(text)); }
+    void Log(std::string text) { Push(false, std::move(text)); }
+
+private:
+    struct Item {
+        bool csv = false;
+        std::string text;
+    };
+
+    StatsSink() {
+        thread_ = std::thread([this] { Run(); });
+        thread_.detach();
+    }
+
+    void Push(bool csv, std::string text) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            queue_.push_back(Item{csv, std::move(text)});
+        }
+        cv_.notify_one();
+    }
+
+    void Run() {
+#if defined(MKW_PLATFORM_SWITCH)
+        // Host-side I/O belongs on core 1 with the frame worker and GX thread.
+        svcSetThreadCoreMask(threadGetCurHandle(), 1, 1ull << 1);
+#endif
+        std::FILE* csv = nullptr;
+        for (;;) {
+            Item item;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this] { return !queue_.empty(); });
+                item = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            if (item.csv) {
+                if (csv == nullptr) {
+                    const auto path = RuntimeConfigFile::ApplicationDataDirectory() / "Logs" / "perf.csv";
+                    std::error_code ec;
+                    std::filesystem::create_directories(path.parent_path(), ec);
+                    const std::string text = RuntimeConfigFile::PathToUtf8(path);
+                    const bool exists = std::filesystem::exists(path, ec);
+                    csv = std::fopen(text.c_str(), "ab");
+                    if (csv == nullptr) {
+                        continue;
+                    }
+                    if (!exists) {
+                        std::fputs("build,scene,frames,fps,p50,p95,p99,worst,game_ms,gx_ms,guest_ms,audio_ms,"
+                                   "gxfifo_ms,gxfifo_writes,bp_ms,dl_ms,draw_ms,submit_ms,guest_core,audio_core,over20\n",
+                                   csv);
+                    }
+                }
+                std::fputs(item.text.c_str(), csv);
+                std::fflush(csv);
+            } else {
+                std::fputs(item.text.c_str(), stderr);
+            }
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<Item> queue_;
+    std::thread thread_;
+};
+
 static void AppendPerfCsv(uint32_t scene, int frames, double fps, double p50, double p95, double p99, double worst,
                           double gameMs, double gxMs, double guestMs, double audioMs, double gxFifoMs, double gxFifoWrites, double bpMs, double dlMs, double drawMs, double submitMs,
                           int guestCore, int audioCore, int over20) {
-    const auto path = RuntimeConfigFile::ApplicationDataDirectory() / "Logs" / "perf.csv";
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    const std::string text = RuntimeConfigFile::PathToUtf8(path);
-    static bool headerWritten = false;
-    if (!headerWritten) {
-        std::FILE* probe = std::fopen(text.c_str(), "rb");
-        headerWritten = probe != nullptr;
-        if (probe != nullptr) {
-            std::fclose(probe);
-        }
-    }
-    std::FILE* file = std::fopen(text.c_str(), "ab");
-    if (file == nullptr) {
-        return;
-    }
-    if (!headerWritten) {
-        std::fputs("build,scene,frames,fps,p50,p95,p99,worst,game_ms,gx_ms,guest_ms,audio_ms,gxfifo_ms,gxfifo_writes,"
-                   "bp_ms,dl_ms,draw_ms,submit_ms,guest_core,audio_core,over20\n",
-                   file);
-        headerWritten = true;
-    }
-    std::fprintf(file,
+    char row[512];
+    std::snprintf(row, sizeof(row),
                  "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d\n",
                  __DATE__, __TIME__, scene, frames, fps, p50, p95, p99, worst, gameMs, gxMs, guestMs, audioMs,
                  gxFifoMs, gxFifoWrites, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, over20);
-    std::fclose(file);
+    StatsSink::Instance().Csv(row);
+}
+
+// Window stats go through the same sink instead of fprintf(stderr) on the guest.
+static void StatsLog(const char* format, ...) {
+    char buffer[512];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    std::string line("[vi] ");
+    line += buffer;
+    StatsSink::Instance().Log(std::move(line));
 }
 
 // The scheduler's idle time (no guest thread runnable, though its idle loop runs the audio DMA
@@ -1306,7 +1377,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             const double dlMs = breakdown.nanos[PerfStats::GxFifoDisplayList] / 1e6 / n;
             const double drawMs = breakdown.nanos[PerfStats::GxFifoDraw] / 1e6 / n;
             const double submitMs = PerfStats::TakeGxFifoSubmitNanos() / 1e6 / n;
-            RT_LOGF(RT_TAG_VI,
+            StatsLog(
                     "perf: p50 %.2f p95 %.2f p99 %.2f worst %.2f ms; guest cpu %.2f ms core %d, audio %.2f ms core "
                     "%d, gx %.2f ms, gx fifo %.2f ms in %.1f k writes (%.0f KiB): bp %.2f x %.1f k, dl %.2f x %.0f, submit %.2f, "
                     "draw %.2f x %.0f, %d over 20 ms\n",
@@ -1329,7 +1400,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     std::lock_guard<std::mutex> lock(g_viMutex);
                     retraceCount = g_vi.retraceCount;
                 }
-                RT_LOGF(RT_TAG_VI,
+                StatsLog(
                         "idle %.2f ms a frame in %.1f waits, %.0f%% of them ending at a retrace; %.2f retraces a frame\n",
                         g_idleNanos.exchange(0, std::memory_order_relaxed) / 1e6 / n, waits / n,
                         waits ? 100.0 * retraceEnds / waits : 0.0,
@@ -1353,14 +1424,14 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     std::snprintf(part, sizeof(part), " %08X %.2f ms;", threads[i].first, threads[i].second / 1e6 / n);
                     waiters += part;
                 }
-                RT_LOGF(RT_TAG_VI, "idle ended by (a frame):%s thread that waited:%s\n", enders.c_str(), waiters.c_str());
+                StatsLog("idle ended by (a frame):%s thread that waited:%s\n", enders.c_str(), waiters.c_str());
                 std::vector<std::pair<uint64_t, MainWait>> mainWaits(g_mainWaits.begin(), g_mainWaits.end());
                 std::sort(mainWaits.begin(), mainWaits.end(),
                           [](const auto& a, const auto& b) { return a.second.blocked > b.second.blocked; });
                 for (size_t i = 0; i < mainWaits.size() && i < 5; ++i) {
                     const MainWait& wait = mainWaits[i].second;
                     const uint32_t lr = static_cast<uint32_t>(mainWaits[i].first);
-                    RT_LOGF(RT_TAG_VI, "main thread slept %.2f ms a frame (%.2f idle, %.1f times) on queue %08X from %08X\n",
+                    StatsLog("main thread slept %.2f ms a frame (%.2f idle, %.1f times) on queue %08X from %08X\n",
                             wait.blocked / 1e6 / n, wait.idle / 1e6 / n, wait.count / n,
                             static_cast<uint32_t>(mainWaits[i].first >> 32), lr);
                 }
@@ -1369,21 +1440,21 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     uint32_t mixes = 0;
                     int mixCpu = -1;
                     AxDspHle::TakeMixStats(&mixNanos, &mixWaitNanos, &mixes, &mixCpu);
-                    RT_LOGF(RT_TAG_VI, "audio mix: %.2f ms a frame in %.1f mixes (%.3f ms each, last on cpu %d), guest waited %.2f ms\n",
+                    StatsLog("audio mix: %.2f ms a frame in %.1f mixes (%.3f ms each, last on cpu %d), guest waited %.2f ms\n",
                             mixNanos / 1e6 / n, mixes / n, mixes ? mixNanos / 1e6 / mixes : 0.0, mixCpu,
                             mixWaitNanos / 1e6 / n);
                     uint64_t steps[7] = {};
                     OS_HLE_TakeIdleSteps(steps);
-                    RT_LOGF(RT_TAG_VI, "retrace poll sleeps: %.2f ms a frame in %.1f (%.1f begun)\n",
+                    StatsLog("retrace poll sleeps: %.2f ms a frame in %.1f (%.1f begun)\n",
                             g_retracePollSleepNanos.exchange(0) / 1e6 / n, g_retracePollSleeps.exchange(0) / n,
                             g_retracePollEntries.exchange(0) / n);
-                    RT_LOGF(RT_TAG_VI, "idle loop (ms a frame): sleep timers %.2f, audio %.2f, retrace %.2f, fiber timers %.2f, "
+                    StatsLog("idle loop (ms a frame): sleep timers %.2f, audio %.2f, retrace %.2f, fiber timers %.2f, "
                             "alarms %.2f, wait %.2f; %.1f passes\n", steps[0] / 1e6 / n, steps[1] / 1e6 / n, steps[2] / 1e6 / n,
                             steps[3] / 1e6 / n, steps[4] / 1e6 / n, steps[5] / 1e6 / n, steps[6] / n);
                     uint64_t pushNanos = 0, callbackNanos = 0;
                     uint32_t blocks = 0;
                     Audio_HLE_TakeTickStats(&pushNanos, &callbackNanos, &blocks);
-                    RT_LOGF(RT_TAG_VI, "audio blocks: %.1f a frame, speaker push %.2f ms, AI callback %.2f ms (%.3f ms each)\n",
+                    StatsLog("audio blocks: %.1f a frame, speaker push %.2f ms, AI callback %.2f ms (%.3f ms each)\n",
                             blocks / n, pushNanos / 1e6 / n, callbackNanos / 1e6 / n,
                             blocks ? callbackNanos / 1e6 / blocks : 0.0);
                 }
