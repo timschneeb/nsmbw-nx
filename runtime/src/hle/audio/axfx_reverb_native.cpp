@@ -15,6 +15,7 @@
 
 #include "abi_bridge.h"
 #include "ax_dsp.h"
+#include "ax_internal.h"
 #include "det_clock.h"
 #include "memory.h"
 #include "runtime_log.h"
