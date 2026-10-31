@@ -70,6 +70,9 @@ add_link_options("-L${MKW_LIBNX}/lib")
 # MKW_PLATFORM_SWITCH gates Switch-only shims and ifdefs out unsupported
 # features (updater, Discord, Tailscale, SDL dialogs). PC paths are untouched.
 add_compile_definitions(SWITCH __SWITCH__=1 MKW_PLATFORM_SWITCH=1 TARGET_SWITCH=1 _DEFAULT_SOURCE)
+# Guest MMIO loads fault into __libnx_exception_entry (fastmem_entry.S/fastmem_fault.cpp)
+# instead of taking the inline FlatReadNeedsPolicy test. Remove this define to revert.
+add_compile_definitions(MKW_SWITCH_FASTMEM_MMIO=1)
 
 set(MKW_SWITCH_SPECS_FLAG "-specs=${MKW_LIBNX}/switch.specs" CACHE STRING "libnx specs flag")
 

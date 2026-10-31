@@ -435,6 +435,7 @@ else()
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/posix_stubs.cpp")
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/egl_stubs.cpp")
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/libnx_shims.cpp")
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/fastmem_fault.cpp")
     endif()
     if(MKW_PLATFORM_ANDROID)
         # Android shares HostContext's AArch64 assembly backend with Apple Silicon, in its ELF
@@ -446,6 +447,8 @@ else()
         # Same AArch64 ELF switcher: leaf-only, same frame layout, x18 untouched.
         enable_language(ASM)
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/android/co_switch.S")
+        # Strong __libnx_exception_entry for fault-driven guest MMIO loads.
+        list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/fastmem_entry.S")
     endif()
 endif()
 set(MKW_PLATFORM_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/platform/host_platform.cpp")

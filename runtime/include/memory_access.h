@@ -128,9 +128,18 @@ MKW_MEMORY_FORCE_INLINE bool FlatWriteNeedsPolicy(uint32_t address) {
 
 // The hardware window has no store behind it, so reads go through the checked path, which
 // returns what its policy defines instead of aborting on an unmapped page.
+#if defined(MKW_SWITCH_FASTMEM_MMIO)
+// Switch: an MMIO load faults instead. __libnx_exception_entry (fastmem_entry.S) decodes
+// the faulting instruction and runs the same Memory::Read* policy, so the inline test is
+// gone from every translated load.
+MKW_MEMORY_FORCE_INLINE bool FlatReadNeedsPolicy(uint32_t) {
+    return false;
+}
+#else
 MKW_MEMORY_FORCE_INLINE bool FlatReadNeedsPolicy(uint32_t address) {
     return (address & 0xFE000000u) == 0xCC000000u;
 }
+#endif
 
 // Gekko stfs conversion is a bit-level narrowing operation.  In particular it
 // does not behave like a host double-to-float cast for values which were left
