@@ -4,6 +4,7 @@
 #include "settings_overlay.h"
 
 #include <dolphin/gx/GXAurora.h>
+#include <aurora/gfx.h>
 
 #include <algorithm>
 #include <chrono>
@@ -144,7 +145,7 @@ extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     GXDrawDone();
     // Diagnostic: skip the copy to measure the cost of its resolve pass. The destination textures
     // keep their previous contents, so the tile animations and shadows go stale.
-    if (std::getenv("NSMBW_SKIP_TEX_COPIES") != nullptr) {
+    if (aurora_skip_texture_copies()) {
         return;
     }
     const uint16_t rawSrcLeft = g_texCopyState.srcLeft;

@@ -30,6 +30,10 @@ typedef struct {
   uint32_t lastTextureUploadSize;
   uint32_t presentedFrameCount;
   uint32_t interpolatedFrameCount;
+  // Render passes the last sealed frame was split into, and how many of them targeted the EFB.
+  // More than one EFB pass costs a store and reload of the full EFB color and depth per split.
+  uint32_t renderPassCount;
+  uint32_t efbPassCount;
 } AuroraStats;
 
 typedef struct {
@@ -46,6 +50,18 @@ typedef struct {
 
 const AuroraStats* aurora_get_stats();
 void aurora_get_present_timing(AuroraPresentTiming* timing);
+
+// NSMBW profiling: skip one draw category ("", "blend", "depth", "nodepth", "indirect", "tev>=N",
+// "tex>=N", "all") and/or the GX texture copies to measure their cost in one run. Both are intended
+// for diagnostics only: visuals are broken while they are active.
+void aurora_set_skip_draws(const char* filter);
+void aurora_set_skip_texture_copies(int enable);
+int aurora_skip_texture_copies(void);
+void aurora_set_no_merge(int mode);
+
+// NSMBW: encode the frame's EFB work as one pass after the scratch strip passes instead of one
+// pass per strip entry. Removes the store/reload of the EFB color and depth at every split.
+void aurora_set_fuse_efb_passes(int enable);
 
 // Interpolation health: the per-frame fields describe the last sealed frame, the counters
 // accumulate since it was configured. This answers "output FPS dropped but the game held 60".

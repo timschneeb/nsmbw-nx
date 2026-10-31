@@ -20,6 +20,7 @@
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
+#include <aurora/gfx.h>
 
 #include <algorithm>
 #include <array>
@@ -1066,7 +1067,8 @@ private:
                     }
                     if (!exists) {
                         std::fputs("build,scene,frames,fps,p50,p95,p99,worst,game_ms,gx_ms,guest_ms,audio_ms,"
-                                   "gxfifo_ms,gxfifo_writes,bp_ms,dl_ms,draw_ms,submit_ms,guest_core,audio_core,over20\n",
+                                   "gxfifo_ms,gxfifo_writes,bp_ms,dl_ms,draw_ms,submit_ms,guest_core,audio_core,over20,"
+                                   "mode,passes,efb_passes,scale\n",
                                    csv);
                     }
                 }
@@ -1084,14 +1086,93 @@ private:
     std::thread thread_;
 };
 
+// NSMBW profiling: NSMBW_PROFILE_CYCLE names skip categories (none, copies, depth, nodepth, tev2,
+// tex2, blend, indirect) and every perf window runs one of them. One run then samples every
+// category at the same spot in the stage, and each CSV row names the category that produced it.
+struct ProfilePhase {
+    const char* name;
+    const char* skipDraws;
+    bool skipCopies;
+    int noMerge;
+    bool fuseEfb;
+};
+
+constexpr ProfilePhase kProfilePhases[] = {
+    {"none", "", false, 0, false},        {"copies", "", true, 0, false},
+    {"depth", "depth", false, 0, false},  {"nodepth", "nodepth", false, 0, false},
+    {"tev2", "tev>=2", false, 0, false},  {"tex2", "tex>=2", false, 0, false},
+    {"blend", "blend", false, 0, false},  {"indirect", "indirect", false, 0, false},
+    {"nomerge", "", false, 1, false},     {"nomerge-slow", "", false, 2, false},
+    {"fuse", "", false, 0, true},
+};
+
+std::vector<size_t> g_profileCycle;
+size_t g_profilePhase = 0;
+const char* g_profilePhaseName = "none";
+
+void ApplyProfilePhase() {
+    const ProfilePhase& phase = kProfilePhases[g_profileCycle[g_profilePhase]];
+    g_profilePhaseName = phase.name;
+    aurora_set_skip_draws(phase.skipDraws);
+    aurora_set_skip_texture_copies(phase.skipCopies ? 1 : 0);
+    aurora_set_no_merge(phase.noMerge);
+    aurora_set_fuse_efb_passes(phase.fuseEfb ? 1 : 0);
+}
+
+void AdvanceProfilePhase() {
+    if (g_profileCycle.size() < 2) {
+        return;
+    }
+    g_profilePhase = (g_profilePhase + 1) % g_profileCycle.size();
+    ApplyProfilePhase();
+}
+
+void InitProfileCycle() {
+    const char* spec = std::getenv("NSMBW_PROFILE_CYCLE");
+    if (spec == nullptr || *spec == '\0') {
+        return;
+    }
+    std::string text(spec);
+    for (size_t start = 0; start < text.size();) {
+        size_t end = text.find(',', start);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        const std::string name = text.substr(start, end - start);
+        size_t index = 0;
+        while (index < std::size(kProfilePhases) && name != kProfilePhases[index].name) {
+            ++index;
+        }
+        if (index == std::size(kProfilePhases)) {
+            RT_LOGF(RT_TAG_VI, "profile cycle: unknown phase '%s'\n", name.c_str());
+        } else if (std::find(g_profileCycle.begin(), g_profileCycle.end(), index) == g_profileCycle.end()) {
+            g_profileCycle.push_back(index);
+        }
+        start = end + 1;
+    }
+    if (g_profileCycle.empty()) {
+        return;
+    }
+    g_profilePhase = 0;
+    ApplyProfilePhase();
+    std::string joined;
+    for (const size_t phase : g_profileCycle) {
+        joined += joined.empty() ? "" : ",";
+        joined += kProfilePhases[phase].name;
+    }
+    RT_LOGF(RT_TAG_VI, "profile cycle: %s (one perf window each)\n", joined.c_str());
+}
+
 static void AppendPerfCsv(uint32_t scene, int frames, double fps, double p50, double p95, double p99, double worst,
                           double gameMs, double gxMs, double guestMs, double audioMs, double gxFifoMs, double gxFifoWrites, double bpMs, double dlMs, double drawMs, double submitMs,
-                          int guestCore, int audioCore, int over20) {
+                          int guestCore, int audioCore, int over20, const char* profilePhase, uint32_t renderPasses,
+                          uint32_t efbPasses, float renderScale) {
     char row[512];
     std::snprintf(row, sizeof(row),
-                 "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d\n",
+                 "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%s,%u,%u,%.2f\n",
                  __DATE__, __TIME__, scene, frames, fps, p50, p95, p99, worst, gameMs, gxMs, guestMs, audioMs,
-                 gxFifoMs, gxFifoWrites, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, over20);
+                 gxFifoMs, gxFifoWrites, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, over20, profilePhase,
+                 renderPasses, efbPasses, static_cast<double>(renderScale));
     StatsSink::Instance().Csv(row);
 }
 
@@ -1181,6 +1262,11 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
+    static const bool profileCycleReady = [] {
+        InitProfileCycle();
+        return true;
+    }();
+    (void)profileCycleReady;
     GuestProfiler::OnFramePresented();
     NsmbwShadowSamplerFrame(static_cast<uint64_t>(s_presentedXfbFrames.load(std::memory_order_relaxed)));
     static FrameTimes times;
@@ -1380,20 +1466,26 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             const double dlMs = breakdown.nanos[PerfStats::GxFifoDisplayList] / 1e6 / n;
             const double drawMs = breakdown.nanos[PerfStats::GxFifoDraw] / 1e6 / n;
             const double submitMs = PerfStats::TakeGxFifoSubmitNanos() / 1e6 / n;
+            const AuroraStats* const stats = aurora_get_stats();
+            const uint32_t renderPasses = stats != nullptr ? stats->renderPassCount : 0;
+            const uint32_t efbPasses = stats != nullptr ? stats->efbPassCount : 0;
             StatsLog(
                     "perf: p50 %.2f p95 %.2f p99 %.2f worst %.2f ms; guest cpu %.2f ms core %d, audio %.2f ms core "
                     "%d, gx %.2f ms, gx fifo %.2f ms in %.1f k writes (%.0f KiB): bp %.2f x %.1f k, dl %.2f x %.0f, submit %.2f, "
-                    "draw %.2f x %.0f, mmio %.1f k, %d over 20 ms\n",
+                    "draw %.2f x %.0f, mmio %.1f k, %d over 20 ms; passes %u (efb %u), profile %s\n",
                     p50, p95, p99, times.worstMs, guestMs / n, guestCore, audioMs / n, audioCore, gxWindowMs / n,
                     gxFifoNanos / 1e6 / n, gxFifoCalls / n / 1000.0, gxFifoBytes / n / 1024.0, bpMs,
                     breakdown.calls[PerfStats::GxFifoBp] / n / 1000.0, dlMs,
                     static_cast<double>(breakdown.calls[PerfStats::GxFifoDisplayList]) / n, submitMs,
                     drawMs,
                     static_cast<double>(breakdown.calls[PerfStats::GxFifoDraw]) / n,
-                    PerfStats::TakeFastmemMmioLoads() / n / 1000.0, times.slow);
+                    PerfStats::TakeFastmemMmioLoads() / n / 1000.0, times.slow, renderPasses, efbPasses,
+                    g_profilePhaseName);
             AppendPerfCsv(sceneWord & 0xFFFFu, times.frames, n * 1000.0 / window, p50, p95, p99, times.worstMs,
                           times.gameMs / n, gxWindowMs / n, guestMs / n, audioMs / n, gxFifoNanos / 1e6 / n,
-                          gxFifoCalls / n, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, times.slow);
+                          gxFifoCalls / n, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, times.slow,
+                          g_profilePhaseName, renderPasses, efbPasses, RuntimeConfigFile::ResolutionMultiplier(1.0f));
+            AdvanceProfilePhase();
             // Full mode only: idle attribution and per-draw stats are what this reads.
             if (PerfStats::Full()) {
                 const uint32_t waits = g_idleWaits.exchange(0, std::memory_order_relaxed);

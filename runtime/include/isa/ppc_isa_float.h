@@ -244,6 +244,10 @@ inline float PpcForceSingleValueInline(double value)
     // keeps the sign); NaN and infinity never flush. That keeps the flush mask off the dependency
     // chain of every single-precision op: about a fifth of the time in AX's reverb on a phone.
     const float converted = static_cast<float>(value);
+    // The flush below only exists to serve FPSCR[NI]. With NI inactive the conversion is the
+    // whole operation, so skip the bitcast to a GPR and the range test entirely.
+    if (!MkwHostNiActiveInline())
+        return converted;
     if ((PpcBitCastToU32Inline(converted) & 0x7FFFFFFFu) - 1u < 0x00800000u) [[unlikely]]
         return PpcForceSingleValueSlowInline(value);
     return converted;
