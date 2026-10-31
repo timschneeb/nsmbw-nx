@@ -189,15 +189,31 @@ public static class GuestFlagLivenessAnalyzer
     {
         if (GuestTargetParser.TryParseAddress(call.Target, out var target))
         {
-            if (context.OpaqueCallTargets.Contains(target) ||
-                !context.CalleeContracts.TryGetValue(target, out var contract))
+            if (context.OpaqueCallTargets.Contains(target))
             {
+                Translator.Core.CodeGen.FlagElisionStats.Count("call.opaque");
                 return GuestFlagState.All;
             }
 
-            return contract.HasFullSynchronizationFence
-                ? GuestFlagState.All
-                : new GuestFlagState(contract.CrReadBeforeWriteMask, contract.ReadsXerBeforeWrite);
+            if (!context.CalleeContracts.TryGetValue(target, out var contract))
+            {
+                Translator.Core.CodeGen.FlagElisionStats.Count("call.no_contract");
+                return GuestFlagState.All;
+            }
+
+            if (contract.HasFullSynchronizationFence)
+            {
+                Translator.Core.CodeGen.FlagElisionStats.Count("call.fence");
+                return GuestFlagState.All;
+            }
+
+            Translator.Core.CodeGen.FlagElisionStats.Count("call.precise");
+            if ((contract.CrReadBeforeWriteMask & 1) != 0)
+            {
+                Translator.Core.CodeGen.FlagElisionStats.Count("call.precise_reads_cr0");
+            }
+
+            return new GuestFlagState(contract.CrReadBeforeWriteMask, contract.ReadsXerBeforeWrite);
         }
 
         // Non-address targets are either runtime helpers with a cataloged

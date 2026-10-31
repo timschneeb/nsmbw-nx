@@ -337,7 +337,23 @@ public sealed partial class CxxLinearCodeGenerator
 
         if (liveOut.HasCrField(field))
         {
-            FlagElisionStats.Count(field == 0 ? "reject.cr_live_f0" : "reject.cr_live_fN");
+            if (FlagElisionStats.Enabled)
+            {
+                var hasCall = false;
+                foreach (var candidateBlock in function.Blocks)
+                {
+                    if (candidateBlock.Instructions.Any(static instruction => instruction is IrCall))
+                    {
+                        hasCall = true;
+                        break;
+                    }
+                }
+
+                FlagElisionStats.Count(field == 0
+                    ? (hasCall ? "reject.cr_live_f0_with_calls" : "reject.cr_live_f0_no_calls")
+                    : "reject.cr_live_fN");
+            }
+
             return false;
         }
 
