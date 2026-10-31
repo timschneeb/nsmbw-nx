@@ -1600,6 +1600,23 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
                         bool finalize, DebugFrameData& debugFrame, const depth_peek::FrameMapping& depthMapping) {
   ZoneScoped;
+  // NSMBW profiling: replay the opaque world front-to-back to measure how much early-Z can reject.
+  // The draws are self-contained (pipeline, bind groups, uniforms), so only their order changes.
+  if (interpolatedFrame < 0 && std::getenv("NSMBW_REVERSE_OPAQUE") != nullptr) {
+    for (auto& pass : renderPasses) {
+      std::vector<size_t> draws;
+      for (size_t i = 0; i < pass.commands.size(); ++i) {
+        const auto& command = pass.commands[i];
+        if (command.type == CommandType::Draw && command.data.draw.type == ShaderType::GX &&
+            command.data.draw.gx.opaqueWorld) {
+          draws.push_back(i);
+        }
+      }
+      for (size_t a = 0, b = draws.size(); a + 1 < b; ++a, --b) {
+        std::swap(pass.commands[draws[a]], pass.commands[draws[b - 1]]);
+      }
+    }
+  }
   // Palette conversions, MSAA resolves and EFB copies depend on sealed frame state, not on the
   // interpolation weight, so encode them on the native render and let replay slots sample them.
   const bool encodeTextureBakes = interpolatedFrame < 0;

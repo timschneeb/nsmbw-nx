@@ -45,7 +45,18 @@ constexpr uint64_t kStoreGranularity = 0x10000u;  // 64 KiB, same as the main ba
 // One 4 GiB window carries every guest view. It is reserved up front because
 // Horizon's code-memory region fragments once other services start mapping.
 constexpr uint64_t kWindowSize = 0x100000000ull;
+constexpr uint64_t kLargePageSize = 0x200000u;
 uint8_t* g_window = nullptr;
+
+// Align the window and its backing to 2 MiB so the kernel can cover whole guest
+// RAM with large pages. NSMBW_ALIGN_2M=0 restores the 64 KiB layout for A/B.
+bool UseLargePageAlignment() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NSMBW_ALIGN_2M");
+        return value == nullptr || std::atoi(value) != 0;
+    }();
+    return enabled;
+}
 
 bool ReserveGuestWindow() {
     // Both syscalls are hinted only when launched from hbmenu over a game with
@@ -53,13 +64,19 @@ bool ReserveGuestWindow() {
     if (!envIsSyscallHinted(0x77) || !envIsSyscallHinted(0x73)) {
         return false;
     }
+    const uint64_t alignment = UseLargePageAlignment() ? kLargePageSize : kStoreGranularity;
     virtmemLock();
-    void* window = virtmemFindCodeMemory(kWindowSize, 0x10000);
+    void* window = virtmemFindCodeMemory(kWindowSize, alignment);
+    if (window == nullptr && alignment != kStoreGranularity) {
+        window = virtmemFindCodeMemory(kWindowSize, kStoreGranularity);
+    }
     if (window != nullptr) {
         virtmemAddReservation(window, kWindowSize);
     }
     virtmemUnlock();
     g_window = static_cast<uint8_t*>(window);
+    RT_LOG(RT_TAG_MEMORY) << "[mem] large page alignment " << (UseLargePageAlignment() ? "on" : "off")
+                          << std::endl;
     return g_window != nullptr;
 }
 
@@ -83,7 +100,9 @@ bool CommitStore(Store& store) {
     if (g_window == nullptr || guestBase + store.size > kWindowSize) {
         return false;
     }
-    void* backing = std::aligned_alloc(0x1000, store.size);
+    const uint64_t alignment = UseLargePageAlignment() ? kLargePageSize : 0x1000;
+    const uint64_t allocationSize = (store.size + alignment - 1) & ~(alignment - 1);
+    void* backing = std::aligned_alloc(alignment, allocationSize);
     if (backing == nullptr) {
         return false;
     }

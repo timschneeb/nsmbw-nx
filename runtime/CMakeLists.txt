@@ -238,6 +238,9 @@ set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
     SKIP_UNITY_BUILD_INCLUSION ON
     SKIP_PRECOMPILE_HEADERS ON
     COMPILE_OPTIONS "${MKW_TRANSLATED_PPC_FP_OPTIONS}")
+# dlmalloc defines its own allocator macros and globals; keep it in its own TU.
+set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/malloc_dl.cpp"
+    PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 # The NSMBW sampling profiler includes <windows.h>; keep it out of the unity batches.
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/guest_profiler.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 # The Switch shadow sampler defines the instrumentation callbacks directly.
@@ -436,6 +439,7 @@ else()
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/egl_stubs.cpp")
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/libnx_shims.cpp")
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/fastmem_fault.cpp")
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/malloc_dl.cpp")
     endif()
     if(MKW_PLATFORM_ANDROID)
         # Android shares HostContext's AArch64 assembly backend with Apple Silicon, in its ELF
@@ -449,6 +453,7 @@ else()
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/android/co_switch.S")
         # Strong __libnx_exception_entry for fault-driven guest MMIO loads.
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/fastmem_entry.S")
+
     endif()
 endif()
 set(MKW_PLATFORM_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/platform/host_platform.cpp")

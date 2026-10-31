@@ -318,8 +318,23 @@ void frame_worker_main() noexcept {
 #if defined(__linux__)
   // Named for profilers and /proc (NSMBW_PROFILE_THREAD=FrameWorker samples this thread).
   pthread_setname_np(pthread_self(), "FrameWorker");
-  // Mirror the Switch split on the PC: guest 0, AX 2, host encode/present 1.
-  pin_current_thread(1);
+#endif
+#if defined(__linux__) || defined(MKW_PLATFORM_SWITCH)
+  // Guest 0, AX 2, host encode/present 1. NSMBW_HOST_CORE overrides it for A/B
+  // runs; a negative value leaves the worker unpinned.
+  uint32_t hostCore = 1;
+  bool pinWorker = true;
+  if (const char* value = std::getenv("NSMBW_HOST_CORE")) {
+    const int parsed = std::atoi(value);
+    if (parsed < 0) {
+      pinWorker = false;
+    } else if (parsed <= 2) {
+      hostCore = static_cast<uint32_t>(parsed);
+    }
+  }
+  if (pinWorker && !pin_current_thread(hostCore)) {
+    Log.warn("FrameWorker could not be pinned to core {}", hostCore);
+  }
 #endif
 
 #ifdef AURORA_ENABLE_GX

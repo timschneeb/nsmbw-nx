@@ -1471,6 +1471,58 @@ static void TerminateHandler() {
     std::_Exit(EXIT_FAILURE);
 }
 
+#if defined(MKW_PLATFORM_SWITCH)
+namespace {
+// Read-only: says which clock profile the console actually gave us, so a run's
+// frame times can be attributed without guessing what the overclock tool did.
+const char* PerformanceConfigurationName(u32 configuration) {
+    switch (configuration) {
+    case 0x00010000: return "CPU 1020, GPU 384, EMC 1600, docked";
+    case 0x00010001: return "CPU 1020, GPU 768, EMC 1600, docked";
+    case 0x00020001: return "CPU 1020, GPU 307, EMC 1600, handheld";
+    case 0x00020003: return "CPU 1020, GPU 307, EMC 1331, handheld";
+    case 0x92220007: return "CPU 1020, GPU 460, EMC 1600, boost";
+    case 0x92220008: return "CPU 1020, GPU 460, EMC 1331, boost";
+    default: return "unknown";
+    }
+}
+
+u32 ReadClockRate(PcvModuleId module) {
+    ClkrstSession session;
+    if (R_FAILED(clkrstOpenSession(&session, module, 3))) {
+        return 0;
+    }
+    u32 hz = 0;
+    const Result rc = clkrstGetClockRate(&session, &hz);
+    clkrstCloseSession(&session);
+    return R_SUCCEEDED(rc) ? hz : 0;
+}
+
+void LogHorizonPerformanceState() {
+    u32 configuration = 0;
+    const Result configurationRc = appletGetCurrentPerformanceConfiguration(&configuration);
+    ApmPerformanceMode mode = ApmPerformanceMode_Invalid;
+    const Result modeRc = apmGetPerformanceMode(&mode);
+    const bool clocksOpen = R_SUCCEEDED(clkrstInitialize());
+    const u32 cpu = clocksOpen ? ReadClockRate(PcvModuleId_CpuBus) : 0;
+    const u32 gpu = clocksOpen ? ReadClockRate(PcvModuleId_GPU) : 0;
+    const u32 emc = clocksOpen ? ReadClockRate(PcvModuleId_EMC) : 0;
+    if (clocksOpen) {
+        clkrstExit();
+    }
+    RT_LOGF(RT_TAG_RUNTIME,
+            "perf: applet %d, %s, config 0x%08x [%s]%s, cpu %.0f MHz, gpu %.0f MHz, emc %.0f MHz\n",
+            static_cast<int>(appletGetAppletType()),
+            appletGetOperationMode() == AppletOperationMode_Console ? "docked" : "handheld", configuration,
+            PerformanceConfigurationName(configuration), R_SUCCEEDED(configurationRc) ? "" : " (read failed)",
+            cpu / 1e6, gpu / 1e6, emc / 1e6);
+    if (R_SUCCEEDED(modeRc) && mode == ApmPerformanceMode_Boost) {
+        RT_LOGF(RT_TAG_RUNTIME, "perf: performance mode is boost\n");
+    }
+}
+}  // namespace
+#endif
+
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
 int RuntimeMain(int argc, char** argv) {
     // Must run before the transcript duplicates stdout/stderr: it decides what
@@ -1513,6 +1565,9 @@ int RuntimeMain(int argc, char** argv) {
         RuntimeConfigFile::LogLoadedConfig();
         // [debug] env and stats must be in place before the runtime reads any NSMBW_* switch.
         PerfStats::ApplyConfig();
+#if defined(MKW_PLATFORM_SWITCH)
+        LogHorizonPerformanceState();
+#endif
         PerfStats::Pin(PerfStats::RoleGuest);
         NsmbwShadowSamplerInit(GetRunLogDirectory());
         // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.

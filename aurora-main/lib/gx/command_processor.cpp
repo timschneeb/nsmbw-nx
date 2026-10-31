@@ -2169,6 +2169,7 @@ struct CachedPipelineState {
   HashType configHash = 0;
   // Carried here so the draw can be recorded without keeping the PipelineConfig that produced it alive; it is the only field of the config the draw itself still needs.
   u32 dstAlpha = UINT32_MAX;
+  bool opaqueWorld = false;
   ShaderInfo shaderInfo{};
 };
 
@@ -2194,6 +2195,8 @@ static const CachedPipelineState& cached_pipeline_state(const PipelineConfig& co
       .ref = gfx::pipeline_ref(config),
       .configHash = hash,
       .dstAlpha = config.dstAlpha,
+      .opaqueWorld = config.blendMode == GX_BM_NONE && config.depthCompare && config.depthUpdate &&
+                     !static_cast<bool>(config.shaderConfig.alphaCompare),
       .shaderInfo = build_shader_info(config.shaderConfig),
   };
   return entry.state;
@@ -2596,6 +2599,7 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
       .expandedPrimitive = prim == GX_LINES || prim == GX_LINESTRIP || prim == GX_POINTS,
       .bindGroups = bindGroups,
       .dstAlpha = pipelineState.dstAlpha,
+      .opaqueWorld = pipelineState.opaqueWorld,
   });
   g_gxState.stateDirty = false;
 }
