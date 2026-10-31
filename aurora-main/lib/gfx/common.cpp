@@ -1331,6 +1331,7 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
   ZoneScoped;
   {
     ZoneScopedN("Wait for buffer map");
+    const auto mapWaitStart = std::chrono::steady_clock::now();
     map_staging_buffer();
     while (true) {
       const auto mappingState = s_mappingState.state();
@@ -1352,6 +1353,8 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
       webgpu::fail_if_device_lost();
       s_mappingState.wait_for_progress();
     }
+    g_stats.stagingMapWaitNanos += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - mapWaitStart).count());
   }
   ++g_stagingEpoch;
   g_recordingSnapshotSlot = currentStagingBuffer;
@@ -1888,6 +1891,7 @@ struct GpuTimerSlot {
 };
 GpuTimerSlot g_timerSlots[GpuTimerSlotCount];
 uint32_t g_timerNextSlot = 0;
+uint64_t g_timerLastEndTimestamp = 0;
 GpuTimerSlot* g_timerFrame = nullptr;
 uint32_t g_timerPassesInFrame = 0;
 
@@ -1906,6 +1910,10 @@ void gpu_timer_poll() {
     }
     const auto* values = static_cast<const uint64_t*>(slot.readback.GetConstMappedRange(0, bytes));
     const uint64_t total = values[1] > values[0] ? values[1] - values[0] : 0;
+    const uint64_t gap = g_timerLastEndTimestamp != 0 && values[0] > g_timerLastEndTimestamp
+                             ? values[0] - g_timerLastEndTimestamp
+                             : 0;
+    g_timerLastEndTimestamp = values[1];
     if (slot.frame % 30 == 0) {
       std::string line;
       for (uint32_t i = 0; i < slot.passCount; ++i) {
@@ -1914,8 +1922,8 @@ void gpu_timer_poll() {
         line += fmt::format(" {}={:.2f}", ((slot.efbFlags >> i) & 1u) != 0 ? "E" : "S",
                             static_cast<double>(end > begin ? end - begin : 0) / 1e6);
       }
-      Log.info("gpu frame {} total {:.2f} ms:{} ({} passes)", slot.frame,
-               static_cast<double>(total) / 1e6, line, slot.passCount);
+      Log.info("gpu frame {} total {:.2f} ms gap {:.2f}:{} ({} passes)", slot.frame,
+               static_cast<double>(total) / 1e6, static_cast<double>(gap) / 1e6, line, slot.passCount);
     }
     slot.readback.Unmap();
   }

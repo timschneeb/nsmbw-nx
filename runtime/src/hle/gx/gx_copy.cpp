@@ -116,11 +116,25 @@ PPC_NATIVE_OVERRIDE_VOID(801c6130, GX__SetDispCopyGamma_8016fc24, (uint32_t g), 
 // Copy Execution
 // ============================================================================
 
+// NSMBW: where the guest blocks between frames, reported in the vi perf window.
+std::atomic<uint64_t> g_presentDrawDoneNanos{0}, g_presentWorkerWaitNanos{0};
+std::atomic<uint32_t> g_presentWaitFrames{0};
+
+extern "C" void NsmbwTakePresentWaits(uint64_t* drawDone, uint64_t* workerWait, uint32_t* frames) {
+    *drawDone = g_presentDrawDoneNanos.exchange(0, std::memory_order_relaxed);
+    *workerWait = g_presentWorkerWaitNanos.exchange(0, std::memory_order_relaxed);
+    *frames = g_presentWaitFrames.exchange(0, std::memory_order_relaxed);
+}
+
 extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     EnsureAuroraFrameActive();
     // GX copies are FIFO-ordered on hardware. Drain submitted draws before
     // resolving the EFB so high-level copies see the same contents.
+    const auto drawDoneStart = std::chrono::steady_clock::now();
     GXDrawDone();
+    g_presentDrawDoneNanos.fetch_add(
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - drawDoneStart).count()), std::memory_order_relaxed);
     GXCopyDisp(GuestToHostPtr(da), (GXBool)c);
     // No second GXDrawDone here: the frame-worker wait below is for the DONE
     // phase, which strictly subsumes the drain this call would perform.
@@ -129,7 +143,12 @@ extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     // Present immediately so post-copy draws don't leak into this frame. Join at the DONE phase
     // (not the cheaper SEALED phase GXDrawDone waits for) because ImGui's draw lists, owned by
     // Aurora's render worker, replay during encode; aurora_end_frame would join here anyway.
+    const auto workerWaitStart = std::chrono::steady_clock::now();
     aurora_wait_for_frame_worker();
+    g_presentWorkerWaitNanos.fetch_add(
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - workerWaitStart).count()), std::memory_order_relaxed);
+    g_presentWaitFrames.fetch_add(1, std::memory_order_relaxed);
     settings_overlay::Draw();
     // Seal, pace to the VI retrace boundary (Aurora renders the sealed frame
     // during the wait), and pre-warm the next frame.

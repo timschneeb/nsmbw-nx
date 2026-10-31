@@ -92,9 +92,12 @@ ThreadState& Thread(int role) {
 void ApplyConfig() {
 #if defined(MKW_PLATFORM_SWITCH)
     CalibrateTickUnit();
-    // 0.2.2 serializes encode on everything but Android, which makes the guest thread wait
-    // out the frame worker. Keep the overlapped encode our pacing was built around.
-    setenv("NSMBW_OVERLAP_ENCODE", "1", 0);
+    // The overlapped encode (prepare the next frame, then submit this one) makes the GPU idle out
+    // the staging buffer wait on the Switch: the GPU finishes a frame in ~13 ms, but it only gets
+    // the frame after the next one's staging buffer map has completed, which waits for the GPU.
+    // Keep the serial order here (submit right after the seal, then prepare the next frame); the
+    // FIFO already decoded the frame, so the encode itself is cheap. NSMBW_OVERLAP_ENCODE=1
+    // restores the old order.
 #endif
     const std::string stats = RuntimeConfigFile::StatsMode();
     if (!stats.empty()) {

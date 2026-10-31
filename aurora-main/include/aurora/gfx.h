@@ -34,6 +34,8 @@ typedef struct {
   // More than one EFB pass costs a store and reload of the full EFB color and depth per split.
   uint32_t renderPassCount;
   uint32_t efbPassCount;
+  // Time the frame worker spent waiting for the staging buffer's GPU work, cumulative.
+  uint64_t stagingMapWaitNanos;
 } AuroraStats;
 
 typedef struct {
