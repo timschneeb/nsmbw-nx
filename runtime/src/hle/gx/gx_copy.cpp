@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <map>
 #include <mutex>
@@ -141,6 +142,11 @@ extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     EnsureAuroraFrameActive();
     // Match GX FIFO ordering: texture copies observe all prior draws.
     GXDrawDone();
+    // Diagnostic: skip the copy to measure the cost of its resolve pass. The destination textures
+    // keep their previous contents, so the tile animations and shadows go stale.
+    if (std::getenv("NSMBW_SKIP_TEX_COPIES") != nullptr) {
+        return;
+    }
     const uint16_t rawSrcLeft = g_texCopyState.srcLeft;
     const uint16_t rawSrcTop = g_texCopyState.srcTop;
     const uint16_t rawSrcWidth = g_texCopyState.srcWidth;
