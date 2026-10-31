@@ -232,6 +232,18 @@ void AddGxFifoPart(int part, uint64_t nanos) {
     ++g_gxFifoBreakdown.calls[part];
 }
 
+namespace {
+std::atomic<uint32_t> g_fastmemMmioLoads{0};
+}
+
+void AddFastmemMmioLoad(uint32_t count) noexcept {
+    g_fastmemMmioLoads.fetch_add(count, std::memory_order_relaxed);
+}
+
+uint32_t TakeFastmemMmioLoads() noexcept {
+    return g_fastmemMmioLoads.exchange(0, std::memory_order_relaxed);
+}
+
 void AddGxFifoSubmit(uint64_t nanos) {
     g_gxFifoSubmitNanos += nanos;
     ++g_gxFifoSubmitCalls;

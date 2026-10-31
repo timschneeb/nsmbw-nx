@@ -15,6 +15,7 @@
 #include <cstdint>
 
 #include "memory_access.h"
+#include "perf_stats.h"
 
 namespace {
 
@@ -272,6 +273,7 @@ extern "C" uintptr_t NsmbwFastmemFault(uint64_t far, uint64_t esr, uint64_t pc, 
         }
         slot->x[spec.rn] = spec.writeback == Writeback::Post ? far + spec.offset : far;
     }
+    PerfStats::AddFastmemMmioLoad();
     return static_cast<uintptr_t>(pc + 4);
 }
 

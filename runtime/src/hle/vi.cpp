@@ -1383,13 +1383,14 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             StatsLog(
                     "perf: p50 %.2f p95 %.2f p99 %.2f worst %.2f ms; guest cpu %.2f ms core %d, audio %.2f ms core "
                     "%d, gx %.2f ms, gx fifo %.2f ms in %.1f k writes (%.0f KiB): bp %.2f x %.1f k, dl %.2f x %.0f, submit %.2f, "
-                    "draw %.2f x %.0f, %d over 20 ms\n",
+                    "draw %.2f x %.0f, mmio %.1f k, %d over 20 ms\n",
                     p50, p95, p99, times.worstMs, guestMs / n, guestCore, audioMs / n, audioCore, gxWindowMs / n,
                     gxFifoNanos / 1e6 / n, gxFifoCalls / n / 1000.0, gxFifoBytes / n / 1024.0, bpMs,
                     breakdown.calls[PerfStats::GxFifoBp] / n / 1000.0, dlMs,
                     static_cast<double>(breakdown.calls[PerfStats::GxFifoDisplayList]) / n, submitMs,
                     drawMs,
-                    static_cast<double>(breakdown.calls[PerfStats::GxFifoDraw]) / n, times.slow);
+                    static_cast<double>(breakdown.calls[PerfStats::GxFifoDraw]) / n,
+                    PerfStats::TakeFastmemMmioLoads() / n / 1000.0, times.slow);
             AppendPerfCsv(sceneWord & 0xFFFFu, times.frames, n * 1000.0 / window, p50, p95, p99, times.worstMs,
                           times.gameMs / n, gxWindowMs / n, guestMs / n, audioMs / n, gxFifoNanos / 1e6 / n,
                           gxFifoCalls / n, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, times.slow);
