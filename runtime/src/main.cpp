@@ -1806,6 +1806,16 @@ int RuntimeMain(int argc, char** argv) {
             RT_LOG(RT_TAG_RUNTIME) << "graphics backend: " << backendDisplayName(auroraInfo.backend)
                       << std::endl;
         }
+        // Visual validation: NSMBW_CAPTURE_FRAME=<n> writes that frame to NSMBW_CAPTURE_PATH (or
+        // frame_capture.bmp). Deterministic mode plus the input script makes two builds capture the
+        // same frame, so a renderer change can be diffed instead of eyeballed.
+        if (const char* captureFrame = std::getenv("NSMBW_CAPTURE_FRAME"); captureFrame != nullptr) {
+            const uint32_t frame = static_cast<uint32_t>(std::strtoul(captureFrame, nullptr, 10));
+            const char* path = std::getenv("NSMBW_CAPTURE_PATH");
+            aurora_request_frame_capture(frame, path != nullptr ? path : "frame_capture.bmp");
+            RT_LOG(RT_TAG_RUNTIME) << "frame capture requested: frame " << frame << " -> "
+                      << (path != nullptr ? path : "frame_capture.bmp") << std::endl;
+        }
 #if defined(__linux__) && !defined(__ANDROID__)
         // Dawn falls back to its null adapter when there is no Vulkan driver; nothing would draw.
         if (auroraInfo.backend == BACKEND_NULL) {
