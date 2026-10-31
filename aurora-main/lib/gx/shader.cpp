@@ -8,6 +8,7 @@
 
 #include <dolphin/gx/GXEnum.h>
 
+#include <absl/container/flat_hash_set.h>
 #include <array>
 #include <vector>
 #include <filesystem>
@@ -2154,6 +2155,19 @@ fn fs_main(in: VertexOutput) -> {9} {{{6}{5}
                                         fragmentReturn);
   if (webgpu::g_shaderDebug != 0) {
     apply_shader_debug(shaderSource, hash);
+  }
+  // NSMBW: dump each generated GX shader once, to see what the TEV and lighting actually expand to.
+  if (std::getenv("NSMBW_DUMP_SHADERS") != nullptr) {
+    static std::mutex dumpMutex;
+    static absl::flat_hash_set<uint64_t> dumped;
+    std::lock_guard lock(dumpMutex);
+    if (dumped.insert(hash).second) {
+      const std::string path = fmt::format("gxshader_{:016x}.wgsl", hash);
+      if (FILE* file = std::fopen(path.c_str(), "wb"); file != nullptr) {
+        std::fwrite(shaderSource.data(), 1, shaderSource.size(), file);
+        std::fclose(file);
+      }
+    }
   }
   wgpu::ShaderSourceWGSL wgslDescriptor{};
   wgslDescriptor.code = shaderSource.c_str();

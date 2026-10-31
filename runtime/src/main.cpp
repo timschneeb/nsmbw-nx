@@ -1702,6 +1702,12 @@ int RuntimeMain(int argc, char** argv) {
                                          RuntimeConfigFile::TextureDumps(false);
         // No vsync knob: aurora always configures a non-blocking present mode.
         auroraConfig.desiredBackend = BACKEND_AUTO;
+        // NSMBW: GX has no anisotropic filtering; the Wii only did bilinear and mip filtering. The
+        // 16x default is also the most expensive sampler mode on the Switch. NSMBW_ANISO=<1..16>
+        // pins it for an A/B.
+        if (const char* aniso = std::getenv("NSMBW_ANISO"); aniso != nullptr) {
+            auroraConfig.maxTextureAnisotropy = static_cast<uint16_t>(std::clamp(std::atoi(aniso), 1, 16));
+        }
         // GPU driver workarounds: picked from the graphics adapter unless the player forced them.
         auroraConfig.gpuCompat = static_cast<AuroraGpuCompat>(RuntimeConfigFile::GpuCompat());
         // DisplaySettings applies the viewport policy and render height at the first frame boundary.
