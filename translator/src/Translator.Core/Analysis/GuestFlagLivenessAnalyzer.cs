@@ -187,6 +187,7 @@ public static class GuestFlagLivenessAnalyzer
 
     private static GuestFlagState CallReads(IrCall call, GuestFlagLivenessContext context)
     {
+
         if (GuestTargetParser.TryParseAddress(call.Target, out var target))
         {
             if (context.OpaqueCallTargets.Contains(target))

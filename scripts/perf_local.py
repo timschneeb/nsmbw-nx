@@ -27,7 +27,7 @@ PERF_RE = re.compile(
     r"\[vi\] perf: p50 (?P<p50>[\d.]+) p95 (?P<p95>[\d.]+) p99 (?P<p99>[\d.]+) "
     r"worst (?P<worst>[\d.]+) ms; guest cpu (?P<guest>[\d.]+) ms.*?"
     r"gx (?P<gx>[\d.]+) ms, gx fifo (?P<fifo>[\d.]+) ms.*?"
-    r"draw [\d.]+ x (?P<draws>\d+), (?P<over20>\d+) over 20 ms"
+    r"draw [\d.]+ x (?P<draws>\d+), (?:mmio [\d.]+ k, )?(?P<over20>\d+) over 20 ms"
 )
 SCENE_RE = re.compile(r"\[vi\] scene -> 0x([0-9A-Fa-f]{3})")
 
