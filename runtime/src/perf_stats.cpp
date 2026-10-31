@@ -92,12 +92,12 @@ ThreadState& Thread(int role) {
 void ApplyConfig() {
 #if defined(MKW_PLATFORM_SWITCH)
     CalibrateTickUnit();
-    // The overlapped encode (prepare the next frame, then submit this one) makes the GPU idle out
-    // the staging buffer wait on the Switch: the GPU finishes a frame in ~13 ms, but it only gets
-    // the frame after the next one's staging buffer map has completed, which waits for the GPU.
-    // Keep the serial order here (submit right after the seal, then prepare the next frame); the
-    // FIFO already decoded the frame, so the encode itself is cheap. NSMBW_OVERLAP_ENCODE=1
-    // restores the old order.
+    // Overlap the encode with the producer's next frame. The encode is ~10 ms of CPU on the Switch
+    // (2354 draws through the encoder), so running it before the frame is submitted would put it on
+    // the GX FIFO's SEALED gate and slow the whole frame. The staging map no longer waits for the
+    // GPU (the producer records into CPU buffers), so preparing the next frame is cheap and the
+    // encode can start right after it.
+    setenv("NSMBW_OVERLAP_ENCODE", "1", 0);
 #endif
     const std::string stats = RuntimeConfigFile::StatsMode();
     if (!stats.empty()) {
