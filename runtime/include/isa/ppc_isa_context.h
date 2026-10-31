@@ -1,5 +1,6 @@
 #pragma once
 #include "ppc_isa_fpenv.h"
+#include "guest_flat_memory.h"
 
 #include <cmath>
 #include <cstdint>
@@ -68,6 +69,10 @@ public:
         : previous_(g_currentCpuContext)
     {
         g_currentCpuContext = ctx;
+        // x28 is per-thread and only survives across calls because the whole program is built
+        // with -ffixed-x28 and the cooperative switch saves it. A host thread or a fresh fiber
+        // starts with whatever the stack had, so restore it here instead of on every dispatch.
+        GuestFlat::RestoreFlatGuestBase();
 
         savedMxcsr_ = MkwGetHostFpControl();
         if (ctx != nullptr)
