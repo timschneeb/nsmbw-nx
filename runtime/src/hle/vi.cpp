@@ -1262,6 +1262,8 @@ uint32_t DvdReadCount();
 extern "C" void NsmbwTakePresentWaits(uint64_t* drawDone, uint64_t* workerWait, uint32_t* frames);
 // fifo.cpp: the FIFO thread's wait for the renderer to seal, and the producer's wait for the FIFO.
 extern "C" void AuroraTakeFifoWaits(uint64_t* sealedWait, uint64_t* syncWait);
+// fifo.cpp: time the GX decode thread spent decoding queued commands.
+extern "C" uint64_t AuroraTakeFifoDecodeNanos();
 // aurora.cpp: the frame worker's seal stages (encoder, EFB downloads, end frame, window size,
 // ImGui, detach, bind group expiry).
 extern "C" void AuroraTakeSealStages(uint64_t* out, int count);
@@ -1452,10 +1454,9 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             const double p50 = PercentileMs(times.samples, 0.50);
             const double p95 = PercentileMs(times.samples, 0.95);
             const double p99 = PercentileMs(times.samples, 0.99);
-            static uint64_t s_lastWindowGx = 0;
-            const uint64_t gxWindowTotal = AuroraGxProcessNanosTotal();
-            const double gxWindowMs = (gxWindowTotal - s_lastWindowGx) / 1e6;
-            s_lastWindowGx = gxWindowTotal;
+            // Exchange-on-read: the value is this window's decode time already.
+            const uint64_t gxWindowTotal = AuroraTakeFifoDecodeNanos();
+            const double gxWindowMs = static_cast<double>(gxWindowTotal) / 1e6;
             const uint64_t guestNanos = PerfStats::Thread(PerfStats::RoleGuest).cpuNanos.load(std::memory_order_relaxed);
             const uint64_t audioNanos = PerfStats::Thread(PerfStats::RoleAudio).cpuNanos.load(std::memory_order_relaxed);
             static uint64_t s_lastGuestNanos = 0, s_lastAudioNanos = 0;

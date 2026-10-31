@@ -77,6 +77,9 @@ bool in_display_list() { return detail::sInDisplayList; }
 // How much of the producer's frame is spent blocked before it may decode the next batch of GX commands.
 std::atomic<uint64_t> g_statSealedWaitNanos{0};
 std::atomic<uint64_t> g_statSyncWaitNanos{0};
+// Time this thread spent inside the command decoder. Two clock reads per handed-off buffer, so it
+// stays on regardless of the stats mode and shows how loaded the decode core is.
+std::atomic<uint64_t> g_statDecodeNanos{0};
 
 static void note_drain_wait(uint64_t nanos) noexcept {
   ZoneScopedN("FIFO drain wait");
@@ -91,6 +94,7 @@ static void process_buffer(const uint8_t* data, uint32_t size) {
   if (waited.count() > 0) UNLIKELY {
     note_drain_wait(static_cast<uint64_t>(waited.count()));
   }
+  const auto decodeStart = std::chrono::steady_clock::now();
   uint32_t consumed = 0;
   bool retried = false;
   while (consumed < size) {
@@ -103,6 +107,8 @@ static void process_buffer(const uint8_t* data, uint32_t size) {
     gfx::split_staging_batch();
     retried = true;
   }
+  g_statDecodeNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - decodeStart).count()), std::memory_order_relaxed);
 }
 
 // NSMBW: the GX thread (see threaded()). Buffers of commands are decoded on it in the order the
@@ -124,8 +130,18 @@ GxThread& gx_thread() {
   static GxThread* t = [] {
     auto* state = new GxThread();
     state->thread = std::thread([state] {
-      if (!aurora::pin_current_thread(1)) {
-        Log.warn("GX thread could not be pinned to core 1");
+      // Decode and encode are ~10 ms each on the Switch: on one core they serialize. The frame
+      // worker keeps core 1; decode shares core 2 with audio (~1-2 ms) unless NSMBW_GX_CORE says
+      // otherwise.
+      uint32_t core = 2;
+      if (const char* value = std::getenv("NSMBW_GX_CORE")) {
+        const int parsed = std::atoi(value);
+        if (parsed >= 0 && parsed <= 2) {
+          core = static_cast<uint32_t>(parsed);
+        }
+      }
+      if (!aurora::pin_current_thread(core)) {
+        Log.warn("GX thread could not be pinned to core {}", core);
       }
       for (;;) {
         std::vector<uint8_t> job;
@@ -246,4 +262,8 @@ void clear_buffer() {
 extern "C" void AuroraTakeFifoWaits(uint64_t* sealedWait, uint64_t* syncWait) {
   *sealedWait = aurora::gx::fifo::g_statSealedWaitNanos.exchange(0, std::memory_order_relaxed);
   *syncWait = aurora::gx::fifo::g_statSyncWaitNanos.exchange(0, std::memory_order_relaxed);
+}
+
+extern "C" uint64_t AuroraTakeFifoDecodeNanos() {
+  return aurora::gx::fifo::g_statDecodeNanos.exchange(0, std::memory_order_relaxed);
 }
