@@ -36,6 +36,9 @@ typedef struct {
   uint32_t efbPassCount;
   // Time the frame worker spent waiting for the staging buffer's GPU work, cumulative.
   uint64_t stagingMapWaitNanos;
+  // Time spent copying the recorded frame into the staging buffer, and the bytes copied.
+  uint64_t stagingCopyNanos;
+  uint64_t stagedBytes;
 } AuroraStats;
 
 typedef struct {

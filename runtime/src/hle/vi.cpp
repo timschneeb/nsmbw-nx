@@ -1479,6 +1479,17 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             NsmbwTakePresentWaits(&presentDrawDone, &presentWorkerWait, &presentWaitFrames);
             uint64_t fifoSealedWait = 0, fifoSyncWait = 0;
             AuroraTakeFifoWaits(&fifoSealedWait, &fifoSyncWait);
+            static uint64_t s_lastCopyNanos = 0, s_lastStagedBytes = 0;
+            const uint64_t copyNanos = stats != nullptr ? stats->stagingCopyNanos : 0;
+            const uint64_t stagedBytes = stats != nullptr ? stats->stagedBytes : 0;
+            const double stagingCopyMs = s_lastCopyNanos != 0 && copyNanos >= s_lastCopyNanos
+                                             ? static_cast<double>(copyNanos - s_lastCopyNanos) / 1e6 / n
+                                             : 0.0;
+            const double stagedMb = stagedBytes >= s_lastStagedBytes
+                                        ? static_cast<double>(stagedBytes - s_lastStagedBytes) / 1048576.0 / n
+                                        : 0.0;
+            s_lastCopyNanos = copyNanos;
+            s_lastStagedBytes = stagedBytes;
             const double presentWaitN = presentWaitFrames != 0 ? presentWaitFrames : 1;
             static uint64_t s_lastMapWait = 0;
             const uint64_t mapWait = stats != nullptr ? stats->stagingMapWaitNanos : 0;
@@ -1490,7 +1501,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     "perf: p50 %.2f p95 %.2f p99 %.2f worst %.2f ms; guest cpu %.2f ms core %d, audio %.2f ms core "
                     "%d, gx %.2f ms, gx fifo %.2f ms in %.1f k writes (%.0f KiB): bp %.2f x %.1f k, dl %.2f x %.0f, submit %.2f, "
                     "draw %.2f x %.0f, mmio %.1f k, %d over 20 ms; passes %u (efb %u), profile %s; dd %.2f w %.2f map %.2f "
-                    "fseal %.2f fsync %.2f\n",
+                    "fseal %.2f fsync %.2f scopy %.2f (%.1f MB)\n",
                     p50, p95, p99, times.worstMs, guestMs / n, guestCore, audioMs / n, audioCore, gxWindowMs / n,
                     gxFifoNanos / 1e6 / n, gxFifoCalls / n / 1000.0, gxFifoBytes / n / 1024.0, bpMs,
                     breakdown.calls[PerfStats::GxFifoBp] / n / 1000.0, dlMs,
@@ -1499,7 +1510,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     static_cast<double>(breakdown.calls[PerfStats::GxFifoDraw]) / n,
                     PerfStats::TakeFastmemMmioLoads() / n / 1000.0, times.slow, renderPasses, efbPasses,
                     g_profilePhaseName, presentDrawDone / 1e6 / presentWaitN, presentWorkerWait / 1e6 / presentWaitN,
-                    mapWaitMs, fifoSealedWait / 1e6 / n, fifoSyncWait / 1e6 / n);
+                    mapWaitMs, fifoSealedWait / 1e6 / n, fifoSyncWait / 1e6 / n, stagingCopyMs, stagedMb);
             AppendPerfCsv(sceneWord & 0xFFFFu, times.frames, n * 1000.0 / window, p50, p95, p99, times.worstMs,
                           times.gameMs / n, gxWindowMs / n, guestMs / n, audioMs / n, gxFifoNanos / 1e6 / n,
                           gxFifoCalls / n, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, times.slow,

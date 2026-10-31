@@ -1451,6 +1451,7 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   for (unsigned i = 0; i < used.size(); ++i) g_stagingHighWater[i] = std::max(g_stagingHighWater[i], used[i]);
   // The frame's data is in CPU buffers; copy it into the mapped staging buffer now, on the frame
   // worker, so recording never had to wait for the GPU to release that buffer.
+  const auto stagingCopyStart = std::chrono::steady_clock::now();
   if (!wait_for_staging_map()) {
     // The map was aborted (device loss). Drop this frame's data but keep the staging rotation
     // consistent so the next frame starts from a known state.
@@ -1484,6 +1485,10 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
                   g_textureUpload.data(), g_textureUpload.size());
     }
   }
+  g_stats.stagingCopyNanos += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - stagingCopyStart).count());
+  g_stats.stagedBytes += g_stats.lastVertSize + g_stats.lastUniformSize + g_stats.lastIndexSize +
+                         g_stats.lastStorageSize + g_stats.lastTextureUploadSize;
   g_stagingBuffers[currentStagingBuffer].Unmap();
   s_mappingState.reset();
   {
