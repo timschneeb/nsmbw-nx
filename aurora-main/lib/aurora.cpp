@@ -1596,16 +1596,47 @@ struct SealedFrameContext {
 
 // Phase 1: everything that touches producer-shared renderer state. Needs g_rendererGpuMutex and
 // a FIFO already drained into the recorded pass list.
+// Per-stage seal cost, in the order the stages below run. Reported by the runtime's perf window so
+// a slow seal (which delays SEALED and with it the producer's GX decode) can be attributed.
+namespace {
+std::atomic<uint64_t> g_sealStageNanos[8];
+using SealClock = std::chrono::steady_clock;
+SealClock::time_point g_sealStageStart;
+int g_sealStageIndex = 0;
+void seal_stage_begin() { g_sealStageStart = SealClock::now(); }
+void seal_stage_end() {
+  if (g_sealStageIndex < 8) {
+    g_sealStageNanos[g_sealStageIndex].fetch_add(
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(SealClock::now() - g_sealStageStart).count()),
+        std::memory_order_relaxed);
+  }
+  ++g_sealStageIndex;
+}
+} // namespace
+
+extern "C" void AuroraTakeSealStages(uint64_t* out, int count) {
+  for (int i = 0; i < count && i < 8; ++i) {
+    out[i] = g_sealStageNanos[i].exchange(0, std::memory_order_relaxed);
+  }
+}
+
 void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   ZoneScopedN("Seal frame");
+  g_sealStageIndex = 0;
+  seal_stage_begin();
   const auto encoderDescriptor = wgpu::CommandEncoderDescriptor{
       .label = "Redraw encoder",
   };
   ctx.encoder = g_device.CreateCommandEncoder(&encoderDescriptor);
+  seal_stage_end();  // 0: encoder
   // Probe-sized CPU-consumed copies read back asynchronously. Their downscale blits push uniforms,
   // so prepare them while the producer's staging buffers are still mapped.
+  seal_stage_begin();
   gfx::efb_ram::seal_async_downloads();
+  seal_stage_end();  // 1: efb downloads
+  seal_stage_begin();
   gfx::end_frame(ctx.encoder);
+  seal_stage_end();  // 2: end_frame (flush staging + close the frame)
   gfx::g_stats.presentedFrameCount = 0;
   gfx::g_stats.interpolatedFrameCount = 0;
   // Latched before the producer's next gfx::begin_frame() calls
@@ -1615,7 +1646,9 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   ctx.replayInterpolatedFrames = ctx.interpolationActive && gx::frame_interpolation_replay_safe();
   ctx.scheduleBaseNanos = g_presentScheduleBaseNanos.load(std::memory_order_acquire);
   ctx.scheduleIntervalNanos = g_presentScheduleIntervalNanos.load(std::memory_order_acquire);
+  seal_stage_begin();
   const auto windowSize = window::get_window_size();
+  seal_stage_end();  // 3: window size
   ctx.snapshotWidth = (std::max)(windowSize.native_fb_width, 1u);
   ctx.snapshotHeight = (std::max)(windowSize.native_fb_height, 1u);
   ctx.logicalFrame = gfx::current_frame();
@@ -1625,14 +1658,20 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   ctx.presentSource = webgpu::current_present_source();
   // ImGui draw lists are built once per frame and replayed by each slot's ImGui pass, which is why
   // the next ImGui frame cannot start until the encode phase is done.
+  seal_stage_begin();
   imgui::render_frame_data();
+  seal_stage_end();  // 4: imgui
   // Drop the sealed frame's lazy RAM-readback requests while the producer is still excluded; it
   // starts registering the next frame's as soon as SEALED is published.
   gfx::efb_ram::cancel();
   // Detach the recorded passes. From here the producer's list is empty and the
   // encode phase reads only worker-private state.
+  seal_stage_begin();
   gfx::seal_frame(sealedFrame);
+  seal_stage_end();  // 5: detach passes
+  seal_stage_begin();
   gfx::expire_bind_group_cache();
+  seal_stage_end();  // 6: expire bind groups
 }
 
 // Phase 2: encode every presentation slot. Reads only `ctx` and the sealed passes, so it runs

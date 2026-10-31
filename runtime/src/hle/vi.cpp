@@ -1262,6 +1262,9 @@ uint32_t DvdReadCount();
 extern "C" void NsmbwTakePresentWaits(uint64_t* drawDone, uint64_t* workerWait, uint32_t* frames);
 // fifo.cpp: the FIFO thread's wait for the renderer to seal, and the producer's wait for the FIFO.
 extern "C" void AuroraTakeFifoWaits(uint64_t* sealedWait, uint64_t* syncWait);
+// aurora.cpp: the frame worker's seal stages (encoder, EFB downloads, end frame, window size,
+// ImGui, detach, bind group expiry).
+extern "C" void AuroraTakeSealStages(uint64_t* out, int count);
 
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
@@ -1490,6 +1493,12 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                                         : 0.0;
             s_lastCopyNanos = copyNanos;
             s_lastStagedBytes = stagedBytes;
+            uint64_t sealStages[8] = {};
+            AuroraTakeSealStages(sealStages, 8);
+            StatsLog("seal: enc %.2f efbdl %.2f end %.2f win %.2f imgui %.2f detach %.2f expire %.2f ms/frame\n",
+                     sealStages[0] / 1e6 / n, sealStages[1] / 1e6 / n, sealStages[2] / 1e6 / n,
+                     sealStages[3] / 1e6 / n, sealStages[4] / 1e6 / n, sealStages[5] / 1e6 / n,
+                     sealStages[6] / 1e6 / n);
             const double presentWaitN = presentWaitFrames != 0 ? presentWaitFrames : 1;
             static uint64_t s_lastMapWait = 0;
             const uint64_t mapWait = stats != nullptr ? stats->stagingMapWaitNanos : 0;
