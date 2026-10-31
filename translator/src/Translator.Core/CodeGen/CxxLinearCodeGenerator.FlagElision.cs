@@ -108,21 +108,43 @@ public sealed partial class CxxLinearCodeGenerator
         IReadOnlySet<uint> nonReturningCallTargets,
         IReadOnlySet<uint> lrContinuationCallTargets)
     {
+        FlagElisionStats.Count("fn.total");
         // A body that dispatches on ctx->lr can re-enter any of its own labels,
         // including positions inside a block. The static CFG does not model
         // those edges, so no liveness statement derived from it holds and the
         // whole plan is abandoned for such functions.
         if (HasOutOfBandLocalEntry(function, nonReturningCallTargets, lrContinuationCallTargets))
         {
+            FlagElisionStats.Count("fn.abandoned_outofband");
             return FlagElisionPlan.Empty;
         }
 
         var suppressed = new HashSet<(string Block, int Index)>();
         var fused = new Dictionary<string, FusedCompare>(StringComparer.OrdinalIgnoreCase);
+        if (FlagElisionStats.Enabled)
+        {
+            long compares = 0;
+            foreach (var block in function.Blocks)
+            {
+                foreach (var instruction in block.Instructions)
+                {
+                    if (instruction is IrSetCrField)
+                    {
+                        ++compares;
+                    }
+                }
+            }
+
+            FlagElisionStats.Add("cmp.total", compares);
+        }
 
         {
             var context = new GuestFlagLivenessContext(guestAbiContracts, modOverridableCallTargets);
-            var liveness = GuestFlagLivenessAnalyzer.Analyze(function, cfg, context, GuestFlagState.All);
+            // The PPC ABI makes CR2-CR4 nonvolatile and everything else volatile, so a compare that
+            // writes CR0/1/5-7 and returns without another read of that field is dead: the caller
+            // cannot rely on it. Seeding every field live rejected most compares in the game.
+            var liveness = GuestFlagLivenessAnalyzer.Analyze(
+                function, cfg, context, GuestFlagState.Cr(0b0001_1100));
             var fusedCompareSites = new HashSet<(string Block, int Index)>();
 
             {
@@ -135,6 +157,7 @@ public sealed partial class CxxLinearCodeGenerator
                         continue;
                     }
 
+                    FlagElisionStats.Count("fused");
                     fused[block.Label] = compare!;
                     fusedCompareSites.Add((compareBlock!, compareIndex));
                     suppressed.Add((compareBlock!, compareIndex));
@@ -292,17 +315,29 @@ public sealed partial class CxxLinearCodeGenerator
         compare = null;
         compareBlock = null;
         compareIndex = -1;
-        if (block.Instructions.Count == 0 ||
-            block.Instructions[^1] is not IrBranch branch ||
-            !TryParseSingleCrBitTest(branch, out var field, out var bit, out var testSet))
+        if (block.Instructions.Count == 0 || block.Instructions[^1] is not IrBranch branch)
         {
+            FlagElisionStats.Count("reject.no_terminal_branch");
+            return false;
+        }
+
+        if (!TryParseSingleCrBitTest(branch, out var field, out var bit, out var testSet))
+        {
+            FlagElisionStats.Count("reject.not_single_cr_bit");
             return false;
         }
 
         // The summary-overflow copy is not reconstructible from the compare
         // operands, so a branch on it can never be fused.
-        if (bit == CrBit.SummaryOverflow || liveOut.HasCrField(field))
+        if (bit == CrBit.SummaryOverflow)
         {
+            FlagElisionStats.Count("reject.summary_overflow");
+            return false;
+        }
+
+        if (liveOut.HasCrField(field))
+        {
+            FlagElisionStats.Count(field == 0 ? "reject.cr_live_f0" : "reject.cr_live_fN");
             return false;
         }
 
@@ -330,8 +365,15 @@ public sealed partial class CxxLinearCodeGenerator
                     // Paired-single representation is normalized on CFG edges by
                     // emitted code that no IR definition describes, so a float
                     // compare is only re-evaluated inside its own block.
-                    if (candidate is null || (candidate.IsFloat && hop != 0))
+                    if (candidate is null)
                     {
+                        FlagElisionStats.Count("reject.compare_build");
+                        return false;
+                    }
+
+                    if (candidate.IsFloat && hop != 0)
+                    {
+                        FlagElisionStats.Count("reject.float_cross_block");
                         return false;
                     }
 
@@ -343,6 +385,7 @@ public sealed partial class CxxLinearCodeGenerator
 
                 if (!IsFusionTransparent(instruction, field))
                 {
+                    FlagElisionStats.Count("reject.opaque_between");
                     return false;
                 }
 
@@ -353,12 +396,14 @@ public sealed partial class CxxLinearCodeGenerator
             // predecessor, so a single recorded predecessor proves nothing there.
             if (current.Label.Equals(function.EntryLabel, StringComparison.OrdinalIgnoreCase))
             {
+                FlagElisionStats.Count("reject.entry_reached");
                 return false;
             }
 
             var predecessors = cfg.Predecessors(current.Label);
             if (predecessors.Count != 1)
             {
+                FlagElisionStats.Count("reject.multi_pred");
                 return false;
             }
 
@@ -368,6 +413,7 @@ public sealed partial class CxxLinearCodeGenerator
                 !cfg.Blocks.TryGetValue(predecessorLabel, out var predecessor) ||
                 predecessor.Instructions.Count == 0)
             {
+                FlagElisionStats.Count("reject.predecessor_shape");
                 return false;
             }
 
@@ -376,6 +422,7 @@ public sealed partial class CxxLinearCodeGenerator
             var terminator = predecessor.Instructions[^1];
             if (terminator is IrBranch or IrJumpTable or IrIndirectJump or IrReturn or IrUndefined)
             {
+                FlagElisionStats.Count("reject.bad_terminator");
                 return false;
             }
 
@@ -385,6 +432,7 @@ public sealed partial class CxxLinearCodeGenerator
                 : predecessor.Instructions.Count - 1;
         }
 
+        FlagElisionStats.Count("reject.hop_limit");
         return false;
     }
 
