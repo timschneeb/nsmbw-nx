@@ -1605,6 +1605,11 @@ static const char* render_pass_label(u32 index) noexcept {
 static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vector<RenderPass>& passes, u32 idx,
                              int32_t interpolatedFrame, DebugFrameData& debugFrame);
 
+// GPU timestamp queries (defined below render_impl); no-ops unless NSMBW_GPU_TIMESTAMPS is on.
+bool gpu_timer_begin(wgpu::CommandEncoder& cmd);
+void gpu_timer_pass(const RenderPass& pass, wgpu::PassTimestampWrites& writes);
+void gpu_timer_end(wgpu::CommandEncoder& cmd);
+
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
                         bool finalize, DebugFrameData& debugFrame, const depth_peek::FrameMapping& depthMapping) {
   ZoneScoped;
@@ -1628,6 +1633,7 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
   // Palette conversions, MSAA resolves and EFB copies depend on sealed frame state, not on the
   // interpolation weight, so encode them on the native render and let replay slots sample them.
   const bool encodeTextureBakes = interpolatedFrame < 0;
+  const bool timeGpu = interpolatedFrame < 0 && gpu_timer_begin(cmd);
   for (u32 i = 0; i < renderPasses.size(); ++i) {
     const auto& passInfo = renderPasses[i];
     if (encodeTextureBakes) {
@@ -1668,11 +1674,16 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         .depthStoreOp = wgpu::StoreOp::Store,
         .depthClearValue = passInfo.clearDepthValue,
     };
+    wgpu::PassTimestampWrites timestampWrites{};
+    if (timeGpu) {
+      gpu_timer_pass(passInfo, timestampWrites);
+    }
     const wgpu::RenderPassDescriptor renderPassDescriptor{
         .label = render_pass_label(i),
         .colorAttachmentCount = attachments.size(),
         .colorAttachments = attachments.data(),
         .depthStencilAttachment = &depthStencilAttachment,
+        .timestampWrites = timeGpu ? &timestampWrites : nullptr,
     };
 
     auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
@@ -1823,6 +1834,9 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
       }
     }
   }
+  if (timeGpu) {
+    gpu_timer_end(cmd);
+  }
   if (finalize) {
     recycle_render_passes(renderPasses);
   }
@@ -1850,6 +1864,150 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
 // after the strip passes. The copies a strip pass defers stay between the strip passes and the EFB
 // pass, so the world still samples the textures they produce. The result is one EFB pass per frame.
 void set_fuse_efb_passes(bool enable) noexcept { g_fuseEfbPasses.store(enable, std::memory_order_relaxed); }
+
+// ---------------------------------------------------------------------------------------------
+// NSMBW: GPU timestamp queries. When the adapter supports them (NSMBW_GPU_TIMESTAMPS is set and the
+// device exposes TimestampQuery), every frame records a timestamp around each render pass, so the
+// per-pass GPU cost can be read on hardware where neither the guest CPU nor the draw count explains
+// the frame time. Each sample prints as `gpu frame N total X ms: E4.2 S1.1 ...` (E = EFB pass,
+// S = strip/offscreen pass) every 30 sampled frames.
+namespace {
+constexpr uint32_t GpuTimerMaxPasses = 24;
+constexpr uint32_t GpuTimerQueryCount = 2 + GpuTimerMaxPasses * 2;
+constexpr uint32_t GpuTimerSlotCount = 6;
+struct GpuTimerSlot {
+  wgpu::QuerySet querySet;
+  wgpu::Buffer resolve;
+  wgpu::Buffer readback;
+  wgpu::Future mapFuture;
+  wgpu::MapAsyncStatus mapStatus = wgpu::MapAsyncStatus::CallbackCancelled;
+  uint32_t frame = 0;
+  uint32_t passCount = 0;
+  uint32_t efbFlags = 0;  // bit i set when pass i targets the EFB
+  bool mapPending = false;
+};
+GpuTimerSlot g_timerSlots[GpuTimerSlotCount];
+uint32_t g_timerNextSlot = 0;
+GpuTimerSlot* g_timerFrame = nullptr;
+uint32_t g_timerPassesInFrame = 0;
+
+void gpu_timer_poll() {
+  const size_t bytes = GpuTimerQueryCount * sizeof(uint64_t);
+  for (auto& slot : g_timerSlots) {
+    if (!slot.mapPending) {
+      continue;
+    }
+    if (webgpu::g_instance.WaitAny(slot.mapFuture, 0) != wgpu::WaitStatus::Success) {
+      continue;  // the GPU has not finished with it yet
+    }
+    slot.mapPending = false;
+    if (slot.mapStatus != wgpu::MapAsyncStatus::Success) {
+      continue;
+    }
+    const auto* values = static_cast<const uint64_t*>(slot.readback.GetConstMappedRange(0, bytes));
+    const uint64_t total = values[1] > values[0] ? values[1] - values[0] : 0;
+    if (slot.frame % 30 == 0) {
+      std::string line;
+      for (uint32_t i = 0; i < slot.passCount; ++i) {
+        const uint64_t begin = values[2 + i * 2];
+        const uint64_t end = values[3 + i * 2];
+        line += fmt::format(" {}={:.2f}", ((slot.efbFlags >> i) & 1u) != 0 ? "E" : "S",
+                            static_cast<double>(end > begin ? end - begin : 0) / 1e6);
+      }
+      Log.info("gpu frame {} total {:.2f} ms:{} ({} passes)", slot.frame,
+               static_cast<double>(total) / 1e6, line, slot.passCount);
+    }
+    slot.readback.Unmap();
+  }
+}
+
+GpuTimerSlot* gpu_timer_acquire_slot() {
+  for (uint32_t attempt = 0; attempt < GpuTimerSlotCount; ++attempt) {
+    GpuTimerSlot& slot = g_timerSlots[g_timerNextSlot];
+    g_timerNextSlot = (g_timerNextSlot + 1) % GpuTimerSlotCount;
+    if (slot.mapPending) {
+      continue;
+    }
+    if (!slot.querySet) {
+      const wgpu::QuerySetDescriptor queryDesc{
+          .label = "Frame GPU timestamps",
+          .type = wgpu::QueryType::Timestamp,
+          .count = GpuTimerQueryCount,
+      };
+      slot.querySet = webgpu::g_device.CreateQuerySet(&queryDesc);
+      const uint64_t bytes = GpuTimerQueryCount * sizeof(uint64_t);
+      const wgpu::BufferDescriptor resolveDesc{
+          .label = "Frame GPU timestamps (resolve)",
+          .usage = wgpu::BufferUsage::QueryResolve | wgpu::BufferUsage::CopySrc,
+          .size = bytes,
+      };
+      slot.resolve = webgpu::g_device.CreateBuffer(&resolveDesc);
+      const wgpu::BufferDescriptor readbackDesc{
+          .label = "Frame GPU timestamps (readback)",
+          .usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst,
+          .size = bytes,
+      };
+      slot.readback = webgpu::g_device.CreateBuffer(&readbackDesc);
+    }
+    return &slot;
+  }
+  return nullptr;
+}
+} // namespace
+
+bool gpu_timer_begin(wgpu::CommandEncoder& cmd) {
+  if (!webgpu::gpu_timestamps_enabled()) {
+    return false;
+  }
+  gpu_timer_poll();
+  GpuTimerSlot* slot = gpu_timer_acquire_slot();
+  if (slot == nullptr) {
+    return false;
+  }
+  slot->frame = g_frameIndex;
+  slot->passCount = 0;
+  slot->efbFlags = 0;
+  g_timerFrame = slot;
+  g_timerPassesInFrame = 0;
+  cmd.WriteTimestamp(slot->querySet, 0);
+  return true;
+}
+
+void gpu_timer_pass(const RenderPass& pass, wgpu::PassTimestampWrites& writes) {
+  if (g_timerFrame == nullptr || g_timerPassesInFrame >= GpuTimerMaxPasses) {
+    return;
+  }
+  const uint32_t index = g_timerPassesInFrame++;
+  if (pass.colorView.Get() == webgpu::g_frameBuffer.view.Get()) {
+    g_timerFrame->efbFlags |= 1u << index;
+  }
+  g_timerFrame->passCount = g_timerPassesInFrame;
+  writes = wgpu::PassTimestampWrites{
+      .querySet = g_timerFrame->querySet,
+      .beginningOfPassWriteIndex = 2 + index * 2,
+      .endOfPassWriteIndex = 3 + index * 2,
+  };
+}
+
+void gpu_timer_end(wgpu::CommandEncoder& cmd) {
+  if (g_timerFrame == nullptr) {
+    return;
+  }
+  const uint32_t queries = 2 + g_timerPassesInFrame * 2;
+  GpuTimerSlot* slot = g_timerFrame;
+  cmd.WriteTimestamp(slot->querySet, 1);
+  cmd.ResolveQuerySet(slot->querySet, 0, queries, slot->resolve, 0);
+  cmd.CopyBufferToBuffer(slot->resolve, 0, slot->readback, 0,
+                         static_cast<uint64_t>(queries) * sizeof(uint64_t));
+  // Reading it back can wait until the GPU has finished with the frame; poll() runs next frame.
+  slot->mapStatus = wgpu::MapAsyncStatus::CallbackCancelled;
+  slot->mapFuture = slot->readback.MapAsync(
+      wgpu::MapMode::Read, 0, GpuTimerQueryCount * sizeof(uint64_t), wgpu::CallbackMode::WaitAnyOnly,
+      [slot](wgpu::MapAsyncStatus status, wgpu::StringView) { slot->mapStatus = status; });
+  slot->mapPending = true;
+  g_timerFrame = nullptr;
+  g_timerPassesInFrame = 0;
+}
 
 static void log_fuse_bail(const char* reason) noexcept {
   static int logged = 0;

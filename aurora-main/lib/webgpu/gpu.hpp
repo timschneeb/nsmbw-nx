@@ -87,6 +87,9 @@ bool refresh_surface(bool recreate = true);
 // NSMBW: V-Sync (Fifo) on or off; the change is applied by take_vsync_change at a frame boundary.
 void request_vsync(bool enabled) noexcept;
 bool vsync_enabled() noexcept;
+
+// GPU timestamp queries (NSMBW_GPU_TIMESTAMPS): per-pass GPU time, when the adapter supports them.
+bool gpu_timestamps_enabled() noexcept;
 // Applies a pending V-Sync change to the surface configuration; true when the swapchain must be reconfigured.
 bool take_vsync_change() noexcept;
 bool vsync_change_pending() noexcept;

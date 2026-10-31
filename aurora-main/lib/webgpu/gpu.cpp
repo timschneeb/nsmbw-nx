@@ -89,6 +89,9 @@ static std::array<char, 256> g_deviceLostMessage{};
 // Errors raised before initialize() completes must not be fatal: the backend fallback loop retries
 // the next backend, and a broken ICD can raise uncaptured errors mid-probe.
 static std::atomic_bool g_initialized{false};
+// NSMBW: GPU timestamp queries, for per-render-pass time on hardware where the CPU side is not the
+// limit. Requested only when NSMBW_GPU_TIMESTAMPS is set and the adapter supports them.
+static std::atomic_bool g_gpuTimestamps{false};
 
 // AURORA_GFX_FLAGS: comma-separated graphics debugging switches, read at device creation. On Android
 // the runtime fills it from `adb shell setprop debug.nsmbw.gfx ...`.
@@ -886,6 +889,10 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
         implicitDeviceSynchronizationSupported = true;
         requiredFeatures.push_back(feature);
       }
+      if (feature == wgpu::FeatureName::TimestampQuery && std::getenv("NSMBW_GPU_TIMESTAMPS") != nullptr) {
+        g_gpuTimestamps.store(true, std::memory_order_relaxed);
+        requiredFeatures.push_back(feature);
+      }
     }
     if (!implicitDeviceSynchronizationSupported) {
       Log.warn(
@@ -947,6 +954,10 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
       // The frame worker, presenter and pipeline compilers all call into the device: without this a
       // second thread's eglMakeCurrent fails with EGL_BAD_ACCESS while another holds the context.
       enableToggles.push_back("gl_allow_context_on_multi_threads");
+    }
+    if (std::getenv("NSMBW_GPU_TIMESTAMPS") != nullptr) {
+      // CommandEncoder::WriteTimestamp is behind this toggle in Dawn.
+      enableToggles.push_back("allow_unsafe_apis");
     }
     std::vector<const char*> disableToggles;
     for (const auto& flag : g_gfxFlags) {
@@ -1229,6 +1240,8 @@ void request_vsync(bool enabled) noexcept {
 }
 
 bool vsync_enabled() noexcept { return g_vsyncEnabled.load(std::memory_order_acquire); }
+
+bool gpu_timestamps_enabled() noexcept { return g_gpuTimestamps.load(std::memory_order_relaxed); }
 
 bool vsync_change_pending() noexcept { return g_vsyncRequest.load(std::memory_order_acquire) >= 0; }
 
