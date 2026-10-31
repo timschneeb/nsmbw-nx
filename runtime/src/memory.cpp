@@ -35,6 +35,25 @@ uintptr_t MemoryInline::g_fullWritablePageBias[MemoryInline::kPageCount]{};
 const MemoryInline::SparseWritablePageTable*
     MemoryInline::g_sparseWritablePageTables[MemoryInline::kPageCount]{};
 uint8_t MemoryInline::g_deferredReadCoveredPages[MemoryInline::kPageCount]{};
+
+void MemoryInline::CanonicalizeMirrorSlow(uint32_t& address) {
+    if (address < Memory::kMem1PhysicalBase + static_cast<uint32_t>(Memory::kMem1Size)) {
+        address += Memory::kMem1CachedBase - Memory::kMem1PhysicalBase;
+        return;
+    }
+    if (address - Memory::kMem1UncachedBase < static_cast<uint32_t>(Memory::kMem1Size)) {
+        address += Memory::kMem1CachedBase - Memory::kMem1UncachedBase;
+        return;
+    }
+    if (address - Memory::kMem2PhysicalBase < static_cast<uint32_t>(Memory::kMem2Size)) {
+        address += Memory::kMem2CachedBase - Memory::kMem2PhysicalBase;
+        return;
+    }
+    if (address - Memory::kMem2UncachedBase < static_cast<uint32_t>(Memory::kMem2Size)) {
+        address += Memory::kMem2CachedBase - Memory::kMem2UncachedBase;
+        return;
+    }
+}
 template <typename T>
 T MemoryInline::ReadResolvedFallback(uint32_t addr) {
     if constexpr (sizeof(T) == 1) return Memory::Read8(addr);

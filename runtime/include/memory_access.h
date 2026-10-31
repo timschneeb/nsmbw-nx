@@ -102,22 +102,15 @@ constexpr bool IsGpuFifoAddress(uint32_t addr) {
 // Physical and uncached views address the same pages as the cached view. Horizon allows only one
 // code-memory alias per page, so rather than mapping them we rewrite the address onto the cached
 // view: the mirrors keep aliasing and stay on the flat path instead of the checked one.
+//
+// Cached MEM1+MEM2 is the overwhelming majority of guest traffic, so the inline test is one
+// range check and every mirror takes the out-of-line form below.
+MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD void CanonicalizeMirrorSlow(uint32_t& address);
+
 MKW_MEMORY_FORCE_INLINE void CanonicalizeMirror(uint32_t& address) {
-    if (address < Memory::kMem1PhysicalBase + static_cast<uint32_t>(Memory::kMem1Size)) {
-        address += 0x80000000u - Memory::kMem1PhysicalBase;
-        return;
-    }
-    if (address - Memory::kMem1UncachedBase < static_cast<uint32_t>(Memory::kMem1Size)) {
-        address += 0x80000000u - Memory::kMem1UncachedBase;
-        return;
-    }
-    if (address - Memory::kMem2PhysicalBase < static_cast<uint32_t>(Memory::kMem2Size)) {
-        address += Memory::kMem2CachedBase - Memory::kMem2PhysicalBase;
-        return;
-    }
-    if (address - Memory::kMem2UncachedBase < static_cast<uint32_t>(Memory::kMem2Size)) {
-        address += Memory::kMem2CachedBase - Memory::kMem2UncachedBase;
-        return;
+    if (address - Memory::kMem1CachedBase >=
+        Memory::kMem2CachedEnd - Memory::kMem1CachedBase) [[unlikely]] {
+        CanonicalizeMirrorSlow(address);
     }
 }
 
