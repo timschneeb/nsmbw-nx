@@ -75,9 +75,13 @@ uint32_t end_display_list() {
 bool in_display_list() { return detail::sInDisplayList; }
 
 // How much of the producer's frame is spent blocked before it may decode the next batch of GX commands.
+std::atomic<uint64_t> g_statSealedWaitNanos{0};
+std::atomic<uint64_t> g_statSyncWaitNanos{0};
+
 static void note_drain_wait(uint64_t nanos) noexcept {
   ZoneScopedN("FIFO drain wait");
   TracyPlot("aurora: fifoDrainWaitUs", static_cast<int64_t>(nanos / 1000));
+  g_statSealedWaitNanos.fetch_add(nanos, std::memory_order_relaxed);
 }
 
 // Decodes a whole command buffer, splitting the staging batch whenever it fills.
@@ -210,8 +214,11 @@ void sync_if_threaded() {
   }
   hand_off();
   auto& t = gx_thread();
+  const auto waitStart = std::chrono::steady_clock::now();
   std::unique_lock lock(t.mutex);
   t.idle.wait(lock, [&t] { return t.jobs.empty() && !t.busy; });
+  g_statSyncWaitNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - waitStart).count()), std::memory_order_relaxed);
 }
 
 void drain() {
@@ -235,3 +242,8 @@ void clear_buffer() {
 }
 
 } // namespace aurora::gx::fifo
+
+extern "C" void AuroraTakeFifoWaits(uint64_t* sealedWait, uint64_t* syncWait) {
+  *sealedWait = aurora::gx::fifo::g_statSealedWaitNanos.exchange(0, std::memory_order_relaxed);
+  *syncWait = aurora::gx::fifo::g_statSyncWaitNanos.exchange(0, std::memory_order_relaxed);
+}
