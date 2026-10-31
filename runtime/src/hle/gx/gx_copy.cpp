@@ -221,8 +221,9 @@ extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     }
     // Queue the copy for the GX thread instead of joining the FIFO here: the copy is recorded in
     // stream order, after every draw the guest queued before it, without stalling the game thread.
-    AuroraQueueTextureCopy(da, c, g_texCopyState.dstFormat, g_texCopyState.dstMipmap, rawSrcLeft, rawSrcTop,
-                           rawSrcWidth, rawSrcHeight, g_texCopyState.dstWidth, g_texCopyState.dstHeight);
+    AuroraQueueTextureCopy(reinterpret_cast<uint64_t>(GuestToHostPtr(da)), c, g_texCopyState.dstFormat,
+                           g_texCopyState.dstMipmap, rawSrcLeft, rawSrcTop, rawSrcWidth, rawSrcHeight,
+                           g_texCopyState.dstWidth, g_texCopyState.dstHeight);
     // The extent the copy writes: a destination bigger than the source is a patch into a larger
     // texture (aurora sizes its copy the same way), not a claim on that whole texture's memory.
     const uint32_t copiedWidth = std::max<uint32_t>(rawSrcWidth >> (g_texCopyState.dstMipmap ? 1 : 0), 1);

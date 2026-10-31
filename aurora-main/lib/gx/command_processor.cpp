@@ -2844,9 +2844,9 @@ bool handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     g_gxState.scissorOffsetY = static_cast<s32>(read_u32(data + pos + 4, bigEndian));
     pos += 8;
   } else if (subCmd == GX_LOAD_AURORA_TEX_COPY) {
-    CHECK(pos + 19 <= size, "GX_LOAD_AURORA_TEX_COPY read overrun");
-    const u32 dest = read_u32(data + pos, bigEndian);
-    pos += 4;
+    CHECK(pos + 23 <= size, "GX_LOAD_AURORA_TEX_COPY read overrun");
+    const u64 dest = read_u64(data + pos, bigEndian);
+    pos += 8;
     const bool clear = data[pos++] != 0;
     const u16 left = read_u16(data + pos, bigEndian);
     pos += 2;

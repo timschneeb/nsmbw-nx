@@ -694,11 +694,11 @@ f32 GXGetYScaleFactor(u16 efbHeight, u16 xfbHeight) {
   return resultScale;
 }
 
-extern "C" void AuroraQueueTextureCopy(uint32_t dest, uint32_t clear, uint32_t format, uint32_t halfScale,
+extern "C" void AuroraQueueTextureCopy(uint64_t dest, uint32_t clear, uint32_t format, uint32_t halfScale,
                                         int32_t left, int32_t top, int32_t width, int32_t height,
                                         uint32_t dstWidth, uint32_t dstHeight) {
   GX_WRITE_AURORA(GX_LOAD_AURORA_TEX_COPY);
-  GX_WRITE_U32(dest);
+  GX_WRITE_U64(dest);
   GX_WRITE_U8(clear);
   GX_WRITE_U16(static_cast<uint16_t>(left));
   GX_WRITE_U16(static_cast<uint16_t>(top));
@@ -714,7 +714,7 @@ extern "C" void AuroraQueueTextureCopy(uint32_t dest, uint32_t clear, uint32_t f
 }
 
 namespace aurora::gx {
-void apply_queued_texture_copy(uint32_t dest, bool clear, uint16_t left, uint16_t top, uint16_t width,
+void apply_queued_texture_copy(uint64_t dest, bool clear, uint16_t left, uint16_t top, uint16_t width,
                                uint16_t height, uint16_t dstWidth, uint16_t dstHeight, uint32_t format,
                                bool halfScale) {
   g_gxState.texCopySrc = {left, top, width, height};
