@@ -108,6 +108,48 @@ bool CommitStore(Store& store) {
     store.host = g_window + guestBase;
     return true;
 }
+
+// Horizon refuses a second code-memory alias of one page (svcMapProcessCodeMemory returns
+// 0xD401), which is why the mirrors used to be rewritten in software. svcMapProcessMemory can
+// still alias an already code-mapped page into another address inside the same reservation, so
+// map every mirror view once and let translated code use the guest address unchanged.
+bool AliasMirrors() {
+    const Handle self = envGetOwnProcessHandle();
+    struct MirrorView {
+        Backing kind;
+        uint32_t mirrorBase;
+        uint64_t limit;
+    };
+    constexpr MirrorView kViews[] = {
+        {Backing::Mem1, 0x00000000u, Memory::kMem1Size},  // MEM1 physical
+        {Backing::Mem1, 0xC0000000u, Memory::kMem1Size},  // MEM1 uncached
+        {Backing::Mem2, 0x10000000u, Memory::kMem2Size},  // MEM2 physical
+        {Backing::Mem2, 0xD0000000u, Memory::kMem2Size},  // MEM2 uncached
+    };
+    for (const MirrorView& view : kViews) {
+        const auto it = std::find_if(g_stores.begin(), g_stores.end(),
+                                     [&](const Store& store) { return store.kind == view.kind; });
+        if (it == g_stores.end() || it->host == nullptr) {
+            continue;
+        }
+        const uint64_t size = std::min<uint64_t>(it->size, view.limit);
+        if (size == 0) {
+            continue;
+        }
+        const u64 source = reinterpret_cast<u64>(g_window + StoreGuestBase(*it));
+        const u64 target = reinterpret_cast<u64>(g_window + view.mirrorBase);
+        const Result rc = svcMapProcessMemory(reinterpret_cast<void*>(target), self, source, size);
+        if (R_FAILED(rc)) {
+            RT_LOG(RT_TAG_MEMORY) << "[mem] mirror alias at 0x" << std::hex << view.mirrorBase
+                                  << " size 0x" << size << " failed: 0x" << rc << std::dec
+                                  << std::endl;
+            return false;
+        }
+        RT_LOG(RT_TAG_MEMORY) << "[mem] mirror alias 0x" << std::hex << view.mirrorBase << " -> "
+                              << StoreGuestBase(*it) << " size 0x" << size << std::dec << std::endl;
+    }
+    return true;
+}
 #endif
 
 uint64_t Offset(const RegionRequest& region) {
@@ -180,6 +222,12 @@ void Initialize(const std::vector<RegionRequest>& regions) {
         }
         RT_LOG(RT_TAG_MEMORY) << "[mem] guest window at " << static_cast<void*>(g_window) << ", "
                               << (backed >> 20) << " MiB backed" << std::endl;
+        if (!AliasMirrors()) {
+            // Translated code no longer canonicalizes mirror addresses, so without the aliases a
+            // guest access to 0xC0000000 (MEM1 uncached) or 0x10000000 (MEM2 physical) would fault.
+            throw std::runtime_error(
+                "guest mirror aliases failed; this firmware rejects svcMapProcessMemory aliases");
+        }
     } else {
         RT_LOG(RT_TAG_MEMORY) << "[mem] guest window reservation failed" << std::endl;
         // Checked access is off on Switch, so a heap fallback would still hand

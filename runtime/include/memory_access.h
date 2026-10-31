@@ -107,12 +107,19 @@ constexpr bool IsGpuFifoAddress(uint32_t addr) {
 // range check and every mirror takes the out-of-line form below.
 MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD void CanonicalizeMirrorSlow(uint32_t& address);
 
+#if defined(MKW_PLATFORM_SWITCH)
+// The Switch backend aliases every mirror view onto the same backing with svcMapProcessMemory at
+// startup (guest_flat_memory_switch.cpp), so the guest address is already the host address and
+// the access needs no rewriting at all.
+MKW_MEMORY_FORCE_INLINE void CanonicalizeMirror(uint32_t&) {}
+#else
 MKW_MEMORY_FORCE_INLINE void CanonicalizeMirror(uint32_t& address) {
     if (address - Memory::kMem1CachedBase >=
         Memory::kMem2CachedEnd - Memory::kMem1CachedBase) [[unlikely]] {
         CanonicalizeMirrorSlow(address);
     }
 }
+#endif
 
 MKW_MEMORY_FORCE_INLINE bool FlatWriteNeedsPolicy(uint32_t address) {
     // An MMIO write must reach GX HLE with its value or be reported.
