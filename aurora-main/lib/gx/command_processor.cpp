@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <string>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -2399,6 +2400,37 @@ static bool raw_draw_locked(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* verti
   return true;
 }
 
+// NSMBW profiling: skip a draw category to measure its fill cost. Visuals are intentionally broken
+// while this is set; use it with NSMBW_NO_MERGE=1 so skipped draws cannot disturb the merge chain.
+static bool skip_draw_for_profile() noexcept {
+  static const std::string filter = [] {
+    const char* value = std::getenv("NSMBW_SKIP_DRAWS");
+    return value != nullptr ? std::string(value) : std::string();
+  }();
+  if (filter.empty()) {
+    return false;
+  }
+  if (filter == "blend") {
+    return g_gxState.blendMode != GX_BM_NONE;
+  }
+  if (filter == "depth") {
+    return g_gxState.depthCompare;
+  }
+  if (filter == "nodepth") {
+    return !g_gxState.depthCompare;
+  }
+  if (filter == "indirect") {
+    return g_gxState.numIndStages > 0;
+  }
+  if (filter.rfind("tev>=", 0) == 0) {
+    return g_gxState.numTevStages >= std::strtoul(filter.c_str() + 5, nullptr, 10);
+  }
+  if (filter.rfind("tex>=", 0) == 0) {
+    return g_gxState.numTexGens >= std::strtoul(filter.c_str() + 5, nullptr, 10);
+  }
+  return false;
+}
+
 static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndian) {
   ZoneScoped;
   // Collect diagnostic draw counts only while profiling. In normal gameplay this
@@ -2431,6 +2463,11 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
 
 
   if (!has_complete_primitive(prim, vtxCount)) {
+    pos += totalVtxBytes;
+    return true;
+  }
+
+  if (skip_draw_for_profile()) {
     pos += totalVtxBytes;
     return true;
   }
