@@ -462,6 +462,15 @@ static void BindUnloadableTexturePlaceholder(uint32_t tid) {
     GXLoadTexObj(&s_placeholder, (GXTexMapID)tid);
 }
 
+// NSMBW_GX_TEXBIND=0 restores the full re-validation path for A/B runs.
+static bool TexBindFastPathEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NSMBW_GX_TEXBIND");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
 extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
     static uint32_t s_invalidMetaLogCount = 0;
     static uint32_t s_invalidTidLogCount = 0;
@@ -480,6 +489,44 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         return;
     }
     
+    // Bind-only path. A frame loads hundreds of textures, nearly all of them objects that went
+    // through the full path last frame and have not changed since; re-deriving and re-validating
+    // their metadata dominated those binds. When the slot says its last full load is still
+    // current, the guest struct is byte-identical to the one that load decoded and no pixel
+    // upload is pending, the full path would compute the same metadata, find nothing to rebuild
+    // or upload, and reach the bind below with it. Palette textures stay on the full path.
+    if (TexBindFastPathEnabled()) {
+        TexObjSlot* slot = FindTexObjSlot(oa);
+        if (slot != nullptr && slot->loadValidated && !slot->needsUpload && slot->hasGuestShadow &&
+            slot->host && slot->host->constructed && !IsPaletteTexFormat(slot->format)) {
+            uint64_t shadow[4];
+            if (ReadTexObjShadow(oa, shadow) && std::memcmp(shadow, slot->guestShadow, sizeof(shadow)) == 0) {
+                try {
+                    BoundTexInfo newBound{};
+                    static_cast<GxTextureBindingContract::SamplerState&>(newBound) = *slot;
+                    newBound.objAddr = oa;
+                    newBound.dataAddr = CanonicalizeGxMainRamAddress(slot->dataAddr);
+                    const bool canSkipHostLoad = GxTextureBindingContract::CanSkipHostLoad(
+                        g_boundTexMaps[tid], newBound, false, false, false);
+                    g_boundTexMaps[tid] = newBound;
+                    if (!canSkipHostLoad) {
+                        GXLoadTexObj(slot->host->PublicPtr(), (GXTexMapID)tid);
+                    }
+                    try {
+                        uint32_t gd = Memory::Read32(kGXDataPtrAddr);
+                        if (gd) {
+                            Memory::Write32(gd + 0x5FCu, Memory::Read32(gd + 0x5FCu) | 1u);
+                            Memory::Write16(gd + 2, 0);
+                        }
+                    } catch (...) {}
+                } catch (...) {
+                    BindUnloadableTexturePlaceholder(tid);
+                }
+                return;
+            }
+        }
+    }
+
     // Check if we have metadata for this texture, or try to extract it from guest memory
     TexObjMeta meta;
     if (!TryGetOrExtractTexObjMeta(oa, meta)) {
@@ -636,6 +683,9 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
         GetTexObjMeta(oa) = meta;
         if (!canSkipHostLoad) {
             GXLoadTexObj(obj, (GXTexMapID)tid);
+        }
+        if (TexObjSlot* validated = FindTexObjSlot(oa)) {
+            validated->loadValidated = true;
         }
     } catch (const std::exception& ex) {
         if (s_hostExceptionLogCount++ < 64) {
