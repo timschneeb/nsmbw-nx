@@ -1480,7 +1480,13 @@ static void TerminateHandler() {
     std::_Exit(EXIT_FAILURE);
 }
 
-#if defined(MKW_PLATFORM_SWITCH)
+#if !defined(MKW_PLATFORM_SWITCH)
+extern "C" void NsmbwPerfClocks(uint32_t* cpuMhz, uint32_t* gpuMhz, uint32_t* emcMhz) {
+    *cpuMhz = 0;
+    *gpuMhz = 0;
+    *emcMhz = 0;
+}
+#else
 namespace {
 // Read-only: says which clock profile the console actually gave us, so a run's
 // frame times can be attributed without guessing what the overclock tool did.
@@ -1507,6 +1513,22 @@ u32 ReadClockRate(PcvModuleId module) {
     return R_SUCCEEDED(rc) ? hz : 0;
 }
 
+} // namespace
+// Reported once per perf window so a run's frame times can be attributed to the clocks it actually
+// ran at (a launch with the overclock tool off is otherwise indistinguishable in the numbers).
+extern "C" void NsmbwPerfClocks(uint32_t* cpuMhz, uint32_t* gpuMhz, uint32_t* emcMhz) {
+    *cpuMhz = 0;
+    *gpuMhz = 0;
+    *emcMhz = 0;
+    if (R_FAILED(clkrstInitialize())) {
+        return;
+    }
+    *cpuMhz = ::ReadClockRate(PcvModuleId_CpuBus) / 1000000u;
+    *gpuMhz = ::ReadClockRate(PcvModuleId_GPU) / 1000000u;
+    *emcMhz = ::ReadClockRate(PcvModuleId_EMC) / 1000000u;
+    clkrstExit();
+}
+namespace {
 void LogHorizonPerformanceState() {
     u32 configuration = 0;
     const Result configurationRc = appletGetCurrentPerformanceConfiguration(&configuration);

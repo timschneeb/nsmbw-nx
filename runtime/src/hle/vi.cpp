@@ -1273,6 +1273,8 @@ extern "C" uint32_t AuroraTakeStagingSplits();
 extern "C" void AuroraTakeSealStages(uint64_t* out, int count);
 // aurora.cpp: frame worker cycle stages (seal, encoder, record, fill, finish, submit, tail, total).
 extern "C" void AuroraTakeWorkerStages(uint64_t* out, int count);
+// main.cpp: the clock rates the console is running at, read once per perf window.
+extern "C" void NsmbwPerfClocks(uint32_t* cpuMhz, uint32_t* gpuMhz, uint32_t* emcMhz);
 
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
@@ -1447,14 +1449,17 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             const uint64_t unmerged = AuroraTakeUnmergedDraws();
             uint64_t copies = 0, creates = 0;
             AuroraTakeCopyStats(&copies, &creates);
+            uint32_t clockCpu = 0, clockGpu = 0, clockEmc = 0;
+            NsmbwPerfClocks(&clockCpu, &clockGpu, &clockEmc);
             StatsLog(
                     "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.0f unmerged, %.1f copies, "
                     "%.1f new copy textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, "
-                    "%d over 20 ms\n",
+                    "%d over 20 ms, clocks %u/%u/%u MHz\n",
                     n * 1000.0 / window, times.gameMs / n, gxNanos / 1e6 / n, lockNanos / 1e6 / n, draws / n,
                     unmerged / n,
                     copies / n, creates / n, times.endFrameMs / n, times.paceMs / n, times.worstMs,
-                    std::sqrt(std::max(0.0, times.sumSq / n - (window / n) * (window / n))), times.slow);
+                    std::sqrt(std::max(0.0, times.sumSq / n - (window / n) * (window / n))), times.slow, clockCpu,
+                    clockGpu, clockEmc);
             uint32_t sceneWord = 0;
             Memory::TryRead32(0x80428730u, sceneWord);
             const double p50 = PercentileMs(times.samples, 0.50);
