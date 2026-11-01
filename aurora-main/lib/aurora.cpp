@@ -1620,15 +1620,24 @@ extern "C" void AuroraTakeSealStages(uint64_t* out, int count) {
   }
 }
 
-void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
-  ZoneScopedN("Seal frame");
-  g_sealStageIndex = 0;
-  seal_stage_begin();
+// The command encoder is created as late as possible. On Switch CreateCommandEncoder blocks for
+// several milliseconds while the GPU queue is deep, and creating it inside the seal delayed SEALED,
+// which the GX decode waits for. After SEALED it overlaps the decode instead. Stage 0 keeps
+// reporting it.
+void create_seal_encoder(SealedFrameContext& ctx) {
+  const auto start = SealClock::now();
   const auto encoderDescriptor = wgpu::CommandEncoderDescriptor{
       .label = "Redraw encoder",
   };
   ctx.encoder = g_device.CreateCommandEncoder(&encoderDescriptor);
-  seal_stage_end();  // 0: encoder
+  g_sealStageNanos[0].fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      SealClock::now() - start).count()), std::memory_order_relaxed);
+}
+
+void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
+  ZoneScopedN("Seal frame");
+  // Stage 0 (the encoder) is measured by create_seal_encoder(), which runs after SEALED.
+  g_sealStageIndex = 1;
   // Probe-sized CPU-consumed copies read back asynchronously. Their downscale blits push uniforms,
   // so prepare them while the producer's staging buffers are still mapped.
   seal_stage_begin();
@@ -1932,6 +1941,7 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     }();
     overlapEncode = ctx.interpolationActive || !serialEncode;
     if (!overlapEncode) {
+      create_seal_encoder(ctx);
       gfx::emit_staging_buffers(ctx.encoder);
       presentationJobs = encode_sealed_frame(sealedFrame, ctx);
     }
@@ -1988,7 +1998,9 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
 
   if (overlapEncode) {
     // Mutex-free: the producer drains and records the next frame in parallel, taking the renderer
-    // mutex per drain, and this phase never takes it.
+    // mutex per drain, and this phase never takes it. The encoder is created here, after SEALED, so
+    // its allocation stall overlaps the decode rather than delaying it.
+    create_seal_encoder(ctx);
     gfx::emit_staging_buffers(ctx.encoder);
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
     publish_presentations(std::move(presentationJobs), ctx.interpolationActive);
@@ -2025,6 +2037,7 @@ void end_frame_impl(bool pumpEvents, bool drainFifo) {
   {
     std::lock_guard gpuLock(g_rendererGpuMutex);
     seal_frame_locked(sealedFrame, ctx);
+    create_seal_encoder(ctx);
     gfx::emit_staging_buffers(ctx.encoder);
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
   }
