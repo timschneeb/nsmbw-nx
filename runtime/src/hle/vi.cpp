@@ -1266,6 +1266,8 @@ extern "C" void AuroraTakeFifoWaits(uint64_t* sealedWait, uint64_t* syncWait);
 extern "C" uint64_t AuroraTakeFifoDecodeNanos();
 // texture_convert.cpp: big texture decodes that split rows over core-1 threads.
 extern "C" uint32_t AuroraTakeParallelTexDecodes();
+// common.cpp: mid-frame staging batch splits (each one rotates the staging slot).
+extern "C" uint32_t AuroraTakeStagingSplits();
 // aurora.cpp: the frame worker's seal stages (encoder, EFB downloads, end frame, window size,
 // ImGui, detach, bind group expiry).
 extern "C" void AuroraTakeSealStages(uint64_t* out, int count);
@@ -1499,11 +1501,11 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             uint64_t sealStages[8] = {};
             AuroraTakeSealStages(sealStages, 8);
             StatsLog("seal: lock %.2f enc %.2f efbdl %.2f end %.2f win %.2f imgui %.2f detach %.2f expire %.2f ms/frame, "
-                     "parallel texture decodes %.2f/frame\n",
+                     "parallel texture decodes %.2f/frame, staging splits %.2f/frame\n",
                      sealStages[7] / 1e6 / n, sealStages[0] / 1e6 / n, sealStages[1] / 1e6 / n,
                      sealStages[2] / 1e6 / n, sealStages[3] / 1e6 / n, sealStages[4] / 1e6 / n,
                      sealStages[5] / 1e6 / n, sealStages[6] / 1e6 / n,
-                     AuroraTakeParallelTexDecodes() / n);
+                     AuroraTakeParallelTexDecodes() / n, AuroraTakeStagingSplits() / n);
             const double presentWaitN = presentWaitFrames != 0 ? presentWaitFrames : 1;
             static uint64_t s_lastMapWait = 0;
             const uint64_t mapWait = stats != nullptr ? stats->stagingMapWaitNanos : 0;

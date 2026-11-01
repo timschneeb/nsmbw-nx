@@ -1687,7 +1687,10 @@ void end_frame(const wgpu::CommandEncoder& cmd) { end_batch_impl(cmd, true); }
 
 void end_batch(const wgpu::CommandEncoder& cmd) { end_batch_impl(cmd, false); }
 
+std::atomic<uint32_t> g_statStagingSplits{0};
+
 void split_staging_batch() {
+  g_statStagingSplits.fetch_add(1, std::memory_order_relaxed);
   // Never called under the decoder's renderer lock: the worker needs that lock
   // to reach DONE. FIFO admission yields its unconsumed command first.
   aurora::wait_for_frame_worker();
@@ -1790,9 +1793,20 @@ void gpu_timer_end(wgpu::CommandEncoder& cmd);
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
                         bool finalize, DebugFrameData& debugFrame, const depth_peek::FrameMapping& depthMapping) {
   ZoneScoped;
-  // NSMBW profiling: replay the opaque world front-to-back to measure how much early-Z can reject.
-  // The draws are self-contained (pipeline, bind groups, uniforms), so only their order changes.
-  if (interpolatedFrame < 0 && std::getenv("NSMBW_REVERSE_OPAQUE") != nullptr) {
+  // NSMBW: replay the opaque world front-to-back so early-Z rejects the overdraw. The guest draws
+  // the scene back-to-front; opaque draws (no blending, depth write on) are order-independent, and
+  // the recorded draws are self-contained (pipeline, bind groups, uniforms), so only their order
+  // changes. NSMBW_OPAQUE_REORDER=0 restores the game's order for an A/B.
+  static const bool reorderOpaque = [] {
+    if (const char* value = std::getenv("NSMBW_REVERSE_OPAQUE"); value != nullptr && value[0] == '1') {
+      return true;  // the original diagnostic name
+    }
+    if (const char* value = std::getenv("NSMBW_OPAQUE_REORDER"); value != nullptr) {
+      return value[0] != '0';
+    }
+    return true;
+  }();
+  if (interpolatedFrame < 0 && reorderOpaque) {
     for (auto& pass : renderPasses) {
       std::vector<size_t> draws;
       for (size_t i = 0; i < pass.commands.size(); ++i) {
@@ -2645,3 +2659,7 @@ void aurora_pop_debug_group() {
 const AuroraStats* aurora_get_stats() { return &aurora::gfx::g_stats; }
 
 void aurora_set_fuse_efb_passes(int enable) { aurora::gfx::set_fuse_efb_passes(enable != 0); }
+
+extern "C" uint32_t AuroraTakeStagingSplits() {
+  return aurora::gfx::g_statStagingSplits.exchange(0, std::memory_order_relaxed);
+}
