@@ -6,10 +6,7 @@
 
 #include <cstdint>
 
-extern "C" void PSMTXConcat_HLE(CpuContext* ctx) {
-    const uint32_t a = ctx->gpr[3];
-    const uint32_t b = ctx->gpr[4];
-    const uint32_t ab = ctx->gpr[5];
+extern "C" void PSMTXConcat_HLE_801c0540(uint32_t a, uint32_t b, uint32_t ab) {
 
     float av[12];
     float bv[12];
@@ -49,4 +46,4 @@ extern "C" void PSMTXConcat_HLE(CpuContext* ctx) {
     }
 }
 
-PPC_NATIVE_OVERRIDE_VOID(801C0540, PSMTXConcat_HLE, (CpuContext* ctx), (ctx));
+PPC_NATIVE_OVERRIDE_VOID(801C0540, PSMTXConcat_HLE_801c0540, (uint32_t a, uint32_t b, uint32_t ab), (a, b, ab));
