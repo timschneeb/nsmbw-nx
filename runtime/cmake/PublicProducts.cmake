@@ -40,7 +40,12 @@ function(mkw_apply_translated_compile_options target)
         -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS}
         $<$<BOOL:${MKW_ENABLE_SHADOW_SAMPLER}>:-finstrument-functions>
         $<$<CXX_COMPILER_ID:Clang>:-fno-slp-vectorize>
-        $<$<CXX_COMPILER_ID:GNU>:-fno-tree-slp-vectorize> -w -pipe)
+        $<$<CXX_COMPILER_ID:GNU>:-fno-tree-slp-vectorize>
+        # The shards are built -fPIC, so GCC treats every non-static function as interposable and
+        # refuses to inline or specialise calls to it. Nothing is interposed in the NRO, and a
+        # shard is a contiguous guest address range, so the hot call chains sit inside one TU.
+        $<$<CXX_COMPILER_ID:GNU>:-fno-semantic-interposition>
+        -w -pipe)
 endfunction()
 
 function(mkw_configure_object_target target)
@@ -159,7 +164,7 @@ if(NOT MKW_BASE_COMMON_SHARDS)
     message(FATAL_ERROR "Translator build graph contains no shared base shards")
 endif()
 
-add_library(mkw_base_shared STATIC ${MKW_BASE_COMMON_SHARDS})
+add_library(mkw_base_shared STATIC ${MKW_BASE_HOT_SHARDS} ${MKW_BASE_COMMON_SHARDS})
 mkw_configure_translated_target(mkw_base_shared)
 target_precompile_headers(mkw_base_shared PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
 

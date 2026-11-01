@@ -21,6 +21,10 @@
 
 #include "system_info.hpp"
 #include "thread_utils.hpp"
+
+#if defined(MKW_PLATFORM_SWITCH)
+extern "C" void MkwConfigureFrameWorkerThread();
+#endif
 #include "tracy/Tracy.hpp"
 
 #if defined(_WIN32)
@@ -319,7 +323,11 @@ void frame_worker_main() noexcept {
   // Named for profilers and /proc (NSMBW_PROFILE_THREAD=FrameWorker samples this thread).
   pthread_setname_np(pthread_self(), "FrameWorker");
 #endif
-#if defined(__linux__) || defined(MKW_PLATFORM_SWITCH)
+#if defined(MKW_PLATFORM_SWITCH)
+  // The runtime sets the mask: preferred core plus the other helper core, so the encoder can
+  // move while the GX worker holds its own core.
+  MkwConfigureFrameWorkerThread();
+#elif defined(__linux__)
   // Guest 0, AX 2, host encode/present 1. NSMBW_HOST_CORE overrides it for A/B
   // runs; a negative value leaves the worker unpinned.
   uint32_t hostCore = 1;

@@ -18,7 +18,8 @@ public sealed record TranslatedBuildShardOptions(
     int BaseShardCount = 72,
     int ModShardCount = 48,
     int RegistrationShardCount = 16,
-    RuntimeNativeIndex? NativeIndex = null);
+    RuntimeNativeIndex? NativeIndex = null,
+    string? HotListPath = null);
 
 /// <summary>
 /// Per-shard compile-cost spread for one partition. Frozen membership does not
@@ -205,6 +206,22 @@ public static partial class TranslatedBuildShardEmitter
         var commonBase = activeBase.Where(record => !sensitiveCallers.Contains(record.Address)).ToArray();
         var portableCommonBase = activeBase.Where(record => !nonCoffSensitiveCallers.Contains(record.Address)).ToArray();
         var portableSensitiveBase = activeBase.Where(record => nonCoffSensitiveCallers.Contains(record.Address)).ToArray();
+        // Hot/cold layout: functions named by the hot list (hottest first) leave base_common for
+        // their own partition, which the manifest links first so the frame's working set opens
+        // .text. base_common keeps its frozen address-range table; removals alone never
+        // invalidate a slot.
+        var hotRanks = ReadHotRanks(options.HotListPath);
+        var hotBase = hotRanks is null
+            ? Array.Empty<FunctionRecord>()
+            : portableCommonBase
+                .Where(record => hotRanks.ContainsKey(record.Address))
+                .OrderBy(record => hotRanks[record.Address])
+                .ToArray();
+        var restBase = hotRanks is null
+            ? portableCommonBase
+            : portableCommonBase.Where(record => !hotRanks.ContainsKey(record.Address)).ToArray();
+        if (hotBase.Length > 0)
+            Console.WriteLine($"  hot functions: {hotBase.Length:N0} in rank order");
         var retroSourceBundlePath = options.RetroCppDirectory is { } retroCppDir && !string.IsNullOrWhiteSpace(retroCppDir)
             ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(retroCppDir))!, "translated_sources.bin")
             : null;
@@ -218,10 +235,15 @@ public static partial class TranslatedBuildShardEmitter
         var baseCommonBoundaries = ResolveBaseCommonBoundaries(
             outputRoot, portableCommonBase, options.BaseShardCount);
         var baseCommonShards = WriteFunctionShards(
-            outputRoot, "base_common", portableCommonBase, options.BaseShardCount, baseTraits,
+            outputRoot, "base_common", restBase, options.BaseShardCount, baseTraits,
             "profile-neutral shared base", weightedSequential: true,
             frozenBoundaries: baseCommonBoundaries?.Table);
         shards.AddRange(baseCommonShards);
+        if (hotBase.Length > 0)
+            shards.AddRange(WriteFunctionShards(
+                outputRoot, "base_hot", hotBase,
+                Math.Min(8, Math.Max(1, hotBase.Length)), baseTraits,
+                "hot profile", weightedSequential: true, hotRanks: hotRanks));
         shards.AddRange(WriteFunctionShards(
             outputRoot, "base_portable_sensitive", portableSensitiveBase,
             Math.Min(24, Math.Max(1, portableSensitiveBase.Length)), baseTraits,
@@ -256,7 +278,8 @@ public static partial class TranslatedBuildShardEmitter
             shards,
             baseRegistration,
             rrRegistration,
-            extraRetroSources);
+            extraRetroSources,
+            hotRanks);
         PruneStaleShardSources(outputRoot, shards, baseRegistration, rrRegistration);
 
         return new TranslatedBuildShardResult(
@@ -296,6 +319,25 @@ public static partial class TranslatedBuildShardEmitter
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Shard counts must be positive.");
         }
+    }
+
+    // One guest address per line, hottest first; '#' comments and a trailing weight are allowed.
+    private static IReadOnlyDictionary<uint, int>? ReadHotRanks(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        var ranks = new Dictionary<uint, int>();
+        var rank = 0;
+        foreach (var line in File.ReadLines(path))
+        {
+            var text = line.Trim();
+            if (text.Length == 0 || text.StartsWith('#')) continue;
+            var token = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)[0];
+            if (token.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) token = token[2..];
+            if (token.Length > 8) token = token[..8];
+            if (!uint.TryParse(token, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var address)) continue;
+            if (!ranks.ContainsKey(address)) ranks[address] = rank++;
+        }
+        return ranks;
     }
 
     private static IReadOnlyList<FunctionRecord> ReadBaseFunctions(
@@ -588,7 +630,8 @@ public static partial class TranslatedBuildShardEmitter
         IReadOnlyDictionary<uint, Trait> traits,
         string traitsLabel,
         bool weightedSequential,
-        ShardBoundaryTable? frozenBoundaries = null)
+        ShardBoundaryTable? frozenBoundaries = null,
+        IReadOnlyDictionary<uint, int>? hotRanks = null)
     {
         if (functions.Count == 0) return Array.Empty<ShardInfo>();
         var shardCount = Math.Min(requestedShardCount, functions.Count);
@@ -597,9 +640,11 @@ public static partial class TranslatedBuildShardEmitter
         // identical when a later run reweights the very same functions.
         var groups = (frozenBoundaries is not null
             ? PartitionFrozenBoundaries(functions, frozenBoundaries)
-            : weightedSequential
-                ? PartitionWeightedSequential(functions, shardCount)
-                : PartitionStableHash(functions, shardCount))
+            : hotRanks is not null
+                ? PartitionWeightedSequential(functions, shardCount, preserveInputOrder: true)
+                : weightedSequential
+                    ? PartitionWeightedSequential(functions, shardCount)
+                    : PartitionStableHash(functions, shardCount))
             .Select(static group => group.ToList())
             .ToList();
 
@@ -634,8 +679,12 @@ public static partial class TranslatedBuildShardEmitter
             // the shard text free of the emitting machine's absolute paths.
             source.AppendLine($"#include \"{Path.GetFileName(traitsPath)}\"");
             source.AppendLine("#define MKW_STATIC_TRANSLATED_CALL(Target, Entry, Context) do { ApplyRuntimeCallOptions(Target, Context); Entry(Context); } while (false)");
+            Func<FunctionRecord, int> rankOf = hotRanks is null
+                ? static _ => int.MaxValue
+                : function => hotRanks.TryGetValue(function.Address, out var rank) ? rank : int.MaxValue;
             foreach (var function in group
-                         .OrderBy(static function => function.Address)
+                         .OrderBy(rankOf)
+                         .ThenBy(static function => function.Address)
                          .ThenBy(static function => function.Symbol, StringComparer.Ordinal))
             {
                 var functionSource = function.SourceText ?? File.ReadAllText(function.SourcePath);
@@ -707,9 +756,12 @@ public static partial class TranslatedBuildShardEmitter
         _ => false
     };
 
-    private static IReadOnlyList<List<FunctionRecord>> PartitionWeightedSequential(IReadOnlyList<FunctionRecord> functions, int count)
+    private static IReadOnlyList<List<FunctionRecord>> PartitionWeightedSequential(
+        IReadOnlyList<FunctionRecord> functions, int count, bool preserveInputOrder = false)
     {
-        var ordered = functions.OrderBy(static function => function.Address).ToArray();
+        var ordered = preserveInputOrder
+            ? functions.ToArray()
+            : functions.OrderBy(static function => function.Address).ToArray();
         return PartitionWeightedIndices(ordered.Select(static function => function.CompileCostWeight).ToArray(), count)
             .Select(indices => indices.Select(index => ordered[index]).ToList())
             .ToArray();
@@ -1057,7 +1109,8 @@ public static partial class TranslatedBuildShardEmitter
         IReadOnlyList<ShardInfo> shards,
         IReadOnlyList<string> baseRegistration,
         IReadOnlyList<string> rrRegistration,
-        IReadOnlyList<string> retroExtras)
+        IReadOnlyList<string> retroExtras,
+        IReadOnlyDictionary<uint, int>? hotRanks = null)
     {
         var output = new StringBuilder();
         output.AppendLine("# Translator-owned stable shard graph; do not edit.");
@@ -1075,6 +1128,17 @@ public static partial class TranslatedBuildShardEmitter
             .OrderByDescending(static shard => shard.CompileCostWeight)
             .ThenBy(static shard => shard.Fingerprint, StringComparer.Ordinal)
             .Select(static shard => shard.Path);
+        // Hot shards link first so the frame's working set opens .text.
+        var hotScheduled = shards
+            .Where(static shard => shard.Partition == "base_hot")
+            .OrderBy(shard => shard.Functions
+                .Where(function => hotRanks is not null && hotRanks.ContainsKey(function.Address))
+                .Select(function => hotRanks![function.Address])
+                .DefaultIfEmpty(int.MaxValue)
+                .Min())
+            .ThenBy(static shard => shard.Fingerprint, StringComparer.Ordinal)
+            .Select(static shard => shard.Path);
+        AppendCMakeList(output, "MKW_BASE_HOT_SHARDS", hotScheduled, preserveOrder: true);
         AppendCMakeList(output, "MKW_BASE_COMMON_SHARDS", Scheduled("base_common"), preserveOrder: true);
         AppendCMakeList(output, "MKW_BASE_PORTABLE_SENSITIVE_SHARDS", Scheduled("base_portable_sensitive"), preserveOrder: true);
         AppendCMakeList(output, "MKW_RETRO_PORTABLE_SENSITIVE_SHARDS", Scheduled("retro_portable_sensitive"), preserveOrder: true);

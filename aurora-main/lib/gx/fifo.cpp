@@ -17,6 +17,10 @@
 
 #include "tracy/Tracy.hpp"
 
+#if defined(MKW_PLATFORM_SWITCH)
+extern "C" void MkwConfigureGxWorkerThread();
+#endif
+
 namespace aurora::gx::fifo {
 static Module Log("aurora::gx::fifo");
 
@@ -150,6 +154,11 @@ GxThread& gx_thread() {
       // Decode and encode are ~10 ms each on the Switch: on one core they serialize. The frame
       // worker keeps core 1; decode shares core 2 with audio (~1-2 ms) unless NSMBW_GX_CORE says
       // otherwise.
+#if defined(MKW_PLATFORM_SWITCH)
+      // Switch: the runtime picks the core and the priority (main.cpp), because it knows which
+      // core the guest owns.
+      MkwConfigureGxWorkerThread();
+#else
       uint32_t core = 2;
       if (const char* value = std::getenv("NSMBW_GX_CORE")) {
         const int parsed = std::atoi(value);
@@ -160,6 +169,7 @@ GxThread& gx_thread() {
       if (!aurora::pin_current_thread(core)) {
         Log.warn("GX thread could not be pinned to core {}", core);
       }
+#endif
       for (;;) {
         std::vector<uint8_t> job;
         {
