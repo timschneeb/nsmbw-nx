@@ -1620,6 +1620,25 @@ extern "C" void AuroraTakeSealStages(uint64_t* out, int count) {
   }
 }
 
+// Frame worker cycle stages, so a slow cycle can be split into seal, encoder allocation, command
+// recording, staging fill (the GPU map wait), finish, queue submit and the rest (publish and the
+// preparation of the next frame, including the wait for the producer).
+namespace {
+std::atomic<uint64_t> g_workerStageNanos[8];
+using WorkerStageClock = std::chrono::steady_clock;
+void worker_stage_add(int index, WorkerStageClock::time_point begin, WorkerStageClock::time_point end) {
+  if (index < 0 || index >= 8) return;
+  g_workerStageNanos[index].fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count()),
+                                      std::memory_order_relaxed);
+}
+} // namespace
+
+extern "C" void AuroraTakeWorkerStages(uint64_t* out, int count) {
+  for (int i = 0; i < count && i < 8; ++i) {
+    out[i] = g_workerStageNanos[i].exchange(0, std::memory_order_relaxed);
+  }
+}
+
 // The command encoder is created as late as possible. On Switch CreateCommandEncoder blocks for
 // several milliseconds while the GPU queue is deep, and creating it inside the seal delayed SEALED,
 // which the GX decode waits for. After SEALED it overlaps the decode instead. Stage 0 keeps
@@ -1719,10 +1738,19 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   const auto submitEncodedSlot = [&](wgpu::CommandEncoder& target, bool releaseMetalFXOutput = true) {
     // The staging copy commands are already in this encoder; fill the buffer they read before it is
     // finished. That puts the map wait after the draw recording instead of before it.
+    const auto fillStart = WorkerStageClock::now();
     gfx::fill_staging_buffer();
+    const auto finishStart = WorkerStageClock::now();
     const auto buffer = target.Finish(&cmdBufDescriptor);
-    std::lock_guard submitLock(g_queueSubmitMutex);
-    g_queue.Submit(1, &buffer);
+    const auto submitStart = WorkerStageClock::now();
+    {
+      std::lock_guard submitLock(g_queueSubmitMutex);
+      g_queue.Submit(1, &buffer);
+    }
+    const auto submitEnd = WorkerStageClock::now();
+    worker_stage_add(3, fillStart, finishStart);
+    worker_stage_add(4, finishStart, submitStart);
+    worker_stage_add(5, submitStart, submitEnd);
     if (releaseMetalFXOutput && g_metalfxPendingOutput) {
       if (!g_metalfxPendingOutput->end_output()) metalfx_failed(g_metalfxPendingOutput->error());
       g_metalfxPendingOutput = nullptr;
@@ -1749,7 +1777,9 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
 
   // A demanded CPU-visible EFB readback submits a prefix of the frame, so replaying the resumed
   // stream would mutate an already-rendered EFB. Render once, then duplicate into the slots.
+  const auto recordStart = WorkerStageClock::now();
   gfx::render(sealedFrame, encoder, -1, true);
+  worker_stage_add(2, recordStart, WorkerStageClock::now());
   // The copy targets now hold this frame's resolves, so queue their readbacks on the same encoder;
   // completion is harvested in gfx::after_submit, never waited on here.
   gfx::efb_ram::encode_async_downloads(encoder);
@@ -1919,6 +1949,7 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     const auto lockStart = WorkerClock::now();
     std::lock_guard gpuLock(g_rendererGpuMutex);
     const auto lockAcquired = WorkerClock::now();
+    worker_stage_add(0, lockStart, lockAcquired);
     g_sealStageNanos[7].fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         lockAcquired - lockStart).count()), std::memory_order_relaxed);
     seal_frame_locked(sealedFrame, ctx);
@@ -1941,8 +1972,10 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     }();
     overlapEncode = ctx.interpolationActive || !serialEncode;
     if (!overlapEncode) {
+      const auto emitStart = WorkerClock::now();
       create_seal_encoder(ctx);
       gfx::emit_staging_buffers(ctx.encoder);
+      worker_stage_add(1, emitStart, WorkerClock::now());
       presentationJobs = encode_sealed_frame(sealedFrame, ctx);
     }
     encoded = WorkerClock::now();
@@ -2000,15 +2033,19 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     // Mutex-free: the producer drains and records the next frame in parallel, taking the renderer
     // mutex per drain, and this phase never takes it. The encoder is created here, after SEALED, so
     // its allocation stall overlaps the decode rather than delaying it.
+    const auto emitStart = WorkerClock::now();
     create_seal_encoder(ctx);
     gfx::emit_staging_buffers(ctx.encoder);
+    worker_stage_add(1, emitStart, WorkerClock::now());
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
+    const auto tailStart = WorkerClock::now();
     publish_presentations(std::move(presentationJobs), ctx.interpolationActive);
     if (imguiNewFrameOwed) {
       // Safe only now: every slot has replayed this frame's ImGui draw lists.
       std::lock_guard gpuLock(g_rendererGpuMutex);
       imgui::new_frame(window::get_window_size());
     }
+    worker_stage_add(6, tailStart, WorkerClock::now());
     {
       std::lock_guard lock(g_frameWorker.mutex);
       g_frameWorker.ready.store(true, std::memory_order_release);
@@ -2016,6 +2053,7 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     g_frameWorker.cv.notify_all();
   }
 
+  worker_stage_add(7, cycleStart, WorkerClock::now());
   record_frame_telemetry();
   return true;
 }

@@ -1271,6 +1271,8 @@ extern "C" uint32_t AuroraTakeStagingSplits();
 // aurora.cpp: the frame worker's seal stages (encoder, EFB downloads, end frame, window size,
 // ImGui, detach, bind group expiry).
 extern "C" void AuroraTakeSealStages(uint64_t* out, int count);
+// aurora.cpp: frame worker cycle stages (seal, encoder, record, fill, finish, submit, tail, total).
+extern "C" void AuroraTakeWorkerStages(uint64_t* out, int count);
 
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
@@ -1506,6 +1508,16 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                      sealStages[2] / 1e6 / n, sealStages[3] / 1e6 / n, sealStages[4] / 1e6 / n,
                      sealStages[5] / 1e6 / n, sealStages[6] / 1e6 / n,
                      AuroraTakeParallelTexDecodes() / n, AuroraTakeStagingSplits() / n);
+            uint64_t workerStages[8] = {};
+            AuroraTakeWorkerStages(workerStages, 8);
+            const double workerSum = (workerStages[0] + workerStages[1] + workerStages[2] + workerStages[3] +
+                                      workerStages[4] + workerStages[5] + workerStages[6]) /
+                                     1e6 / n;
+            const double workerCycle = workerStages[7] / 1e6 / n;
+            StatsLog("worker: cycle %.2f seal %.2f enc %.2f record %.2f fill %.2f finish %.2f submit %.2f tail %.2f "
+                     "prep %.2f ms/frame\n", workerCycle, workerStages[0] / 1e6 / n, workerStages[1] / 1e6 / n,
+                     workerStages[2] / 1e6 / n, workerStages[3] / 1e6 / n, workerStages[4] / 1e6 / n,
+                     workerStages[5] / 1e6 / n, workerStages[6] / 1e6 / n, workerCycle - workerSum);
             const double presentWaitN = presentWaitFrames != 0 ? presentWaitFrames : 1;
             static uint64_t s_lastMapWait = 0;
             const uint64_t mapWait = stats != nullptr ? stats->stagingMapWaitNanos : 0;
