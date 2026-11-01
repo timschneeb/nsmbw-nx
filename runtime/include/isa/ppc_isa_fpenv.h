@@ -98,8 +98,11 @@ inline void MkwApplyHostNiMode(uint32_t fpscr) noexcept
     // `(MkwGetHostFpControl() & kMkwFpControlFlushToZeroBits) != 0` after the write - the
     // mirror cannot disagree with the register even if the incoming value held only some of
     // those bits.
+#if !defined(__aarch64__)
+    // The aarch64 readers test FPCR directly; the mirror is only read on x86.
     g_mkwHostNiActive = wantNi;
     g_mkwNiFlushThreshold = wantNi ? kMkwNiFlushThreshold : 0.0;
+#endif
 }
 
 /// <summary>
@@ -111,6 +114,8 @@ inline void MkwRestoreHostMxcsr(uint32_t csr) noexcept
 {
     MkwSetHostFpControl(csr);
     const bool niActive = (csr & kMkwFpControlFlushToZeroBits) != 0;
+#if !defined(__aarch64__)
     g_mkwHostNiActive = niActive;
     g_mkwNiFlushThreshold = niActive ? kMkwNiFlushThreshold : 0.0;
+#endif
 }

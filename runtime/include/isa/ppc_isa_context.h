@@ -66,14 +66,34 @@ struct CpuContext {
     uint32_t translatedExecutionAddress = 0;
 };
 
+#if defined(__SWITCH__)
+// On Horizon a thread_local access is an out-of-line __aarch64_read_tp call. The current context
+// is read by every out-of-line ISA helper and by every HLE entry that needs the register file, so
+// it lives in one of libnx's per-thread slots instead, read inline through tpidrro_el0. The slot
+// is allocated before main and is per host thread, matching the old thread_local exactly.
+uint32_t MkwAllocCurrentCpuTlsSlot() noexcept;
+inline const uint32_t g_mkwCurrentCpuTlsOffset = MkwAllocCurrentCpuTlsSlot();
+#else
 inline thread_local CpuContext* g_currentCpuContext = nullptr;
+#endif
+
+MKW_PPC_FORCE_INLINE CpuContext*& MkwCurrentCpuSlotRef() noexcept
+{
+#if defined(__SWITCH__)
+    uint64_t tls = 0;
+    __asm__("mrs %0, tpidrro_el0" : "=r"(tls));
+    return *reinterpret_cast<CpuContext**>(static_cast<uintptr_t>(tls) + g_mkwCurrentCpuTlsOffset);
+#else
+    return g_currentCpuContext;
+#endif
+}
 
 class CpuContextScope {
 public:
     explicit CpuContextScope(CpuContext* ctx)
-        : previous_(g_currentCpuContext)
+        : previous_(MkwCurrentCpuSlotRef())
     {
-        g_currentCpuContext = ctx;
+        MkwCurrentCpuSlotRef() = ctx;
         // x28 is per-thread and only survives across calls because the whole program is built
         // with -ffixed-x28 and the cooperative switch saves it. A host thread or a fresh fiber
         // starts with whatever the stack had, so restore it here instead of on every dispatch.
@@ -86,7 +106,7 @@ public:
 
     ~CpuContextScope()
     {
-        g_currentCpuContext = previous_;
+        MkwCurrentCpuSlotRef() = previous_;
         if (previous_ != nullptr)
             MkwApplyHostNiMode(previous_->fpscr);
         else
@@ -103,7 +123,7 @@ private:
 
 inline CpuContext* TryGetCpuContext() noexcept
 {
-    return g_currentCpuContext;
+    return MkwCurrentCpuSlotRef();
 }
 
 inline CpuContext* CurrentCpuContext()

@@ -60,6 +60,19 @@
 #endif
 #if defined(MKW_PLATFORM_SWITCH)
 #include <switch.h>
+
+#if defined(__SWITCH__)
+// See MkwCurrentCpuSlotRef in isa/ppc_isa_context.h. libnx places per-thread slots after its own
+// TLS block; 0x180 + 8 * slot is the layout threadTlsGet uses, read inline here because the
+// helper call is exactly what this is avoiding.
+uint32_t MkwAllocCurrentCpuTlsSlot() noexcept {
+    const s32 slot = threadTlsAlloc(nullptr);
+    if (slot < 0) {
+        std::abort();
+    }
+    return 0x180u + 8u * static_cast<uint32_t>(slot);
+}
+#endif
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <SDL3/SDL_messagebox.h>
