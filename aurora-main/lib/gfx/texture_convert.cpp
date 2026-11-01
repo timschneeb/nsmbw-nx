@@ -13,6 +13,8 @@
 #include <vector>
 
 namespace aurora::gfx {
+// Big texture decodes that split their rows across threads pinned to core 1, per window.
+std::atomic<uint32_t> g_statParallelTexDecodes{0};
 static Module Log("aurora::gfx");
 
 struct RGBA8 {
@@ -271,6 +273,9 @@ static ByteBuffer DecodeTiled(uint32_t width, uint32_t height, uint32_t mips, Ar
     const uint32_t workers = w * h >= kParallelTexels && bheight >= 8
                                  ? std::min(4u, std::max(1u, aurora::hardware_thread_count()))
                                  : 1u;
+    if (workers > 1) {
+      g_statParallelTexDecodes.fetch_add(1, std::memory_order_relaxed);
+    }
     if (workers > 1) {
       std::vector<std::thread> threads;
       threads.reserve(workers);
@@ -759,3 +764,7 @@ ConvertedTexture convert_texture_palette(u32 textureFormat, uint32_t width, uint
   };
 }
 } // namespace aurora::gfx
+
+extern "C" uint32_t AuroraTakeParallelTexDecodes() {
+  return aurora::gfx::g_statParallelTexDecodes.exchange(0, std::memory_order_relaxed);
+}

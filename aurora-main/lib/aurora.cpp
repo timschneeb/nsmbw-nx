@@ -1902,7 +1902,12 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   const auto cycleStart = WorkerClock::now();
   WorkerClock::time_point sealed{}, encoded{};
   {
+    // The seal's stages are a few ms; a long seal is this wait or the worker not being scheduled.
+    const auto lockStart = WorkerClock::now();
     std::lock_guard gpuLock(g_rendererGpuMutex);
+    const auto lockAcquired = WorkerClock::now();
+    g_sealStageNanos[7].fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        lockAcquired - lockStart).count()), std::memory_order_relaxed);
     seal_frame_locked(sealedFrame, ctx);
     sealed = WorkerClock::now();
     // NSMBW: overlap the encode with the producer's next frame without interpolation too. Encoding
