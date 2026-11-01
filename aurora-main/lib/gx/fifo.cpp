@@ -114,7 +114,24 @@ static void process_buffer(const uint8_t* data, uint32_t size) {
 // NSMBW: the GX thread (see threaded()). Buffers of commands are decoded on it in the order the
 // game thread queued them; the game thread waits for it only where it needs decoded state.
 namespace {
-constexpr uint32_t kHandOffBytes = 16 * 1024;  // queue a buffer once this much has built up
+// Queue a buffer once this much has built up. The guest's frame ends with a drain that waits
+// for the decode of everything still queued, so this is the size of the serial tail: smaller
+// batches decode earlier and in parallel with the producer. NSMBW_GX_HANDOFF_KB overrides it
+// (0 disables the size gate and hands off at every flush point).
+uint32_t handOffBytes() {
+  static const uint32_t bytes = [] {
+    const char* value = std::getenv("NSMBW_GX_HANDOFF_KB");
+    if (value == nullptr || value[0] == '\0') {
+      return 4u * 1024u;
+    }
+    const long parsed = std::strtol(value, nullptr, 10);
+    if (parsed <= 0) {
+      return 0u;
+    }
+    return static_cast<uint32_t>(std::min<long>(parsed * 1024, 1024 * 1024));
+  }();
+  return bytes;
+}
 
 struct GxThread {
   std::thread thread;
@@ -165,7 +182,8 @@ GxThread& gx_thread() {
       }
     });
     state->thread.detach();
-    Log.info("GX thread started ({} hardware threads)", aurora::hardware_thread_count());
+    Log.info("GX thread started ({} hardware threads), hand-off {} KiB",
+             aurora::hardware_thread_count(), handOffBytes() / 1024u);
     return state;
   }();
   return *t;
@@ -219,7 +237,8 @@ void flush_async() {
     drain();
     return;
   }
-  if (detail::sBufferSize >= kHandOffBytes) {
+  const uint32_t threshold = handOffBytes();
+  if (detail::sBufferSize != 0 && (threshold == 0 || detail::sBufferSize >= threshold)) {
     hand_off();
   }
 }
