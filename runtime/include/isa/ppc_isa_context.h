@@ -59,6 +59,11 @@ struct CpuContext {
     // bctrl path reaches its cache without touching thread-local storage, which devkitA64
     // compiles into a call to __aarch64_read_tp on Switch.
     IndirectDispatchMemo* dispatchMemo = nullptr;
+
+    // Diagnostic-only: innermost translated target, read by the fatal reporters. It lives here
+    // instead of in thread-local storage for the same reason the memo does; three TLS reads per
+    // indirect dispatch became three ordinary loads and stores.
+    uint32_t translatedExecutionAddress = 0;
 };
 
 inline thread_local CpuContext* g_currentCpuContext = nullptr;

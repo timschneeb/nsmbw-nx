@@ -350,12 +350,12 @@ const std::vector<MemoryReservation>& MemoryReservations() {
     return Reservations();
 }
 
-// ScopedTranslatedExecutionAddress and its thread-local backing variable live
-// in the header: the indirect-dispatch path constructs one per call and cannot
-// afford a cross-TU call pair (no LTO in this build).
+// ScopedTranslatedExecutionAddress lives in abi_bridge.h next to the dispatch paths that scope
+// it; the address itself is stored in the CpuContext so no thread-local access is needed.
 
 uint32_t CurrentTranslatedExecutionAddress() noexcept {
-    return g_currentTranslatedExecutionAddress;
+    const CpuContext* cpu = TryGetCpuContext();
+    return cpu != nullptr ? cpu->translatedExecutionAddress : 0;
 }
 
 void RegisterExecutableRange(uint32_t start, uint32_t end, std::string name) {

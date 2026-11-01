@@ -31,7 +31,8 @@ static_assert(offsetof(CpuContext, srr0) == 452);
 static_assert(offsetof(CpuContext, srr1) == 456);
 static_assert(offsetof(CpuContext, msr) == 460);
 static_assert(offsetof(CpuContext, dispatchMemo) == 464);
-static_assert(sizeof(CpuContext) == 472);
+static_assert(offsetof(CpuContext, translatedExecutionAddress) == 472);
+static_assert(sizeof(CpuContext) == 480);
 
 namespace {
 std::vector<TranslatedFunctionInfo>& Registry() {
