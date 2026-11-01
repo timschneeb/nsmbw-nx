@@ -22,13 +22,14 @@
 namespace aurora::gx {
 
 // The hardware converts texture coordinates to 24-bit fixed point before sampling, and the generator
-// reproduces that: a vec2i conversion, a 24-bit wrap and a divide by the texture size. Games do not
-// depend on the truncation, only on the wrap for very large coordinates. NSMBW_FAST_UV=1 samples
-// with the float coordinate and a precomputed reciprocal size instead.
+// used to reproduce that: a vec2i conversion, a 24-bit wrap and a divide by the texture size. Games
+// do not depend on the truncation, only on the wrap for very large coordinates, so the coordinate is
+// sampled as a float with a precomputed reciprocal size instead. NSMBW_FAST_UV=0 restores the fixed
+// point path.
 bool fast_uv() noexcept {
   static const bool enabled = [] {
     const char* value = std::getenv("NSMBW_FAST_UV");
-    return value != nullptr && value[0] != '0';
+    return value == nullptr || value[0] != '0';
   }();
   return enabled;
 }
