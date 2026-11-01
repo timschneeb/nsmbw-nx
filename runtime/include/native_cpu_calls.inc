@@ -107,6 +107,12 @@ MKW_KNOWN_NATIVE_CPU_CALL(0x802405B0u, NW4R_G3D_AnmRotation_HLE);
 extern "C" void NW4R_G3D_AnmTranslation_HLE(CpuContext* ctx);
 MKW_KNOWN_NATIVE_CPU_CALL(0x80241020u, NW4R_G3D_AnmTranslation_HLE);
 
+extern "C" void NW4R_G3D_GetResNode_HLE(CpuContext* ctx);
+MKW_KNOWN_NATIVE_CPU_CALL(0x8023B300u, NW4R_G3D_GetResNode_HLE);
+
+extern "C" void NW4R_G3D_TexPatGetResult_HLE(CpuContext* ctx);
+MKW_KNOWN_NATIVE_CPU_CALL(0x80245440u, NW4R_G3D_TexPatGetResult_HLE);
+
 extern "C" void NW4R_G3D_AnmObjChrBlendGetResult_HLE(CpuContext* ctx);
 MKW_KNOWN_NATIVE_CPU_CALL(0x80248330u, NW4R_G3D_AnmObjChrBlendGetResult_HLE);
 
