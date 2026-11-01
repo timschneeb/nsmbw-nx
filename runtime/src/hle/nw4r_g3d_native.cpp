@@ -191,6 +191,15 @@ bool CompareEnabled() {
     return enabled;
 }
 
+// NSMBW_G3D_NATIVE=0 runs the translated bodies, for A/B and as a kill switch.
+bool NativeEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NSMBW_G3D_NATIVE");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
 bool GqrFastPath(uint32_t gqr2, uint32_t gqr3, uint32_t gqr6) {
     return LoadType(gqr2) == kGqrU8 && StoreType(gqr2) == kGqrU8 &&
            LoadType(gqr3) == kGqrU16 && StoreType(gqr3) == kGqrU16 &&
@@ -206,7 +215,7 @@ extern "C" void NW4R_G3D_CalcAnimationFVS32_HLE(CpuContext* ctx) {
     const uint32_t gqr3 = ctx->gqr[3];
     const uint32_t gqr6 = ctx->gqr[6];
 
-    if (!GqrFastPath(gqr2, gqr3, gqr6)) {
+    if (!NativeEnabled() || !GqrFastPath(gqr2, gqr3, gqr6)) {
         CalcAnimationFVS32Translated(ctx);
         return;
     }
@@ -809,8 +818,16 @@ void WriteFrame(uint32_t addr, const uint32_t (&in)[kFrameSize / 4]) {
 }  // namespace
 
 extern "C" void NW4R_G3D_AnmObjChrBlendGetResult_HLE(CpuContext* ctx) {
+    // The quaternion and accurate-scale blend paths are not exercised by the stage scene and
+    // have no bit-exact coverage yet, so they stay on the translated body.
+    const uint32_t blendFlags = MemoryInline::FlatRead32(ctx->gpr[3] + kBlendFlags);
+    const bool untestedBlendPath = (blendFlags & (kFlagUseQuatBlend | kFlagUseAccScale)) != 0;
     if (!CompareEnabled()) {
-        AnmObjChrBlendGetResultNative(ctx);
+        if (NativeEnabled() && !untestedBlendPath) {
+            AnmObjChrBlendGetResultNative(ctx);
+        } else {
+            AnmObjChrBlendGetResultTranslated(ctx);
+        }
         return;
     }
 
