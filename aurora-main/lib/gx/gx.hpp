@@ -583,6 +583,9 @@ struct ShaderConfig {
 static_assert(std::has_unique_object_representations_v<ShaderConfig>);
 
 // GX supplies an opaque white color when a draw omits vertex colors.
+// shader.cpp: sample with float texture coordinates and a reciprocal size (NSMBW_FAST_UV).
+bool fast_uv() noexcept;
+
 inline int shader_vertex_color_attr(const ShaderConfig& config, u32 channel) noexcept {
   const bool hasColor0 = config.attrs[GX_VA_CLR0].attrType != GX_NONE;
   const bool hasColor1 = config.attrs[GX_VA_CLR1].attrType != GX_NONE;
