@@ -1914,17 +1914,22 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
         lockAcquired - lockStart).count()), std::memory_order_relaxed);
     seal_frame_locked(sealedFrame, ctx);
     sealed = WorkerClock::now();
-    // NSMBW: overlap the encode with the producer's next frame without interpolation too. Encoding
-    // and submitting in the SEALED phase made the producer's first drain of every frame (EGG's
-    // GXDrawDone) wait out the whole encode: a quarter of the game thread's time on a Pixel 3 XL.
-    // Android only: desktop GPUs encode well inside a frame, and there the serial order (0.1.1's)
-    // stays, since players felt 0.2.x's presentation as stutterier. NSMBW_SERIAL_ENCODE=1 or
-    // NSMBW_OVERLAP_ENCODE=1 picks one either way.
-#ifdef __ANDROID__
-    static const bool serialEncode = std::getenv("NSMBW_SERIAL_ENCODE") != nullptr;
-#else
-    static const bool serialEncode = std::getenv("NSMBW_OVERLAP_ENCODE") == nullptr;
-#endif
+    // Overlap order: seal and prepare under the mutex, publish SEALED, then encode, submit and
+    // present without it. The GX decode and the producer's next frame then run while this frame is
+    // being encoded instead of after it. Encoding before prepare is what used to make this order
+    // idle the GPU, because the staging map wait sat in the seal; it now lives in
+    // fill_staging_buffer, after the draws are recorded, so there is nothing left to serialize.
+    // NSMBW_SERIAL_ENCODE=1 restores seal, encode, submit inside the mutex; NSMBW_OVERLAP_ENCODE is
+    // kept as the old name for the same switch.
+    static const bool serialEncode = [] {
+      if (const char* value = std::getenv("NSMBW_SERIAL_ENCODE"); value != nullptr) {
+        return value[0] != '0';
+      }
+      if (const char* value = std::getenv("NSMBW_OVERLAP_ENCODE"); value != nullptr) {
+        return value[0] == '0';
+      }
+      return false;
+    }();
     overlapEncode = ctx.interpolationActive || !serialEncode;
     if (!overlapEncode) {
       gfx::emit_staging_buffers(ctx.encoder);
