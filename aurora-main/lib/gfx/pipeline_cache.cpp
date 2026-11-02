@@ -1066,6 +1066,9 @@ static std::atomic_bool g_prewarmActive{false};
 // presented: before that the prewarm must not starve the guest, after it the loading screen is up
 // and the prewarm can have the console.
 static std::atomic_bool g_prewarmBoost{false};
+// False until the first visible guest frame. The queued recipes stay pending so the guest's boot
+// and loading screen are not slowed by background pipeline work.
+static std::atomic_bool g_prewarmAllowed{false};
 static std::chrono::steady_clock::time_point g_prewarmStart{};
 static std::atomic<uint32_t> g_prewarmDone{0};
 static uint32_t g_prewarmCount = 0;
@@ -1139,7 +1142,8 @@ static void pipeline_worker() {
 
   while (true) {
 #if defined(MKW_PLATFORM_SWITCH)
-    const int level = g_prewarmActive.load(std::memory_order_relaxed)
+    const bool allowed = g_prewarmAllowed.load(std::memory_order_relaxed);
+    const int level = (g_prewarmActive.load(std::memory_order_relaxed) && allowed)
                           ? (g_prewarmBoost.load(std::memory_order_relaxed) ? 2 : 1)
                           : 0;
     if (level != priorityLevel) {
@@ -1154,7 +1158,8 @@ static void pipeline_worker() {
       g_pipelineCv.wait(lock, [] {
         const bool priorityReady = !g_priorityPipelines.empty() &&
                                    g_activePriorityPipelineWorkers < MaxPriorityPipelineWorkers;
-        const bool backgroundReady = !g_backgroundPipelines.empty() &&
+        const bool backgroundReady = g_prewarmAllowed.load(std::memory_order_relaxed) &&
+                                     !g_backgroundPipelines.empty() &&
                                      g_activeBackgroundPipelineWorkers < MaxBackgroundPipelineWorkers;
         return priorityReady || backgroundReady || g_pipelineThreadEnd;
       });
@@ -1287,6 +1292,7 @@ static void load_pipeline_cache() {
     g_prewarmCount = queued;
     g_prewarmStart = std::chrono::steady_clock::now();
     g_prewarmDone.store(0, std::memory_order_relaxed);
+    g_prewarmAllowed.store(false, std::memory_order_relaxed);
     g_prewarmBoost.store(false, std::memory_order_relaxed);
     g_blobReadNanos.store(0, std::memory_order_relaxed);
     g_blobReadBytes.store(0, std::memory_order_relaxed);
@@ -1415,7 +1421,13 @@ bool boot_pipelines_pending() noexcept {
 }
 
 void set_prewarm_boost(bool enabled) noexcept {
+  if (enabled && !g_prewarmAllowed.exchange(true, std::memory_order_relaxed)) {
+    // The loading screen is up: start the prewarm clock now, not at aurora init.
+    g_prewarmStart = std::chrono::steady_clock::now();
+    g_prewarmDone.store(0, std::memory_order_relaxed);
+  }
   g_prewarmBoost.store(enabled, std::memory_order_relaxed);
+  g_pipelineCv.notify_all();
 }
 
 void wait_for_boot_pipelines() {

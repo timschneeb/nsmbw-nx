@@ -647,6 +647,10 @@ void LogSceneChanges() {
     }
     RT_LOGF(RT_TAG_VI, "scene -> 0x%03X %s (frame %u)\n", now, name,
             s_presentedXfbFrames.load(std::memory_order_relaxed));
+    if (now == 0x005u) {
+        // Gameplay starts; keep any remaining prewarm below the guest.
+        aurora_set_prewarm_boost(false);
+    }
 }
 
 void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool serviceAurora) {
