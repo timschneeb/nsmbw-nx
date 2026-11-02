@@ -78,6 +78,14 @@ constexpr size_t ReservedLogicalProcessors = 2;
 constexpr size_t MaxPipelineWorkers = 22;
 // Cached clear and GX pipelines are prewarmed using the full worker pool.
 constexpr size_t MaxBackgroundPipelineWorkers = MaxPipelineWorkers;
+#if defined(MKW_PLATFORM_SWITCH)
+// Three usable cores: the boot prewarm runs before the guest and may use all of them, but a
+// first-use build during play stays on one worker so the guest and the GX/frame workers keep
+// their cores.
+constexpr size_t MaxPriorityPipelineWorkers = 1;
+#else
+constexpr size_t MaxPriorityPipelineWorkers = MaxPipelineWorkers;
+#endif
 
 using PipelineThread = std::thread;
 // For synchronous pipeline fallback (OpenGL)
@@ -89,6 +97,7 @@ constexpr size_t BuildPipelinesPerFrame = 1;
 static std::vector<PipelineThread> g_pipelineThreads;
 static bool g_pipelineThreadEnd = false;
 static size_t g_activeBackgroundPipelineWorkers = 0;
+static size_t g_activePriorityPipelineWorkers = 0;
 static std::condition_variable g_pipelineCv;
 static absl::flat_hash_map<PipelineRef, CachedPipeline> g_pipelines;
 static std::deque<PendingPipeline> g_priorityPipelines;
@@ -1074,30 +1083,36 @@ static void pipeline_worker() {
     {
       std::unique_lock lock{g_pipelineMutex};
       g_pipelineCv.wait(lock, [] {
-        return !g_priorityPipelines.empty() ||
-               (!g_backgroundPipelines.empty() &&
-                g_activeBackgroundPipelineWorkers < MaxBackgroundPipelineWorkers) ||
-               g_pipelineThreadEnd;
+        const bool priorityReady = !g_priorityPipelines.empty() &&
+                                   g_activePriorityPipelineWorkers < MaxPriorityPipelineWorkers;
+        const bool backgroundReady = !g_backgroundPipelines.empty() &&
+                                     g_activeBackgroundPipelineWorkers < MaxBackgroundPipelineWorkers;
+        return priorityReady || backgroundReady || g_pipelineThreadEnd;
       });
       if (g_pipelineThreadEnd) {
         return;
       }
-      background = g_priorityPipelines.empty();
+      background = g_priorityPipelines.empty() ||
+                   g_activePriorityPipelineWorkers >= MaxPriorityPipelineWorkers;
       auto& source = background ? g_backgroundPipelines : g_priorityPipelines;
       pending = std::move(source.front());
       source.pop_front();
       if (background) {
         ++g_activeBackgroundPipelineWorkers;
+      } else {
+        ++g_activePriorityPipelineWorkers;
       }
     }
     compile_pending_pipeline(std::move(pending));
-    if (background) {
-      {
-        std::lock_guard lock{g_pipelineMutex};
+    {
+      std::lock_guard lock{g_pipelineMutex};
+      if (background) {
         --g_activeBackgroundPipelineWorkers;
+      } else {
+        --g_activePriorityPipelineWorkers;
       }
-      g_pipelineCv.notify_all();
     }
+    g_pipelineCv.notify_all();
   }
 }
 
@@ -1123,9 +1138,15 @@ static size_t pipeline_worker_count() {
   if (logicalProcessors == 0) {
     return 1;
   }
+#if defined(MKW_PLATFORM_SWITCH)
+  // The prewarm is the only time these threads all run; MaxPriorityPipelineWorkers keeps the
+  // first-use path to one worker.
+  return std::clamp(logicalProcessors, size_t{1}, MaxPipelineWorkers);
+#else
   const size_t availableWorkers =
       logicalProcessors > ReservedLogicalProcessors ? logicalProcessors - ReservedLogicalProcessors : 1;
   return std::clamp(availableWorkers, size_t{1}, MaxPipelineWorkers);
+#endif
 }
 
 template <typename PipelineConfig, typename CreateFn>
@@ -1244,6 +1265,7 @@ void initialize_pipeline_cache() {
   g_pipelineFrameActive = false;
   g_pipelineThreadEnd = false;
   g_activeBackgroundPipelineWorkers = 0;
+  g_activePriorityPipelineWorkers = 0;
 
   if (webgpu::g_backendType == wgpu::BackendType::OpenGL || webgpu::g_backendType == wgpu::BackendType::OpenGLES ||
       webgpu::g_backendType == wgpu::BackendType::WebGPU) {
@@ -1255,8 +1277,8 @@ void initialize_pipeline_cache() {
     for (size_t i = 0; i < workerCount; ++i) {
       g_pipelineThreads.emplace_back(pipeline_worker);
     }
-    Log.info("Enabled {} priority pipeline compilation workers ({} background prewarm)",
-             workerCount, MaxBackgroundPipelineWorkers);
+    Log.info("Enabled {} pipeline compilation workers ({} for first use, {} background prewarm)",
+             workerCount, MaxPriorityPipelineWorkers, MaxBackgroundPipelineWorkers);
   }
 
   load_pipeline_cache();
@@ -1279,6 +1301,7 @@ void shutdown_pipeline_cache() {
   g_pipelineThreads.clear();
   g_hasPipelineThread = false;
   g_activeBackgroundPipelineWorkers = 0;
+  g_activePriorityPipelineWorkers = 0;
 
   stop_pipeline_cache_writer();
   pipeline_cache_abort();
