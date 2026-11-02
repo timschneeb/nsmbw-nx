@@ -1302,6 +1302,8 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         if (!g_vi.black) {
             std::call_once(firstVisibleFrame, [] {
                 RT_LOGF(RT_TAG_VI, "first visible guest frame presented; lifting the startup cover\n");
+                // The loading screen is on screen now; let the boot prewarm take the CPU.
+                aurora_set_prewarm_boost(true);
                 settings_overlay::NotifyStrapInputAccepted();
             });
         }

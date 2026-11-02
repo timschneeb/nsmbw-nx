@@ -1062,6 +1062,10 @@ static void pipeline_cache_writer() {
 // Boot prewarm telemetry: how long the cached-recipe rebuild takes and how well the
 // Dawn blob cache served it. Logged once, when the launch queue first drains.
 static std::atomic_bool g_prewarmActive{false};
+// Raised by the runtime once the first visible guest frame (the loading screen) has been
+// presented: before that the prewarm must not starve the guest, after it the loading screen is up
+// and the prewarm can have the console.
+static std::atomic_bool g_prewarmBoost{false};
 static std::chrono::steady_clock::time_point g_prewarmStart{};
 static std::atomic<uint32_t> g_prewarmDone{0};
 static uint32_t g_prewarmCount = 0;
@@ -1131,14 +1135,16 @@ static void pipeline_worker() {
 #if defined(MKW_PLATFORM_SWITCH)
   MkwSetPipelineWorkerPriority(0);
 #endif
-  bool highPriority = false;
+  int priorityLevel = 0;
 
   while (true) {
 #if defined(MKW_PLATFORM_SWITCH)
-    const bool prewarmHighPriority = g_prewarmActive.load(std::memory_order_relaxed);
-    if (prewarmHighPriority != highPriority) {
-      MkwSetPipelineWorkerPriority(prewarmHighPriority ? 1 : 0);
-      highPriority = prewarmHighPriority;
+    const int level = g_prewarmActive.load(std::memory_order_relaxed)
+                          ? (g_prewarmBoost.load(std::memory_order_relaxed) ? 2 : 1)
+                          : 0;
+    if (level != priorityLevel) {
+      MkwSetPipelineWorkerPriority(level);
+      priorityLevel = level;
     }
 #endif
     PendingPipeline pending;
@@ -1281,6 +1287,7 @@ static void load_pipeline_cache() {
     g_prewarmCount = queued;
     g_prewarmStart = std::chrono::steady_clock::now();
     g_prewarmDone.store(0, std::memory_order_relaxed);
+    g_prewarmBoost.store(false, std::memory_order_relaxed);
     g_blobReadNanos.store(0, std::memory_order_relaxed);
     g_blobReadBytes.store(0, std::memory_order_relaxed);
     g_blobReadCalls.store(0, std::memory_order_relaxed);
@@ -1407,6 +1414,10 @@ bool boot_pipelines_pending() noexcept {
          queuedPipelines.load(std::memory_order_relaxed) > 0;
 }
 
+void set_prewarm_boost(bool enabled) noexcept {
+  g_prewarmBoost.store(enabled, std::memory_order_relaxed);
+}
+
 void wait_for_boot_pipelines() {
   std::unique_lock lock{g_pipelineMutex};
   while (queuedPipelines.load(std::memory_order_relaxed) != 0) {
@@ -1480,5 +1491,7 @@ bool aurora_get_skip_unready_pipelines() { return aurora::gfx::skip_unready_pipe
 uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipeline_count(); }
 
 bool aurora_boot_pipelines_pending() { return aurora::gfx::boot_pipelines_pending(); }
+
+void aurora_set_prewarm_boost(bool enabled) { aurora::gfx::set_prewarm_boost(enabled); }
 
 void aurora_wait_for_boot_pipelines() { aurora::gfx::wait_for_boot_pipelines(); }

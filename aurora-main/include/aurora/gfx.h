@@ -106,6 +106,8 @@ bool aurora_boot_pipelines_pending();
 // Blocks until every queued boot pipeline has been built. Call before starting the guest when the
 // first frames must not wait on a build.
 void aurora_wait_for_boot_pipelines();
+// Raises the boot prewarm above the guest once its first visible frame is on screen.
+void aurora_set_prewarm_boost(bool enabled);
 
 // Controls whether display copies bypass the Wii's vertical copy filter.
 void aurora_set_disable_copy_filter(bool disabled);
