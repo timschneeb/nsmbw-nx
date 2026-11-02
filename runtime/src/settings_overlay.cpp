@@ -1431,7 +1431,8 @@ void DrawStartupScreen() {
         const bool gameFonts = GameLayout::FontReady(titleFont.get()) && GameLayout::FontReady(bodyFont.get());
         char shaderLine[96] = {};
         if (g_bootShaderNotice && !g_bootShadersReady.load(std::memory_order_relaxed)) {
-            std::snprintf(shaderLine, sizeof(shaderLine), "Compiling shaders, please hold on: %u remaining",
+            std::snprintf(shaderLine, sizeof(shaderLine),
+                          "Compiling shaders, please hold on: %u remaining (press A to continue)",
                           aurora_get_queued_pipeline_count());
         }
         if (gameFonts) {
@@ -1493,8 +1494,31 @@ void DrawStartupScreen() {
     ImGui::PopStyleColor();
 }
 
+bool StartupSkipPressed() {
+    SDL_Gamepad* pad = PADGetSDLGamepadForIndex(0);
+    if (pad == nullptr) {
+        return false;
+    }
+    // South is the game's A; east is the Switch-labelled A. Accept either.
+    return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH) != 0 ||
+           SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST) != 0;
+}
+
 void UpdateBootShaderState() {
     if (g_bootShadersReady.load(std::memory_order_relaxed)) {
+        return;
+    }
+    // Ignore a button already held when the screen appeared; the first skipped boot must come
+    // from a fresh press.
+    static bool skipHeld = true;
+    const bool skipDown = StartupSkipPressed();
+    const bool skipPressed = skipDown && !skipHeld;
+    skipHeld = skipDown;
+    if (skipPressed) {
+        g_bootShadersReady.store(true, std::memory_order_release);
+        // Stop waiting, but keep the worker below the guest so the game boots normally.
+        aurora_set_prewarm_boost(false);
+        RT_LOGF(RT_TAG_RUNTIME, "prewarm skipped; remaining pipelines compile in the background\n");
         return;
     }
     const auto now = Clock::now();
@@ -2120,9 +2144,6 @@ void Draw() noexcept {
         // guest must not be the trigger, because it cannot present while this screen is up.
         aurora_set_prewarm_boost(true);
     }
-    if (!StartupScreenVisible()) {
-        DrawShaderCompilationStatus();
-    }
     NetplayUi::Draw();
     DrawFpsOverlay();
     DrawTopBar();
@@ -2130,6 +2151,8 @@ void Draw() noexcept {
     controller_mapping_wizard::Draw();
     ApplyInputBlockState();
     DrawStartupScreen();
+    // Drawn last so the count stays visible over the startup cover until the queue drains.
+    DrawShaderCompilationStatus();
 }
 
 bool BootShadersPending() noexcept { return !g_bootShadersReady.load(std::memory_order_acquire); }
