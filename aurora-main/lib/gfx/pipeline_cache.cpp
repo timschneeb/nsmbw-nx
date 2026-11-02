@@ -62,6 +62,10 @@ struct SdlVfsSqliteFile {
   // is what every other file write in this port already uses successfully.
   std::FILE* io = nullptr;
   char path[512] = {};
+  // Last offset the stream was positioned at, or -1. sqlite reads an overflow chain (a large
+  // blob) page by page in ascending order; skipping the fseek lets stdio's read-ahead buffer
+  // serve the following pages instead of issuing one small SD read per page.
+  sqlite3_int64 position = -1;
 };
 
 static std::mutex g_pipelineMutex;
@@ -130,6 +134,7 @@ static int sdl_vfs_close(sqlite3_file* file) {
     std::fclose(vfsFile->io);
     vfsFile->io = nullptr;
   }
+  vfsFile->position = -1;
   return SQLITE_OK;
 }
 
@@ -138,12 +143,14 @@ static int sdl_vfs_read(sqlite3_file* file, void* buffer, int amount, sqlite3_in
   if (vfsFile->io == nullptr || offset < 0 || amount < 0) {
     return SQLITE_IOERR_READ;
   }
-  if (std::fseek(vfsFile->io, static_cast<long>(offset), SEEK_SET) != 0) {
+  if (offset != vfsFile->position &&
+      std::fseek(vfsFile->io, static_cast<long>(offset), SEEK_SET) != 0) {
     return SQLITE_IOERR_SEEK;
   }
 
   auto* dst = static_cast<uint8_t*>(buffer);
   const size_t read = std::fread(dst, 1, static_cast<size_t>(amount), vfsFile->io);
+  vfsFile->position = offset + static_cast<sqlite3_int64>(read);
   if (read == static_cast<size_t>(amount)) {
     return SQLITE_OK;
   }
@@ -158,10 +165,12 @@ static int sdl_vfs_write(sqlite3_file* file, const void* buffer, int amount, sql
   if (vfsFile->io == nullptr || offset < 0 || amount < 0) {
     return SQLITE_IOERR_WRITE;
   }
-  if (std::fseek(vfsFile->io, static_cast<long>(offset), SEEK_SET) != 0) {
+  if (offset != vfsFile->position &&
+      std::fseek(vfsFile->io, static_cast<long>(offset), SEEK_SET) != 0) {
     return SQLITE_IOERR_SEEK;
   }
   const size_t written = std::fwrite(buffer, 1, static_cast<size_t>(amount), vfsFile->io);
+  vfsFile->position = offset + static_cast<sqlite3_int64>(written);
   if (written != static_cast<size_t>(amount)) {
     return SQLITE_IOERR_WRITE;
   }
@@ -182,6 +191,7 @@ static int sdl_vfs_truncate(sqlite3_file* file, sqlite3_int64 size) {
     return SQLITE_IOERR_TRUNCATE;
   }
   std::fseek(vfsFile->io, static_cast<long>(size), SEEK_SET);
+  vfsFile->position = size;
   return SQLITE_OK;
 }
 
@@ -211,6 +221,7 @@ static int sdl_vfs_file_size(sqlite3_file* file, sqlite3_int64* size) {
   if (previous >= 0) {
     std::fseek(vfsFile->io, previous, SEEK_SET);
   }
+  vfsFile->position = previous >= 0 ? static_cast<sqlite3_int64>(previous) : -1;
   *size = static_cast<sqlite3_int64>(end);
   return SQLITE_OK;
 }
@@ -268,6 +279,7 @@ static int sdl_vfs_open(sqlite3_vfs*, sqlite3_filename name, sqlite3_file* file,
   vfsFile->base.pMethods = nullptr;
   vfsFile->io = nullptr;
   vfsFile->path[0] = '\0';
+  vfsFile->position = -1;
 
   if (name == nullptr) {
     return SQLITE_CANTOPEN;
@@ -284,6 +296,9 @@ static int sdl_vfs_open(sqlite3_vfs*, sqlite3_filename name, sqlite3_file* file,
   if (vfsFile->io == nullptr) {
     return SQLITE_CANTOPEN;
   }
+  // The blob cache is read in 4 KiB pages; one 64 KiB read-ahead turns a large blob into a
+  // handful of SD transfers instead of one per page.
+  std::setvbuf(vfsFile->io, nullptr, _IOFBF, 64 * 1024);
 
   const size_t nameLength = std::strlen(name);
   if (nameLength >= sizeof(vfsFile->path)) {
