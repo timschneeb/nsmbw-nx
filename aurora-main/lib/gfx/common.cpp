@@ -1799,34 +1799,6 @@ void gpu_timer_end(wgpu::CommandEncoder& cmd);
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
                         bool finalize, DebugFrameData& debugFrame, const depth_peek::FrameMapping& depthMapping) {
   ZoneScoped;
-  // NSMBW: replay the opaque world front-to-back so early-Z rejects the overdraw. The guest draws
-  // the scene back-to-front; opaque draws (no blending, depth write on) are order-independent, and
-  // the recorded draws are self-contained (pipeline, bind groups, uniforms), so only their order
-  // changes. NSMBW_OPAQUE_REORDER=0 restores the game's order for an A/B.
-  static const bool reorderOpaque = [] {
-    if (const char* value = std::getenv("NSMBW_REVERSE_OPAQUE"); value != nullptr && value[0] == '1') {
-      return true;  // the original diagnostic name
-    }
-    if (const char* value = std::getenv("NSMBW_OPAQUE_REORDER"); value != nullptr) {
-      return value[0] != '0';
-    }
-    return true;
-  }();
-  if (interpolatedFrame < 0 && reorderOpaque) {
-    for (auto& pass : renderPasses) {
-      std::vector<size_t> draws;
-      for (size_t i = 0; i < pass.commands.size(); ++i) {
-        const auto& command = pass.commands[i];
-        if (command.type == CommandType::Draw && command.data.draw.type == ShaderType::GX &&
-            command.data.draw.gx.opaqueWorld) {
-          draws.push_back(i);
-        }
-      }
-      for (size_t a = 0, b = draws.size(); a + 1 < b; ++a, --b) {
-        std::swap(pass.commands[draws[a]], pass.commands[draws[b - 1]]);
-      }
-    }
-  }
   // Palette conversions, MSAA resolves and EFB copies depend on sealed frame state, not on the
   // interpolation weight, so encode them on the native render and let replay slots sample them.
   const bool encodeTextureBakes = interpolatedFrame < 0;

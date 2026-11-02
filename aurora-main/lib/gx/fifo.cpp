@@ -76,8 +76,6 @@ uint32_t end_display_list() {
   return padded;
 }
 
-bool in_display_list() { return detail::sInDisplayList; }
-
 // How much of the producer's frame is spent blocked before it may decode the next batch of GX commands.
 std::atomic<uint64_t> g_statSealedWaitNanos{0};
 std::atomic<uint64_t> g_statSyncWaitNanos{0};
