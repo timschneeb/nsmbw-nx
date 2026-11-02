@@ -1154,7 +1154,10 @@ PipelineRef pipeline_ref(const gx::PipelineConfig& config) {
   return find_pipeline(ShaderType::GX, config, [=] { return create_pipeline(config); });
 }
 
+extern "C" void LogStartupPhase(const char* phase);
+
 void initialize() {
+  LogStartupPhase("gfx init begin");
   g_frameIndex = 0;
   depth_peek::initialize();
   tex_copy_conv::initialize();
@@ -1273,8 +1276,11 @@ void initialize() {
     g_uniformBindGroup = g_device.CreateBindGroup(&bindGroupDescriptor);
   }
 
+  LogStartupPhase("gfx resources ready");
   gx::initialize();
+  LogStartupPhase("gx ready");
   initialize_pipeline_cache();
+  LogStartupPhase("gfx init done");
 }
 
 void shutdown() {

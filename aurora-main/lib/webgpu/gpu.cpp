@@ -1,5 +1,7 @@
 #include "gpu.hpp"
 
+extern "C" void LogStartupPhase(const char* phase);
+
 #include <array>
 #include <algorithm>
 #include <atomic>
@@ -1046,6 +1048,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
     if (!g_device) {
       return false;
     }
+    LogStartupPhase("dawn device ready");
 #if defined(WEBGPU_DAWN) && !defined(__MINGW32__)
     {
       // Dawn picks its own workarounds from the adapter (vendor, driver, extensions); record them.
