@@ -74,6 +74,11 @@ static std::atomic<uint64_t> g_blobReadNanos{0};
 static std::atomic<uint64_t> g_blobReadBytes{0};
 static std::atomic<uint64_t> g_blobReadCalls{0};
 
+#if defined(MKW_PLATFORM_SWITCH)
+// Runtime hook: raise the prewarm worker above the guest while the boot prewarm runs.
+extern "C" void MkwSetPipelineWorkerPriority(int highPriority);
+#endif
+
 static std::mutex g_pipelineMutex;
 static bool g_hasPipelineThread = false;
 static bool g_pipelineFrameActive = false;
@@ -1103,6 +1108,7 @@ static void compile_pending_pipeline(PendingPipeline pending) {
   }
   g_pipelineCv.notify_all();
   --queuedPipelines;
+  g_pipelineCv.notify_all();
   if (g_prewarmActive.load(std::memory_order_relaxed)) {
     const uint32_t done = g_prewarmDone.fetch_add(1, std::memory_order_relaxed) + 1;
     if ((done % 250u) == 0) {
@@ -1122,8 +1128,19 @@ static void pipeline_worker() {
 #ifdef TRACY_ENABLE
   tracy::SetThreadName("Pipeline compilation thread");
 #endif
+#if defined(MKW_PLATFORM_SWITCH)
+  MkwSetPipelineWorkerPriority(0);
+#endif
+  bool highPriority = false;
 
   while (true) {
+#if defined(MKW_PLATFORM_SWITCH)
+    const bool prewarmHighPriority = g_prewarmActive.load(std::memory_order_relaxed);
+    if (prewarmHighPriority != highPriority) {
+      MkwSetPipelineWorkerPriority(prewarmHighPriority ? 1 : 0);
+      highPriority = prewarmHighPriority;
+    }
+#endif
     PendingPipeline pending;
     bool background = false;
     {
@@ -1390,6 +1407,13 @@ bool boot_pipelines_pending() noexcept {
          queuedPipelines.load(std::memory_order_relaxed) > 0;
 }
 
+void wait_for_boot_pipelines() {
+  std::unique_lock lock{g_pipelineMutex};
+  while (queuedPipelines.load(std::memory_order_relaxed) != 0) {
+    g_pipelineCv.wait_for(lock, std::chrono::milliseconds(50));
+  }
+}
+
 uint32_t queued_pipeline_count() noexcept {
 #if defined(__cpp_lib_atomic_ref)
   return queuedPipelines.load(std::memory_order_relaxed);
@@ -1456,3 +1480,5 @@ bool aurora_get_skip_unready_pipelines() { return aurora::gfx::skip_unready_pipe
 uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipeline_count(); }
 
 bool aurora_boot_pipelines_pending() { return aurora::gfx::boot_pipelines_pending(); }
+
+void aurora_wait_for_boot_pipelines() { aurora::gfx::wait_for_boot_pipelines(); }

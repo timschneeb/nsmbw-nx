@@ -136,6 +136,23 @@ extern "C" void MkwConfigureGxWorkerThread() {
 
 // Frame worker (aurora-main/lib/aurora.cpp). It prefers its own core but must be able to move to
 // the other helper core while the GX worker (higher priority) holds that one.
+extern "C" void MkwSetPipelineWorkerPriority(int highPriority) {
+    const Handle handle = threadGetCurHandle();
+    if (highPriority != 0) {
+        static std::atomic<bool> logged{false};
+        const Result rc = svcSetThreadPriority(handle, 0x18);
+        if (R_FAILED(rc)) {
+            svcSetThreadPriority(handle, 0x2C);
+        }
+        if (!logged.exchange(true)) {
+            RT_LOGF(RT_TAG_RUNTIME, "pipeline prewarm priority 0x18 (rc 0x%08x), fallback 0x2C\n",
+                    static_cast<unsigned>(rc));
+        }
+    } else {
+        svcSetThreadPriority(handle, 0x3C);
+    }
+}
+
 extern "C" void MkwConfigureFrameWorkerThread() {
     u64 mask = 0;
     const int guestCore = MkwGuestCore();
@@ -1961,6 +1978,11 @@ int RuntimeMain(int argc, char** argv) {
             throw std::runtime_error(auroraInfo.initializationError != nullptr
                 ? auroraInfo.initializationError : "No supported graphics backend is available");
         }
+#if defined(MKW_PLATFORM_SWITCH)
+        // The prewarm owns the pipeline device and the helper cores; the guest starts only after,
+        // so its first frames never wait on a pipeline build.
+        aurora_wait_for_boot_pipelines();
+#endif
         if (requestedBackend != BACKEND_AUTO && auroraInfo.backend != requestedBackend) {
             RT_LOG(RT_TAG_RUNTIME) << "graphics_api=\"" << backend
                       << "\" is not available on this system; aurora fell back to \""
