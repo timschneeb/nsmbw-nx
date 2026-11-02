@@ -296,10 +296,6 @@ static int sdl_vfs_open(sqlite3_vfs*, sqlite3_filename name, sqlite3_file* file,
   if (vfsFile->io == nullptr) {
     return SQLITE_CANTOPEN;
   }
-  // The blob cache is read in 4 KiB pages; one 64 KiB read-ahead turns a large blob into a
-  // handful of SD transfers instead of one per page.
-  std::setvbuf(vfsFile->io, nullptr, _IOFBF, 64 * 1024);
-
   const size_t nameLength = std::strlen(name);
   if (nameLength >= sizeof(vfsFile->path)) {
     std::fclose(vfsFile->io);
@@ -1048,6 +1044,14 @@ static void pipeline_cache_writer() {
 // Dawn blob cache served it. Logged once, when the launch queue first drains.
 static std::atomic_bool g_prewarmActive{false};
 static std::chrono::steady_clock::time_point g_prewarmStart{};
+#if defined(MKW_PLATFORM_SWITCH)
+// The blob cache lives on the SD card and reads far slower than the CPU can consume it. A boot
+// prewarm of the whole cache can run for minutes, so bound it; the recipes it did not reach build
+// on first use through the priority queue.
+constexpr auto kBootPrewarmBudget = std::chrono::seconds(15);
+static std::chrono::steady_clock::time_point g_prewarmDeadline{};
+#endif
+static std::atomic<uint32_t> g_prewarmDone{0};
 static uint32_t g_prewarmCount = 0;
 
 static void note_pipeline_queue_drained() {
@@ -1082,6 +1086,16 @@ static void compile_pending_pipeline(PendingPipeline pending) {
   }
   g_pipelineCv.notify_all();
   --queuedPipelines;
+  if (g_prewarmActive.load(std::memory_order_relaxed)) {
+    const uint32_t done = g_prewarmDone.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((done % 250u) == 0) {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - g_prewarmStart)
+                               .count();
+      Log.info("Pipeline prewarm: {} done, {} queued, {} ms", done,
+               static_cast<uint32_t>(queuedPipelines.load()), elapsed);
+    }
+  }
   if (queuedPipelines.load() == 0) {
     note_pipeline_queue_drained();
   }
@@ -1095,6 +1109,7 @@ static void pipeline_worker() {
   while (true) {
     PendingPipeline pending;
     bool background = false;
+    size_t budgetDropped = 0;
     {
       std::unique_lock lock{g_pipelineMutex};
       g_pipelineCv.wait(lock, [] {
@@ -1107,6 +1122,20 @@ static void pipeline_worker() {
       if (g_pipelineThreadEnd) {
         return;
       }
+#if defined(MKW_PLATFORM_SWITCH)
+      if (g_prewarmActive.load(std::memory_order_relaxed) &&
+          std::chrono::steady_clock::now() >= g_prewarmDeadline) {
+        budgetDropped = g_backgroundPipelines.size();
+        for (const PendingPipeline& pendingJob : g_backgroundPipelines) {
+          g_pendingPipelines.erase(pendingJob.hash);
+        }
+        g_backgroundPipelines.clear();
+        if (budgetDropped != 0) {
+          queuedPipelines -= budgetDropped;
+        }
+        g_prewarmActive.store(false, std::memory_order_relaxed);
+      }
+#endif
       background = g_priorityPipelines.empty() ||
                    g_activePriorityPipelineWorkers >= MaxPriorityPipelineWorkers;
       auto& source = background ? g_backgroundPipelines : g_priorityPipelines;
@@ -1128,6 +1157,13 @@ static void pipeline_worker() {
       }
     }
     g_pipelineCv.notify_all();
+#if defined(MKW_PLATFORM_SWITCH)
+    if (budgetDropped != 0) {
+      Log.info("Pipeline prewarm stopped at the {} s budget ({} built, {} left for first use)",
+               static_cast<int>(kBootPrewarmBudget.count()), g_prewarmDone.load(), budgetDropped);
+      webgpu::serialize_pipeline_caches();
+    }
+#endif
   }
 }
 
@@ -1235,6 +1271,10 @@ static void load_pipeline_cache() {
   if (queued > 0) {
     g_prewarmCount = queued;
     g_prewarmStart = std::chrono::steady_clock::now();
+#if defined(MKW_PLATFORM_SWITCH)
+    g_prewarmDeadline = g_prewarmStart + kBootPrewarmBudget;
+#endif
+    g_prewarmDone.store(0, std::memory_order_relaxed);
     g_prewarmActive.store(true, std::memory_order_release);
   }
 }
