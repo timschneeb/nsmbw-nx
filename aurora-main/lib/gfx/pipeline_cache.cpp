@@ -1077,6 +1077,11 @@ static void note_pipeline_queue_drained() {
            "loaded)",
            g_prewarmCount, elapsed.count() / 1000.0, stats.hits, stats.lookups, stats.stores,
            static_cast<double>(stats.hitBytes) / (1024.0 * 1024.0));
+  uint64_t shaderNanos = 0, shaderCount = 0, pipelineNanos = 0, pipelineBuildCount = 0;
+  gx::pipeline_build_stats(shaderNanos, shaderCount, pipelineNanos, pipelineBuildCount);
+  Log.info("Pipeline prewarm builds: shader modules {:.1f} s ({}), pipeline objects {:.1f} s ({})",
+           static_cast<double>(shaderNanos) / 1e9, shaderCount,
+           static_cast<double>(pipelineNanos) / 1e9, pipelineBuildCount);
   Log.info("Pipeline prewarm VFS reads: {:.1f} MiB in {:.1f} s ({} calls, {:.2f} MB/s)",
            static_cast<double>(g_blobReadBytes.load()) / (1024.0 * 1024.0), readSeconds,
            g_blobReadCalls.load(),
@@ -1179,9 +1184,9 @@ static size_t pipeline_worker_count() {
   if (logicalProcessors == 0) {
     return 1;
   }
-  // The prewarm reads the blob cache from the SD card, so extra workers only contend for the same
-  // I/O; on Switch this leaves one worker, and MaxPriorityPipelineWorkers keeps first-use builds
-  // on it as well.
+  // One worker on Switch. Two serialized against each other on the device: 2106 pipelines took
+  // 217.9 s with two workers at high priority against 95.1 s with one, so more parallelism is a
+  // loss here. MaxPriorityPipelineWorkers keeps first-use builds on that worker as well.
   const size_t availableWorkers =
       logicalProcessors > ReservedLogicalProcessors ? logicalProcessors - ReservedLogicalProcessors : 1;
   return std::clamp(availableWorkers, size_t{1}, MaxPipelineWorkers);
@@ -1262,6 +1267,7 @@ static void load_pipeline_cache() {
     g_blobReadNanos.store(0, std::memory_order_relaxed);
     g_blobReadBytes.store(0, std::memory_order_relaxed);
     g_blobReadCalls.store(0, std::memory_order_relaxed);
+    gx::reset_pipeline_build_stats();
     g_prewarmActive.store(true, std::memory_order_release);
   }
 }

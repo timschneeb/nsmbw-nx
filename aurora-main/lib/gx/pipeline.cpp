@@ -5,6 +5,8 @@
 #include "shader_info.hpp"
 #include "tracy/Tracy.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -28,6 +30,13 @@ struct CachedShaderModule {
 std::mutex sShaderModuleCacheMutex;
 absl::flat_hash_map<ShaderConfig, std::shared_ptr<CachedShaderModule>, ShaderConfigHash> sShaderModuleCache;
 
+// Prewarm attribution: Tint (CreateShaderModule on a cache miss) versus the backend pipeline
+// object. Logged at the end of the boot prewarm.
+std::atomic<uint64_t> sShaderBuildNanos{0};
+std::atomic<uint64_t> sShaderBuildCount{0};
+std::atomic<uint64_t> sPipelineBuildNanos{0};
+std::atomic<uint64_t> sPipelineBuildCount{0};
+
 wgpu::ShaderModule cached_shader_module(const ShaderConfig& config) {
   std::shared_ptr<CachedShaderModule> entry;
   {
@@ -43,7 +52,13 @@ wgpu::ShaderModule cached_shader_module(const ShaderConfig& config) {
     }
   }
 
+  const auto shaderStart = std::chrono::steady_clock::now();
   auto module = build_shader(config);
+  sShaderBuildNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                         std::chrono::steady_clock::now() - shaderStart)
+                                                         .count()),
+                              std::memory_order_relaxed);
+  sShaderBuildCount.fetch_add(1, std::memory_order_relaxed);
   {
     std::lock_guard lock{sShaderModuleCacheMutex};
     entry->module = module;
@@ -57,7 +72,29 @@ wgpu::ShaderModule cached_shader_module(const ShaderConfig& config) {
 wgpu::RenderPipeline create_pipeline(const PipelineConfig& config) {
   ZoneScoped;
   const auto shader = cached_shader_module(config.shaderConfig);
-  return build_pipeline(config, {}, shader, "GX Pipeline");
+  const auto pipelineStart = std::chrono::steady_clock::now();
+  auto pipeline = build_pipeline(config, {}, shader, "GX Pipeline");
+  sPipelineBuildNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                           std::chrono::steady_clock::now() - pipelineStart)
+                                                           .count()),
+                                std::memory_order_relaxed);
+  sPipelineBuildCount.fetch_add(1, std::memory_order_relaxed);
+  return pipeline;
+}
+
+void pipeline_build_stats(uint64_t& shaderNanos, uint64_t& shaderCount, uint64_t& pipelineNanos,
+                          uint64_t& pipelineCount) {
+  shaderNanos = sShaderBuildNanos.load(std::memory_order_relaxed);
+  shaderCount = sShaderBuildCount.load(std::memory_order_relaxed);
+  pipelineNanos = sPipelineBuildNanos.load(std::memory_order_relaxed);
+  pipelineCount = sPipelineBuildCount.load(std::memory_order_relaxed);
+}
+
+void reset_pipeline_build_stats() {
+  sShaderBuildNanos.store(0, std::memory_order_relaxed);
+  sShaderBuildCount.store(0, std::memory_order_relaxed);
+  sPipelineBuildNanos.store(0, std::memory_order_relaxed);
+  sPipelineBuildCount.store(0, std::memory_order_relaxed);
 }
 
 void clear_shader_module_cache() {

@@ -65,6 +65,10 @@ inline bool valid_pipeline_config(const PipelineConfig& config) noexcept {
 
 wgpu::RenderPipeline create_pipeline([[maybe_unused]] const PipelineConfig& config);
 void clear_shader_module_cache();
+// Prewarm attribution: shader module builds (Tint) and backend pipeline objects.
+void pipeline_build_stats(uint64_t& shaderNanos, uint64_t& shaderCount, uint64_t& pipelineNanos,
+                          uint64_t& pipelineCount);
+void reset_pipeline_build_stats();
 
 // Per-pass encoder state carried across the draws of one render pass, so the replay loop can elide Dawn calls that would re-bind what is already bound.
 struct DrawEncodeState {
