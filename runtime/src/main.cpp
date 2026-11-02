@@ -23,6 +23,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <sys/stat.h>
+
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
@@ -154,6 +156,33 @@ extern "C" void MkwConfigureFrameWorkerThread() {
         svcSetThreadCoreMask(threadGetCurHandle(), ideal, mask);
     }
 }
+
+#if defined(MKW_PGO_GENERATE)
+extern "C" void __gcov_dump(void);
+extern "C" void __gcov_reset(void);
+
+// gcov resolves GCOV_PREFIX in its per-object initialisers, which run before main, so the
+// redirect has to be installed from an early constructor. The console never returns from main,
+// so the counters are dumped on a timer instead of at exit.
+__attribute__((constructor(101))) void MkwPgoRedirectGcov() {
+    // Strip every leading component: libgcov creates no directories, so a flat tree under one
+    // directory we can create is the difference between a profile and 2,000 skipped dumps. The
+    // object base names are unique, so nothing collides.
+    ::setenv("GCOV_PREFIX", "sdmc:/gcov", 1);
+    ::setenv("GCOV_PREFIX_STRIP", "100", 1);
+}
+
+void MkwStartPgoDumpTimer() {
+    ::mkdir("sdmc:/gcov", 0777);
+    std::thread([] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::minutes(1));
+            __gcov_dump();
+            __gcov_reset();
+        }
+    }).detach();
+}
+#endif
 #endif
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -1695,6 +1724,9 @@ int RuntimeMain(int argc, char** argv) {
         LogHorizonPerformanceState();
 #endif
         PerfStats::Pin(PerfStats::RoleGuest);
+#if defined(MKW_PGO_GENERATE) && defined(__SWITCH__)
+        MkwStartPgoDumpTimer();
+#endif
         NsmbwShadowSamplerInit(GetRunLogDirectory());
         // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.
         if (!GameFolder::EnsureConfigured()) {

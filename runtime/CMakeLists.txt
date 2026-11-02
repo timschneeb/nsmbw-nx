@@ -63,6 +63,9 @@ endif()
 option(MKW_BUILD_PRODUCTS "Build translated WiiCompiled product targets" ON)
 option(MKW_BUILD_PSQ_TESTS "Build focused PSQ ISA tests" OFF)
 option(MKW_ENABLE_SHADOW_SAMPLER "Instrument translated functions for the Switch shadow sampler" OFF)
+# Two-pass profile-guided optimisation: "generate" records gcov counters on the console,
+# "use" rebuilds against them. Empty is a normal build.
+set(MKW_PGO "" CACHE STRING "Switch PGO pass: empty, generate or use")
 
 # Preprocessor definitions that belong to this project's own code (the runtime,
 # the translated shards and the product glue) and to nothing else. They are

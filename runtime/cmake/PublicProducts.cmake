@@ -31,8 +31,36 @@ if(MKW_PLATFORM_MACOS)
     find_library(MKW_COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 endif()
 
+# Two-pass PGO for the Switch build. Only the runtime and the translated shards are instrumented;
+# aurora and the vendored libraries are not on the guest's instruction stream, and instrumenting
+# Dawn would triple the recording build for nothing.
+set(MKW_PGO_COMPILE_OPTIONS "")
+set(MKW_PGO_LINK_OPTIONS "")
+if(MKW_PGO STREQUAL "generate")
+    # -ftest-coverage: devkitA64's GCC 16 writes no notes file for -fprofile-generate alone, and
+    # the use pass needs it. Single, non-atomic counters because the A57 has no LSE and an atomic
+    # bump is an exclusive-monitor retry loop. -fno-profile-values: libgcov's value profiler reads
+    # TLS through TPIDR_EL0, which Horizon resets, so it crashes during static init.
+    set(MKW_PGO_COMPILE_OPTIONS -fprofile-generate -ftest-coverage -fprofile-update=single -fno-profile-values)
+    set(MKW_PGO_LINK_OPTIONS -fprofile-generate -fprofile-update=single -fno-profile-values)
+elseif(MKW_PGO STREQUAL "use")
+    # -fprofile-use turns on O3-class loop transforms; code growth is a loss on this
+    # i-cache-bound corpus, so keep them off and let the profile drive layout and branches.
+    # No -freorder-blocks-and-partition: devkitA64's GCC emits jump-table entries that subtract
+    # labels across hot and .text.unlikely sections, which the assembler rejects.
+    set(MKW_PGO_COMPILE_OPTIONS
+        -fprofile-use -fprofile-correction -Wno-missing-profile -fno-profile-values
+        -Wno-error=coverage-mismatch -fno-reorder-functions
+        -fno-unroll-loops -fno-peel-loops -fno-unswitch-loops -fno-split-loops
+        -fno-tree-loop-distribution -fno-loop-interchange -fno-loop-unroll-and-jam
+        -fno-predictive-commoning -fno-version-loops-for-strides -fno-ipa-cp-clone
+        -fno-tracer -fvect-cost-model=very-cheap)
+elseif(NOT MKW_PGO STREQUAL "")
+    message(FATAL_ERROR "MKW_PGO must be empty, generate or use")
+endif()
+
 function(mkw_apply_common_compile_options target)
-    target_compile_options(${target} PRIVATE -O3 -ffast-math -w -pipe)
+    target_compile_options(${target} PRIVATE -O3 -ffast-math -w -pipe ${MKW_PGO_COMPILE_OPTIONS})
 endfunction()
 
 function(mkw_apply_translated_compile_options target)
@@ -45,6 +73,7 @@ function(mkw_apply_translated_compile_options target)
         # refuses to inline or specialise calls to it. Nothing is interposed in the NRO, and a
         # shard is a contiguous guest address range, so the hot call chains sit inside one TU.
         $<$<CXX_COMPILER_ID:GNU>:-fno-semantic-interposition>
+        ${MKW_PGO_COMPILE_OPTIONS}
         -w -pipe)
 endfunction()
 
@@ -212,6 +241,12 @@ function(mkw_configure_product target)
         SDL_MAIN_HANDLED _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION TARGET_PC)
     target_compile_features(${target} PRIVATE cxx_std_20)
     mkw_apply_common_compile_options(${target})
+    if(MKW_PGO_LINK_OPTIONS)
+        target_link_options(${target} PRIVATE ${MKW_PGO_LINK_OPTIONS})
+    endif()
+    if(MKW_PGO STREQUAL "generate")
+        target_compile_definitions(mkw_runtime_common PRIVATE MKW_PGO_GENERATE=1)
+    endif()
     # The dispatch-table and registration shards compile inside the product target itself and
     # include the same fat translated headers; bound them by the same pool.
     mkw_bound_translated_compiles(${target})
