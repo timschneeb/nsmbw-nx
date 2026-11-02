@@ -2098,7 +2098,11 @@ void ReleaseControllers() noexcept {
     if (queued) SDL_Delay(120);
 }
 
+extern "C" void LogStartupPhase(const char* phase);
+
 void Draw() noexcept {
+    static std::once_flag firstOverlayFrame;
+    std::call_once(firstOverlayFrame, [] { LogStartupPhase("first overlay frame"); });
     // Wait for the frame worker's DONE phase: it has replayed the previous frame's ImGui draw lists
     // and started the next ImGui frame, so all overlay callers can now safely issue ImGui commands.
     aurora_wait_for_frame_worker();
@@ -2111,6 +2115,11 @@ void Draw() noexcept {
     PersistDisplayModeIfChanged();
     UpdateCursorAutoHide();
     UpdateBootShaderState();
+    if (BootShadersPending()) {
+        // The startup screen is on screen now. Start the prewarm and let it have the console; the
+        // guest must not be the trigger, because it cannot present while this screen is up.
+        aurora_set_prewarm_boost(true);
+    }
     if (!StartupScreenVisible()) {
         DrawShaderCompilationStatus();
     }

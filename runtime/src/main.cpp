@@ -1699,7 +1699,15 @@ void LogHorizonPerformanceState() {
 #endif
 
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
+extern "C" void LogStartupPhase(const char* phase) {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    RT_LOGF(RT_TAG_RUNTIME, "[startup] %s at %lld ms\n", phase, static_cast<long long>(ms));
+}
+
 int RuntimeMain(int argc, char** argv) {
+    LogStartupPhase("runtime main");
     // Must run before the transcript duplicates stdout/stderr: it decides what
     // those descriptors are mirrored to now that the products are GUI-subsystem.
     AttachParentConsoleForDiagnostics();
@@ -1754,6 +1762,7 @@ int RuntimeMain(int argc, char** argv) {
             ShutdownProcessTranscript();
             return 0;
         }
+        LogStartupPhase("game folder ready");
 #if defined(__ANDROID__)
         // Determinism testing on a phone: debug.nsmbw.det=1 turns the lockstep timing on,
         // debug.nsmbw.dethash / detdump set NSMBW_DET_HASH / NSMBW_DET_DUMP (det_hash.h) and
@@ -1976,7 +1985,9 @@ int RuntimeMain(int argc, char** argv) {
         nvInitialize();
 #endif
 
+        LogStartupPhase("aurora init begin");
         const AuroraInfo auroraInfo = aurora_initialize(0, nullptr, &auroraConfig);
+        LogStartupPhase("aurora init done");
         if (auroraInfo.initializationStatus != AURORA_INITIALIZATION_SUCCESS) {
             throw std::runtime_error(auroraInfo.initializationError != nullptr
                 ? auroraInfo.initializationError : "No supported graphics backend is available");
