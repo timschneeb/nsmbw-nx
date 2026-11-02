@@ -1510,7 +1510,7 @@ bool begin_frame_impl(bool pumpEvents, ImGuiFramePolicy imguiPolicy, bool* imgui
       g_surfaceReconfigurePending.load(std::memory_order_acquire);
   const bool surfaceMutationRequired =
       surfaceReconfigurePending || webgpu::vsync_change_pending() || !window::is_presentable() || !g_surface ||
-      window::native_resize_pending() ||
+      !webgpu::swapchain_configured() || window::native_resize_pending() ||
       !window::native_window_size_matches(
           webgpu::g_graphicsConfig.surfaceConfiguration.width,
           webgpu::g_graphicsConfig.surfaceConfiguration.height);

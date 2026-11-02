@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_iostream.h>
 #include <absl/container/flat_hash_map.h>
 
@@ -724,6 +725,27 @@ static void seed_pipeline_cache() {
   }
 
   const auto seedPath = pipeline_cache_seed_path();
+  SDL_PathInfo seedInfo{};
+  if (!SDL_GetPathInfo(seedPath.c_str(), &seedInfo)) {
+    // Without a stable identity the merge is the only correct choice.
+    Log.warn("Failed to stat bundled pipeline cache '{}': {}", seedPath, SDL_GetError());
+  } else {
+    const auto stamp = fmt::format("{}:{}:{}", static_cast<long long>(seedInfo.size),
+                                   static_cast<long long>(seedInfo.modify_time), PipelineCacheSchema);
+    std::string appliedStamp;
+    const auto stampRet =
+        sqlite::exec(g_pipelineCacheDb, "SELECT value FROM aurora_seed LIMIT 1",
+                     [&appliedStamp](int, char** values, char**) {
+                       if (values != nullptr && values[0] != nullptr) {
+                         appliedStamp = values[0];
+                       }
+                     });
+    if (stampRet == SQLITE_OK && appliedStamp == stamp) {
+      Log.info("Pipeline cache seed '{}' unchanged since last merge", seedPath);
+      return;
+    }
+  }
+
   sqlite3* seedDb = open_pipeline_cache_seed_db(seedPath);
   if (seedDb == nullptr) {
     return;
@@ -801,6 +823,21 @@ static void seed_pipeline_cache() {
     }
 
     if (!writeFailed && !readFailed) {
+      if (SDL_GetPathInfo(seedPath.c_str(), &seedInfo)) {
+        (void)sqlite::exec(g_pipelineCacheDb, "DELETE FROM aurora_seed;");
+        sqlite3_stmt* stampStmt = nullptr;
+        const auto stampRet = sqlite3_prepare_v3(g_pipelineCacheDb, "INSERT INTO aurora_seed(value) VALUES (?)",
+                                                 -1, 0, &stampStmt, nullptr);
+        if (stampRet == SQLITE_OK) {
+          const auto stamp = fmt::format("{}:{}:{}", static_cast<long long>(seedInfo.size),
+                                         static_cast<long long>(seedInfo.modify_time), PipelineCacheSchema);
+          sqlite3_bind_text(stampStmt, 1, stamp.c_str(), -1, SQLITE_TRANSIENT);
+          if (sqlite3_step(stampStmt) != SQLITE_DONE) {
+            Log.warn("Failed to record pipeline cache seed identity: {}", sqlite3_errmsg(g_pipelineCacheDb));
+          }
+          sqlite3_finalize(stampStmt);
+        }
+      }
       tx.commit();
     }
   }
@@ -887,12 +924,23 @@ CREATE TABLE pipeline_cache (
 );
 CREATE INDEX pipeline_cache_load_order_idx
   ON pipeline_cache(type, config_version, first_frame_used);
+DROP TABLE IF EXISTS aurora_seed;
 DELETE FROM aurora_schema;
 INSERT INTO aurora_schema VALUES ({});)",
           PipelineCacheSchema);
       ret = sqlite::exec(g_pipelineCacheDb, schemaSql.c_str());
       if (ret != SQLITE_OK) {
         Log.error("Failed to initialize pipeline cache schema: {}", sqlite3_errmsg(g_pipelineCacheDb));
+        schemaFailed = true;
+      }
+    }
+
+    if (!schemaFailed) {
+      // Identity of the bundled cache the rows in pipeline_cache came from. A matching stamp
+      // skips the merge, which otherwise rewrites every row on each launch.
+      ret = sqlite::exec(g_pipelineCacheDb, "CREATE TABLE IF NOT EXISTS aurora_seed(value TEXT);");
+      if (ret != SQLITE_OK) {
+        Log.error("Failed to create pipeline cache seed table: {}", sqlite3_errmsg(g_pipelineCacheDb));
         schemaFailed = true;
       }
     }

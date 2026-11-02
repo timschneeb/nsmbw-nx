@@ -1,6 +1,9 @@
 #include "gpu.hpp"
 
 extern "C" void LogStartupPhase(const char* phase);
+#if defined(__SWITCH__)
+extern "C" void NsmbwBootSplashHide();
+#endif
 
 #include <array>
 #include <algorithm>
@@ -91,6 +94,9 @@ static std::array<char, 256> g_deviceLostMessage{};
 // Errors raised before initialize() completes must not be fatal: the backend fallback loop retries
 // the next backend, and a broken ICD can raise uncaptured errors mid-probe.
 static std::atomic_bool g_initialized{false};
+// Switch boots with the libnx console owning the NWindow; the swapchain is configured on the
+// first present, when the console can be released.
+static std::atomic_bool g_swapchainConfigured{false};
 // NSMBW: GPU timestamp queries, for per-render-pass time on hardware where the CPU side is not the
 // limit. Requested only when NSMBW_GPU_TIMESTAMPS is set and the adapter supports them.
 static std::atomic_bool g_gpuTimestamps{false};
@@ -1118,7 +1124,12 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
   create_copy_pipeline();
   {
     window::SurfaceLock surfaceLock;
+#if defined(__SWITCH__)
+    // Create the EFB targets now, but leave the NWindow to the boot splash until a frame is ready.
+    resize_swapchain(size.fb_width, size.fb_height, size.native_fb_width, size.native_fb_height, true, false);
+#else
     resize_swapchain(size.fb_width, size.fb_height, size.native_fb_width, size.native_fb_height, true);
+#endif
   }
   g_initialized.store(true, std::memory_order_release);
   return true;
@@ -1178,6 +1189,7 @@ void serialize_pipeline_caches() noexcept {
 void shutdown() {
   serialize_pipeline_caches();
   g_initialized.store(false, std::memory_order_release);
+  g_swapchainConfigured.store(false, std::memory_order_release);
   g_CopyBindGroupLayout = {};
   g_CopyPipeline = {};
   g_CopyBindGroup = {};
@@ -1194,6 +1206,7 @@ void shutdown() {
 }
 
 void release_surface() noexcept {
+  g_swapchainConfigured.store(false, std::memory_order_release);
   const bool hadSurface = static_cast<bool>(g_surface);
   if (g_surface) {
     g_surface.Unconfigure();
@@ -1266,7 +1279,12 @@ bool take_vsync_change() noexcept {
   return true;
 }
 
-void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height, bool force) {
+bool swapchain_configured() noexcept {
+  return g_swapchainConfigured.load(std::memory_order_acquire);
+}
+
+void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height, bool force,
+                      bool configure) {
   if (!g_surface || !g_device || width == 0 || height == 0 || native_height == 0 || native_width == 0) {
     return;
   }
@@ -1297,7 +1315,8 @@ void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, ui
   const bool sizeChanged = g_graphicsConfig.surfaceConfiguration.width != native_width ||
                            g_graphicsConfig.surfaceConfiguration.height != native_height ||
                            g_frameBuffer.size.width != render_width || g_frameBuffer.size.height != render_height;
-  if (!force && !sizeChanged) {
+  const bool needsConfigure = configure && !swapchain_configured();
+  if (!force && !sizeChanged && !needsConfigure) {
     return;
   }
   if (sizeChanged) {
@@ -1309,9 +1328,16 @@ void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, ui
   }
   g_graphicsConfig.surfaceConfiguration.width = native_width;
   g_graphicsConfig.surfaceConfiguration.height = native_height;
-  auto surfaceConfiguration = g_graphicsConfig.surfaceConfiguration;
-  surfaceConfiguration.device = g_device;
-  g_surface.Configure(&surfaceConfiguration);
+  if (needsConfigure) {
+    auto surfaceConfiguration = g_graphicsConfig.surfaceConfiguration;
+    surfaceConfiguration.device = g_device;
+#if defined(__SWITCH__)
+    // Last moment before Mesa takes the NWindow over from the console framebuffer.
+    NsmbwBootSplashHide();
+#endif
+    g_surface.Configure(&surfaceConfiguration);
+    g_swapchainConfigured.store(true, std::memory_order_release);
+  }
   if (!sizeChanged) {
     // Forced reconfigure at an unchanged size (present-mode change or recreated surface). The
     // offscreen targets are not swapchain images, so reallocating them would only stall the frame.

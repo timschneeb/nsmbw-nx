@@ -1699,6 +1699,10 @@ void LogHorizonPerformanceState() {
 #endif
 
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
+#if defined(MKW_PLATFORM_SWITCH)
+extern "C" void NsmbwBootSplashShow();
+#endif
+
 extern "C" void LogStartupPhase(const char* phase) {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now().time_since_epoch())
@@ -1717,6 +1721,10 @@ int RuntimeMain(int argc, char** argv) {
     WindowsTimerResolutionGuard timerResolutionGuard;
 #elif !defined(MKW_PLATFORM_SWITCH)
     InstallPosixMemoryFaultHandler();
+#endif
+#if defined(MKW_PLATFORM_SWITCH)
+    // Draw before the transcript claims stdout, then leave the frame up until the first present.
+    NsmbwBootSplashShow();
 #endif
     InitializeProcessTranscript(argc, argv);
     std::signal(SIGABRT, AbortSignalHandler);

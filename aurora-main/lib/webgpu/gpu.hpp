@@ -94,7 +94,8 @@ bool gpu_timestamps_enabled() noexcept;
 bool take_vsync_change() noexcept;
 bool vsync_change_pending() noexcept;
 void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
-                      bool force = false);
+                      bool force = false, bool configure = true);
+bool swapchain_configured() noexcept;
 TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
 const TextureWithSampler& present_source() noexcept;
 PresentSource current_present_source() noexcept;
