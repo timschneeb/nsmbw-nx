@@ -314,8 +314,16 @@ void UpdateBuffer(CpuContext* ctx) {
     }
     static const bool worker = [] {
         const char* value = std::getenv("NSMBW_REVERB_WORKER");
-        return value != nullptr &&
-               (std::strcmp(value, "on") == 0 || std::strcmp(value, "1") == 0);
+        if (value != nullptr) {
+            return std::strcmp(value, "on") == 0 || std::strcmp(value, "1") == 0;
+        }
+#if defined(MKW_PLATFORM_SWITCH)
+        // The reverb is part of the guest's audio callback; on the console it is a few ms of the
+        // already guest-bound water and lava frames. The mix worker has room on core 2.
+        return !DetClock::Enabled();
+#else
+        return false;
+#endif
     }();
     if (worker && AxDspHle::RunReverbJob(self, buffers)) {
         return;
