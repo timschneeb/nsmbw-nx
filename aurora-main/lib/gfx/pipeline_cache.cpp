@@ -68,6 +68,12 @@ struct SdlVfsSqliteFile {
   sqlite3_int64 position = -1;
 };
 
+// How much of the prewarm is spent in the VFS read, so the log says whether the SD blob cache or
+// the pipeline front end is the limit.
+static std::atomic<uint64_t> g_blobReadNanos{0};
+static std::atomic<uint64_t> g_blobReadBytes{0};
+static std::atomic<uint64_t> g_blobReadCalls{0};
+
 static std::mutex g_pipelineMutex;
 static bool g_hasPipelineThread = false;
 static bool g_pipelineFrameActive = false;
@@ -148,8 +154,16 @@ static int sdl_vfs_read(sqlite3_file* file, void* buffer, int amount, sqlite3_in
     return SQLITE_IOERR_SEEK;
   }
 
+  const auto readStart = std::chrono::steady_clock::now();
   auto* dst = static_cast<uint8_t*>(buffer);
   const size_t read = std::fread(dst, 1, static_cast<size_t>(amount), vfsFile->io);
+  g_blobReadNanos.fetch_add(
+      static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - readStart)
+                                .count()),
+      std::memory_order_relaxed);
+  g_blobReadBytes.fetch_add(read, std::memory_order_relaxed);
+  g_blobReadCalls.fetch_add(1, std::memory_order_relaxed);
   vfsFile->position = offset + static_cast<sqlite3_int64>(read);
   if (read == static_cast<size_t>(amount)) {
     return SQLITE_OK;
@@ -1044,13 +1058,6 @@ static void pipeline_cache_writer() {
 // Dawn blob cache served it. Logged once, when the launch queue first drains.
 static std::atomic_bool g_prewarmActive{false};
 static std::chrono::steady_clock::time_point g_prewarmStart{};
-#if defined(MKW_PLATFORM_SWITCH)
-// The blob cache lives on the SD card and reads far slower than the CPU can consume it. A boot
-// prewarm of the whole cache can run for minutes, so bound it; the recipes it did not reach build
-// on first use through the priority queue.
-constexpr auto kBootPrewarmBudget = std::chrono::seconds(15);
-static std::chrono::steady_clock::time_point g_prewarmDeadline{};
-#endif
 static std::atomic<uint32_t> g_prewarmDone{0};
 static uint32_t g_prewarmCount = 0;
 
@@ -1065,10 +1072,15 @@ static void note_pipeline_queue_drained() {
   const auto elapsed =
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_prewarmStart);
   const auto stats = webgpu::blob_cache_stats();
+  const double readSeconds = static_cast<double>(g_blobReadNanos.load()) / 1e9;
   Log.info("Pipeline prewarm finished: {} pipelines in {:.1f} s (Dawn blob cache: {}/{} hits, {} stores, {:.1f} MiB "
            "loaded)",
            g_prewarmCount, elapsed.count() / 1000.0, stats.hits, stats.lookups, stats.stores,
            static_cast<double>(stats.hitBytes) / (1024.0 * 1024.0));
+  Log.info("Pipeline prewarm VFS reads: {:.1f} MiB in {:.1f} s ({} calls, {:.2f} MB/s)",
+           static_cast<double>(g_blobReadBytes.load()) / (1024.0 * 1024.0), readSeconds,
+           g_blobReadCalls.load(),
+           readSeconds > 0.0 ? static_cast<double>(g_blobReadBytes.load()) / 1e6 / readSeconds : 0.0);
 }
 
 static void compile_pending_pipeline(PendingPipeline pending) {
@@ -1109,7 +1121,6 @@ static void pipeline_worker() {
   while (true) {
     PendingPipeline pending;
     bool background = false;
-    size_t budgetDropped = 0;
     {
       std::unique_lock lock{g_pipelineMutex};
       g_pipelineCv.wait(lock, [] {
@@ -1122,20 +1133,6 @@ static void pipeline_worker() {
       if (g_pipelineThreadEnd) {
         return;
       }
-#if defined(MKW_PLATFORM_SWITCH)
-      if (g_prewarmActive.load(std::memory_order_relaxed) &&
-          std::chrono::steady_clock::now() >= g_prewarmDeadline) {
-        budgetDropped = g_backgroundPipelines.size();
-        for (const PendingPipeline& pendingJob : g_backgroundPipelines) {
-          g_pendingPipelines.erase(pendingJob.hash);
-        }
-        g_backgroundPipelines.clear();
-        if (budgetDropped != 0) {
-          queuedPipelines -= budgetDropped;
-        }
-        g_prewarmActive.store(false, std::memory_order_relaxed);
-      }
-#endif
       background = g_priorityPipelines.empty() ||
                    g_activePriorityPipelineWorkers >= MaxPriorityPipelineWorkers;
       auto& source = background ? g_backgroundPipelines : g_priorityPipelines;
@@ -1157,13 +1154,6 @@ static void pipeline_worker() {
       }
     }
     g_pipelineCv.notify_all();
-#if defined(MKW_PLATFORM_SWITCH)
-    if (budgetDropped != 0) {
-      Log.info("Pipeline prewarm stopped at the {} s budget ({} built, {} left for first use)",
-               static_cast<int>(kBootPrewarmBudget.count()), g_prewarmDone.load(), budgetDropped);
-      webgpu::serialize_pipeline_caches();
-    }
-#endif
   }
 }
 
@@ -1189,15 +1179,12 @@ static size_t pipeline_worker_count() {
   if (logicalProcessors == 0) {
     return 1;
   }
-#if defined(MKW_PLATFORM_SWITCH)
-  // The prewarm is the only time these threads all run; MaxPriorityPipelineWorkers keeps the
-  // first-use path to one worker.
-  return std::clamp(logicalProcessors, size_t{1}, MaxPipelineWorkers);
-#else
+  // The prewarm reads the blob cache from the SD card, so extra workers only contend for the same
+  // I/O; on Switch this leaves one worker, and MaxPriorityPipelineWorkers keeps first-use builds
+  // on it as well.
   const size_t availableWorkers =
       logicalProcessors > ReservedLogicalProcessors ? logicalProcessors - ReservedLogicalProcessors : 1;
   return std::clamp(availableWorkers, size_t{1}, MaxPipelineWorkers);
-#endif
 }
 
 template <typename PipelineConfig, typename CreateFn>
@@ -1271,10 +1258,10 @@ static void load_pipeline_cache() {
   if (queued > 0) {
     g_prewarmCount = queued;
     g_prewarmStart = std::chrono::steady_clock::now();
-#if defined(MKW_PLATFORM_SWITCH)
-    g_prewarmDeadline = g_prewarmStart + kBootPrewarmBudget;
-#endif
     g_prewarmDone.store(0, std::memory_order_relaxed);
+    g_blobReadNanos.store(0, std::memory_order_relaxed);
+    g_blobReadBytes.store(0, std::memory_order_relaxed);
+    g_blobReadCalls.store(0, std::memory_order_relaxed);
     g_prewarmActive.store(true, std::memory_order_release);
   }
 }
