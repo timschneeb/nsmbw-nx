@@ -103,6 +103,8 @@ bool aurora_get_skip_unready_pipelines();
 uint32_t aurora_get_queued_pipeline_count();
 // True while the boot prewarm or any queued build is still outstanding.
 bool aurora_boot_pipelines_pending();
+// True once the boot prewarm has drained at least once on the current pipeline cache.
+bool aurora_boot_prewarm_compiled();
 // Blocks until every queued boot pipeline has been built. Call before starting the guest when the
 // first frames must not wait on a build.
 void aurora_wait_for_boot_pipelines();

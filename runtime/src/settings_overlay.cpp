@@ -1514,6 +1514,14 @@ void UpdateBootShaderState() {
     const bool skipDown = StartupSkipPressed();
     const bool skipPressed = skipDown && !skipHeld;
     skipHeld = skipDown;
+    if (skipPressed && !aurora_boot_prewarm_compiled()) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            RT_LOGF(RT_TAG_RUNTIME, "prewarm cannot be skipped before it completes once\n");
+        }
+        return;
+    }
     if (skipPressed) {
         g_bootShadersReady.store(true, std::memory_order_release);
         // Stop waiting, but keep the worker below the guest so the game boots normally.

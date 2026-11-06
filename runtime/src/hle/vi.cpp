@@ -648,8 +648,10 @@ void LogSceneChanges() {
     RT_LOGF(RT_TAG_VI, "scene -> 0x%03X %s (frame %u)\n", now, name,
             s_presentedXfbFrames.load(std::memory_order_relaxed));
     if (now == 0x005u) {
-        // Gameplay starts; keep any remaining prewarm below the guest.
+        // Gameplay starts; keep the prewarm running at background priority.
         aurora_set_prewarm_boost(false);
+        RT_LOGF(RT_TAG_VI, "prewarm continues for gameplay (%u queued)\n",
+                aurora_get_queued_pipeline_count());
     }
 }
 
@@ -1306,8 +1308,12 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         if (!g_vi.black) {
             std::call_once(firstVisibleFrame, [] {
                 RT_LOGF(RT_TAG_VI, "first visible guest frame presented; lifting the startup cover\n");
-                // The loading screen is on screen now; let the boot prewarm take the CPU.
+                // Clear a boot scene pause, but do not boost the prewarm after a skip.
+                const bool bootShadersPending = settings_overlay::BootShadersPending();
                 aurora_set_prewarm_boost(true);
+                if (!bootShadersPending) {
+                    aurora_set_prewarm_boost(false);
+                }
                 settings_overlay::NotifyStrapInputAccepted();
             });
         }

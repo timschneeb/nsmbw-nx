@@ -946,6 +946,15 @@ INSERT INTO aurora_schema VALUES ({});)",
     }
 
     if (!schemaFailed) {
+      // Set once the boot prewarm has drained on this cache. Deleting the cache resets it.
+      ret = sqlite::exec(g_pipelineCacheDb, "CREATE TABLE IF NOT EXISTS aurora_boot(value INTEGER);");
+      if (ret != SQLITE_OK) {
+        Log.error("Failed to create pipeline boot table: {}", sqlite3_errmsg(g_pipelineCacheDb));
+        schemaFailed = true;
+      }
+    }
+
+    if (!schemaFailed) {
       tx.commit();
     }
   }
@@ -1121,10 +1130,28 @@ static std::chrono::steady_clock::time_point g_prewarmStart{};
 static std::atomic<uint32_t> g_prewarmDone{0};
 static uint32_t g_prewarmCount = 0;
 
+bool boot_prewarm_compiled() noexcept {
+  if (!prepare_pipeline_cache_db()) {
+    return false;
+  }
+  bool compiled = false;
+  sqlite::exec(g_pipelineCacheDb, "SELECT 1 FROM aurora_boot WHERE value = 1",
+               [&compiled](int, char**, char**) { compiled = true; });
+  return compiled;
+}
+
+static void mark_boot_prewarm_compiled() noexcept {
+  if (!prepare_pipeline_cache_db()) {
+    return;
+  }
+  sqlite::exec(g_pipelineCacheDb, "INSERT OR IGNORE INTO aurora_boot(value) VALUES (1)");
+}
+
 static void note_pipeline_queue_drained() {
   if (!g_prewarmActive.exchange(false, std::memory_order_acq_rel)) {
     return;
   }
+  mark_boot_prewarm_compiled();
   // Persist the monolithic Vulkan pipeline cache once after boot prewarm only; doing it on
   // every drained burst stalls the device lock mid-race. Later first-use compiles are
   // covered by the shutdown serialize.
@@ -1551,6 +1578,8 @@ bool aurora_get_skip_unready_pipelines() { return aurora::gfx::skip_unready_pipe
 uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipeline_count(); }
 
 bool aurora_boot_pipelines_pending() { return aurora::gfx::boot_pipelines_pending(); }
+
+bool aurora_boot_prewarm_compiled() { return aurora::gfx::boot_prewarm_compiled(); }
 
 void aurora_set_prewarm_boost(bool enabled) { aurora::gfx::set_prewarm_boost(enabled); }
 
