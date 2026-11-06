@@ -1374,7 +1374,7 @@ void DrawFpsOverlay() {
 
 void DrawShaderCompilationStatus() {
     const uint32_t queuedPipelines = aurora_get_queued_pipeline_count();
-    if (queuedPipelines == 0) {
+    if (queuedPipelines == 0 || StartupScreenVisible()) {
         return;
     }
 
@@ -1391,7 +1391,7 @@ void DrawShaderCompilationStatus() {
                                         ImGuiWindowFlags_NoNav |
                                         ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("Shader Compilation Status", nullptr, kFlags)) {
-        ImGui::SetWindowFontScale(0.85f);
+        ImGui::SetWindowFontScale(1.0f);
         ImGui::Text("%u shader%s compiling", queuedPipelines, queuedPipelines == 1 ? "" : "s");
     }
     ImGui::End();
