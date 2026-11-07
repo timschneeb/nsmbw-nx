@@ -1125,8 +1125,15 @@ void RuntimeAuroraLogCallback(AuroraLogLevel level, const char* module,
                               const char* message, unsigned int len) {
     const std::string_view moduleView = module != nullptr ? std::string_view(module) : std::string_view{};
     const std::string_view messageView = message != nullptr ? std::string_view(message, len) : std::string_view{};
-    std::cerr << "[aurora] [" << static_cast<int>(level) << "] [" << moduleView << "] "
-              << messageView << std::endl;
+    // stderr is fully buffered on Switch and flushed by a background thread. std::cerr is unit
+    // buffered, so a line from the presenter or frame worker would write straight to the SD card
+    // and stall the guest's display-copy wait if the filesystem hesitates. Keep it buffered.
+    std::fprintf(stderr, "[aurora] [%d] [%.*s] %.*s\n", static_cast<int>(level),
+                 static_cast<int>(moduleView.size()), moduleView.empty() ? "" : moduleView.data(),
+                 static_cast<int>(messageView.size()), messageView.data());
+    if (level == LOG_FATAL) {
+        std::fflush(stderr);
+    }
 #if defined(__linux__) && !defined(__ANDROID__)
     if (messageView.find("No available video device") != std::string_view::npos) {
         g_auroraLinuxHint.store(kNoDisplayHint);
