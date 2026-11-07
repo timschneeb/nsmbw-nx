@@ -1702,7 +1702,57 @@ void LogHorizonPerformanceState() {
         RT_LOGF(RT_TAG_RUNTIME, "perf: performance mode is boost\n");
     }
 }
+
+constexpr u32 kTargetCpuClockHz = 1581000000u;
+ClkrstSession g_cpuClockSession{};
+std::mutex g_cpuClockMutex;
+bool g_cpuClockReady = false;
+
+bool OpenCpuClockSession() {
+    if (R_FAILED(clkrstInitialize())) {
+        return false;
+    }
+    if (R_FAILED(clkrstOpenSession(&g_cpuClockSession, PcvModuleId_CpuBus, 3))) {
+        clkrstExit();
+        return false;
+    }
+    return true;
+}
+
+bool ApplyCpuClock() {
+    std::lock_guard lock(g_cpuClockMutex);
+    Result rc = clkrstSetClockRate(&g_cpuClockSession, kTargetCpuClockHz);
+    if (R_FAILED(rc)) {
+        // Sleep can invalidate the service session; reopen it once and retry.
+        if (serviceIsActive(&g_cpuClockSession.s)) {
+            clkrstCloseSession(&g_cpuClockSession);
+        }
+        if (!OpenCpuClockSession()) {
+            RT_LOGF(RT_TAG_RUNTIME, "perf: could not reopen the CPU clock session\n");
+            return false;
+        }
+        rc = clkrstSetClockRate(&g_cpuClockSession, kTargetCpuClockHz);
+    }
+    if (R_FAILED(rc)) {
+        RT_LOGF(RT_TAG_RUNTIME, "perf: CPU clock set failed (0x%08x)\n", static_cast<unsigned>(rc));
+    }
+    return R_SUCCEEDED(rc);
+}
+
+bool StartCpuClock() {
+    if (!OpenCpuClockSession()) {
+        return false;
+    }
+    g_cpuClockReady = true;
+    return ApplyCpuClock();
+}
 }  // namespace
+
+#if defined(MKW_PLATFORM_SWITCH)
+extern "C" void NsmbwRestoreCpuClock() {
+    ApplyCpuClock();
+}
+#endif
 #endif
 
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
@@ -1738,6 +1788,16 @@ extern "C" void LogStartupPhase(const char* phase) {
 
 int RuntimeMain(int argc, char** argv) {
     LogStartupPhase("runtime main");
+#if defined(MKW_PLATFORM_SWITCH)
+    LogHorizonPerformanceState();
+    // Before the boot splash, config load and Aurora bring-up, so the whole start runs at this clock.
+    if (StartCpuClock()) {
+        RT_LOGF(RT_TAG_RUNTIME, "perf: CPU clock set to %u MHz\n", kTargetCpuClockHz / 1000000u);
+    } else {
+        RT_LOGF(RT_TAG_RUNTIME, "perf: could not set the CPU clock to %u MHz\n",
+                kTargetCpuClockHz / 1000000u);
+    }
+#endif
     // Must run before the transcript duplicates stdout/stderr: it decides what
     // those descriptors are mirrored to now that the products are GUI-subsystem.
     AttachParentConsoleForDiagnostics();
@@ -1753,6 +1813,15 @@ int RuntimeMain(int argc, char** argv) {
     NsmbwBootSplashShow();
 #endif
     InitializeProcessTranscript(argc, argv);
+#if defined(MKW_PLATFORM_SWITCH)
+    if (g_cpuClockReady) {
+        std::lock_guard lock(g_cpuClockMutex);
+        u32 hz = 0;
+        if (R_SUCCEEDED(clkrstGetClockRate(&g_cpuClockSession, &hz))) {
+            RT_LOGF(RT_TAG_RUNTIME, "perf: CPU clock now %u MHz\n", hz / 1000000u);
+        }
+    }
+#endif
     std::signal(SIGABRT, AbortSignalHandler);
     // Install exit/terminate handlers to ensure we get crash info
     std::atexit(AtExitHandler);
@@ -1782,9 +1851,6 @@ int RuntimeMain(int argc, char** argv) {
         RuntimeConfigFile::LogLoadedConfig();
         // [debug] env and stats must be in place before the runtime reads any NSMBW_* switch.
         PerfStats::ApplyConfig();
-#if defined(MKW_PLATFORM_SWITCH)
-        LogHorizonPerformanceState();
-#endif
         PerfStats::Pin(PerfStats::RoleGuest);
 #if defined(MKW_PGO_GENERATE) && defined(__SWITCH__)
         MkwStartPgoDumpTimer();
@@ -1903,7 +1969,12 @@ int RuntimeMain(int argc, char** argv) {
             RuntimeConfigFile::ForceAspect169Enabled()      ? DisplaySettings::kAspect16x9
             : !RuntimeConfigFile::WidescreenEnabled(true) ? DisplaySettings::kAspect4x3
                                                           : DisplaySettings::kAspectFill);
+#if defined(__SWITCH__)
+        // The Switch output is the console's own screen; always render at its resolution.
+        displaySettings.renderScale = 0.0f;
+#else
         displaySettings.renderScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
+#endif
         DisplaySettings::Initialize(displaySettings);
         const bool configWidescreen = DisplaySettings::GameWidescreen();
         auroraConfig.windowWidth = configWidescreen ? 854 : 640;

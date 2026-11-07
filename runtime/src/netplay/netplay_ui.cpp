@@ -1130,25 +1130,33 @@ constexpr int kSettingsTabs = 4;
 float g_lastScale = 1.0f;                    // the multiplier Match Screen Resolution returns to
 bool g_lastWide = true;
 
-// Cursor rows. Video: 0 tabs, 1 resolution, 2 match screen, 3 fullscreen, then renderer,
-// Performance Monitor (FPS counter and frametime graph), spinning coins and V-Sync (one row, side by
-// side) and OK. Keybinds: 0 tabs, 1-12
+// Cursor rows. Video: 0 tabs, resolution and match screen (desktop), fullscreen (desktop), then
+// renderer, Performance Monitor (FPS counter and frametime graph), spinning coins and V-Sync (one
+// row, side by side) and OK. Keybinds: 0 tabs, 1-12
 // the controls (two columns of six), 13 Reset Defaults, 14 OK.
 // V-Sync is a Windows and Android row (both can lock the game's clock to the display; on Android the
 // app keeps the choice through TakeSettingsChange). Fullscreen is a desktop row: a phone is always
-// fullscreen.
+// fullscreen, and the Switch always matches its own screen.
 #if defined(_WIN32) || defined(__ANDROID__)
 constexpr bool kVSyncRow = true;
 #else
 constexpr bool kVSyncRow = false;
 #endif
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__SWITCH__)
 constexpr bool kFullscreenRow = false;
 #else
 constexpr bool kFullscreenRow = true;
 #endif
-constexpr int kVideoFullscreen = kFullscreenRow ? 3 : -1;
-constexpr int kVideoRenderer = kFullscreenRow ? 4 : 3;
+#if defined(__SWITCH__)
+constexpr bool kResolutionRows = false;
+#else
+constexpr bool kResolutionRows = true;
+#endif
+constexpr int kVideoResolution = kResolutionRows ? 1 : -1;
+constexpr int kVideoMatch = kResolutionRows ? 2 : -1;
+constexpr int kVideoFirst = kResolutionRows ? 3 : 1;
+constexpr int kVideoFullscreen = kFullscreenRow ? kVideoFirst : -1;
+constexpr int kVideoRenderer = kVideoFirst + (kFullscreenRow ? 1 : 0);
 constexpr int kVideoGraph = kVideoRenderer + 1, kVideoCoins = kVideoGraph + 1;
 constexpr int kVideoVSync = kVSyncRow ? kVideoCoins + 1 : -1;
 constexpr int kVideoOk = (kVSyncRow ? kVideoVSync : kVideoCoins) + 1;
@@ -1200,7 +1208,11 @@ constexpr bool kTouchToggle = false;
 constexpr int kKeyThird = kKeyReverseTilt + 1;  // Touch Controls / Mouse as Gyro
 constexpr int kKeyReset = kKeyThird + 1, kKeyOk = kKeyReset + 1;
 constexpr int kKeyToggles[] = {kKeySmartSpin, kKeyReverseTilt, kKeyThird};
+#if defined(__SWITCH__)
+constexpr int kKeyToggleCount = 2;  // no mouse on the Switch
+#else
 constexpr int kKeyToggleCount = 3;
+#endif
 
 struct VideoChoice {
     float scale;
@@ -1468,31 +1480,35 @@ void DrawVideoTab(const Canvas& c) {
     const bool match = scale <= 0.0f;
     const std::vector<VideoChoice> choices = VideoChoices();
     const VideoChoice shown = choices[CurrentChoice(choices)];
-    // Five or six rows between the tabs and the hint line.
-    constexpr int kRows = 5 + (kFullscreenRow ? 1 : 0);
+    // Rows between the tabs and the hint line.
+    constexpr int kRows = 3 + (kResolutionRows ? 2 : 0) + (kFullscreenRow ? 1 : 0);
     const float kRowH = kRows >= 7 ? 33.0f : kRows == 6 ? 37.0f : 42.0f;
     const float step = kRows >= 7 ? 37.0f : kRows == 6 ? 43.0f : 50.0f;
     const float top = kRows >= 7 ? 125.0f : kRows == 6 ? 123.0f : 118.0f;
     const float labelSize = kRows >= 7 ? 24.0f : 26.0f, buttonSize = kRows >= 7 ? 27.0f : 30.0f;
-    Text(c, "Resolution", -300, top, labelSize, 0, match ? 0xA0A0A0FFu : 0xFFFFFFFFu);
-    Button(c, ChoiceLabel(shown), 105, top, 270, g_ui.cursor == 1, !match, g_ui.frame, buttonSize, kRowH);
-    Arrow(c, -50, top, false, g_ui.cursor == 1, !match);
-    Arrow(c, 260, top, true, g_ui.cursor == 1, !match);
-    if (!match) {
-        AddHitEvent(-50, top, 54, step - 2, 1, kEvLeft);
-        AddHitEvent(260, top, 54, step - 2, 1, kEvRight);
-        AddHitEvent(105, top, 276, step - 2, 1, kEvRight);
+    if (kResolutionRows) {
+        Text(c, "Resolution", -300, top, labelSize, 0, match ? 0xA0A0A0FFu : 0xFFFFFFFFu);
+        Button(c, ChoiceLabel(shown), 105, top, 270, g_ui.cursor == kVideoResolution, !match, g_ui.frame, buttonSize, kRowH);
+        Arrow(c, -50, top, false, g_ui.cursor == kVideoResolution, !match);
+        Arrow(c, 260, top, true, g_ui.cursor == kVideoResolution, !match);
+        if (!match) {
+            AddHitEvent(-50, top, 54, step - 2, kVideoResolution, kEvLeft);
+            AddHitEvent(260, top, 54, step - 2, kVideoResolution, kEvRight);
+            AddHitEvent(105, top, 276, step - 2, kVideoResolution, kEvRight);
+        }
     }
     const auto row = [&](const char* label, int index, int cursor, bool on) {
-        const float y = top - index * step;
+        const float y = top - (index - 1) * step;
         Button(c, label, 24, y, 470, g_ui.cursor == cursor, true, g_ui.frame, buttonSize, kRowH);
         Checkbox(c, -185, y, on);
         AddHit(0, y, 480, step - 2, cursor);
     };
-    row("Match Screen Resolution", 1, 2, match);
+    if (kResolutionRows) {
+        row("Match Screen Resolution", kVideoMatch, kVideoMatch, match);
+    }
     if (kFullscreenRow) {
         // Off, Borderless, Exclusive: each press moves to the next, like the game's own buttons.
-        const float y = top - 2 * step;
+        const float y = top - (kVideoFullscreen - 1) * step;
         Text(c, "Fullscreen", -300, y, labelSize, 0);
         Button(c, kFullscreenNames[std::clamp(settings_overlay::Fullscreen(), 0, 2)], 105, y, 270,
                g_ui.cursor == kVideoFullscreen, true, g_ui.frame, buttonSize, kRowH);
@@ -1500,18 +1516,17 @@ void DrawVideoTab(const Canvas& c) {
     }
     {
         // Renderer: each press moves to the next (left steps back); it takes effect at the next start.
-        const float y = top - (kFullscreenRow ? 3 : 2) * step;
+        const float y = top - (kVideoRenderer - 1) * step;
         Text(c, "Renderer", -300, y, labelSize, 0);
         Button(c, kRenderers[RendererIndex()].label, 105, y, 270, g_ui.cursor == kVideoRenderer, kRendererCount > 1,
                g_ui.frame, buttonSize, kRowH);
         AddHit(105, y, 276, step - 2, kVideoRenderer);
     }
-    const int first = kFullscreenRow ? 4 : 3;
     {
         // Performance Monitor (the FPS counter and frametime graph): the button turns it on and off;
         // the slider beside it sets its size (a finger or the mouse drags it; left and right move it
         // 5% at a time).
-        const float y = top - first * step;
+        const float y = top - (kVideoGraph - 1) * step;
         const bool selected = g_ui.cursor == kVideoGraph;
         Button(c, "Performance Monitor", -80, y, 320, selected, true, g_ui.frame, buttonSize * 0.9f, kRowH);
         Checkbox(c, -214, y, settings_overlay::FrameGraph());
@@ -1539,7 +1554,7 @@ void DrawVideoTab(const Canvas& c) {
     }
     if (kVSyncRow) {
         // Spinning Coins and V-Sync side by side, like the Keybinds tab's checkboxes.
-        const float y = top - (first + 1) * step;
+        const float y = top - (kVideoCoins - 1) * step;
         constexpr float kWidth = 330.0f, kGap = 340.0f;
         const auto half = [&](const char* label, float x, int cursor, bool on) {
             Button(c, label, x + 18, y, kWidth, g_ui.cursor == cursor, true, g_ui.frame, buttonSize, kRowH);
@@ -1549,7 +1564,7 @@ void DrawVideoTab(const Canvas& c) {
         half("Spinning Coins", -kGap / 2, kVideoCoins, settings_overlay::SpinningCoins());
         half("V-Sync", kGap / 2, kVideoVSync, settings_overlay::VSync());
     } else {
-        row("Spinning Coins", first + 1, kVideoCoins, settings_overlay::SpinningCoins());
+        row("Spinning Coins", kVideoCoins, kVideoCoins, settings_overlay::SpinningCoins());
     }
     const char* hint = match ? "The screen's own resolution, filling the whole screen."
                        : !DisplaySettings::SurfaceWide() ? "Rendered at this many lines, then scaled to the screen."
@@ -1656,7 +1671,9 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         } else if (confirm) {
             g_settingsTab = (g_settingsTab + 1) % kSettingsTabs;
         } else if (down) {
-            cursor = g_settingsTab == kTabVideo && settings_overlay::RenderScale() <= 0.0f ? 2 : 1;
+            cursor = g_settingsTab == kTabVideo
+                         ? (kResolutionRows && settings_overlay::RenderScale() <= 0.0f ? kVideoMatch : 1)
+                         : 1;
         } else if (back) {
             CloseSettings();
         }
@@ -1668,9 +1685,10 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
     }
     if (g_settingsTab == kTabVideo) {
         const bool match = settings_overlay::RenderScale() <= 0.0f;
+        const int firstFocusable = kResolutionRows && match ? kVideoMatch : 1;
         // Spinning Coins and V-Sync share a row: left and right move between them.
         if (up) {
-            cursor = cursor == 2 && match              ? 0
+            cursor = cursor == firstFocusable         ? 0
                      : cursor == kVideoOk && kVSyncRow ? kVideoCoins
                      : cursor == kVideoVSync           ? kVideoGraph
                                                        : cursor - 1;
@@ -1686,9 +1704,9 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
             settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
             g_rendererChanged = true;
             g_settingsChanged = true;
-        } else if (cursor == 1 && (left || right || confirm)) {
+        } else if (kResolutionRows && cursor == kVideoResolution && (left || right || confirm)) {
             StepVideo(left ? -1 : 1, confirm);
-        } else if (confirm && cursor == 2) {
+        } else if (kResolutionRows && confirm && cursor == kVideoMatch) {
             ToggleMatchScreen();
         } else if (cursor == kVideoFullscreen && (confirm || left || right)) {
             // Off -> Borderless -> Exclusive -> Off (left steps back), with the file select's sound.

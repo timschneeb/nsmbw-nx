@@ -67,6 +67,10 @@ namespace AxDspHle {
 void SetMixWorkerEnabled(bool enabled);
 }
 
+#if defined(__SWITCH__)
+extern "C" void NsmbwRestoreCpuClock();
+#endif
+
 namespace settings_overlay {
 namespace {
 
@@ -89,7 +93,12 @@ bool g_topBarVisible = false;
 bool g_exitPromptOpen = false;
 bool g_rumbleEnabled = RuntimeConfigFile::RumbleEnabled(true);
 int g_controllerPort = 0;
+#if defined(__SWITCH__)
+// The Switch output is the console's own screen, so the internal resolution always matches it.
+float g_resolutionScale = 0.0f;
+#else
 float g_resolutionScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
+#endif
 int g_audioVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::AudioVolume(1.0f) * 100.0f));
 int g_musicVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::MusicVolume(1.0f) * 100.0f));
 int g_soundEffectsVolumePercent =
@@ -1144,6 +1153,7 @@ void DrawGraphicsSettings() {
     }
     ImGui::TextDisabled("Applied when the next scene renderer is created.");
     ImGui::Separator();
+#if !defined(__SWITCH__)
     static constexpr const char* kDisplayModes[] = {
         "Windowed",
         "Borderless fullscreen",
@@ -1164,6 +1174,7 @@ void DrawGraphicsSettings() {
             "Requests the closest native-resolution display mode to the output frame "
             "rate (60 Hz, or the frame interpolation target).");
     }
+#endif
     constexpr std::array<const char*, 3> kFrameInterpolationModes{
         "Off", "120 FPS", "180 FPS",
     };
@@ -1557,6 +1568,7 @@ void DrawTopBar() {
 
     ImGui::TextUnformatted(RuntimeProduct::Active().displayName.data());
     ImGui::Separator();
+#if !defined(__SWITCH__)
     const auto resolutionIt = std::find_if(kResolutions.begin(), kResolutions.end(), [](const ResolutionItem& item) {
         return std::fabs(item.scale - g_resolutionScale) < 0.001f;
     });
@@ -1580,6 +1592,7 @@ void DrawTopBar() {
         ImGui::TextDisabled("Rendering %ux%u", pictureWidth, pictureHeight);
         ImGui::EndMenu();
     }
+#endif
 
     const DisplaySettings::Settings display = DisplaySettings::Current();
     const auto aspectIt = std::find_if(kAspects.begin(), kAspects.end(), [&](const AspectItem& item) {
@@ -1772,6 +1785,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             CompleteRebind(g_rebind.kind == RebindKind::Controller ? PAD_NATIVE_BUTTON_DISABLED
                                                                   : static_cast<uint32_t>(PAD_KEY_INVALID));
         }
+#if !defined(__SWITCH__)
         // NSMBW: F11 toggles between a window and borderless fullscreen (saved like the F10 bar's
         // Display mode).
         if (!g_rebind.active && IsToggleKey(ev->sdl, SDL_SCANCODE_F11)) {
@@ -1782,6 +1796,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             g_displayMode = static_cast<int>(aurora_get_display_mode());
             RuntimeConfigFile::SetDisplayMode(std::string(kDisplayModeConfigNames[static_cast<size_t>(g_displayMode)]));
         }
+#endif
         if (!g_rebind.active && IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
             SetTopBarVisible(!g_topBarVisible);
             ApplyInputBlockState();
@@ -2112,6 +2127,19 @@ extern "C" void LogStartupPhase(const char* phase);
 void Draw() noexcept {
     static std::once_flag firstOverlayFrame;
     std::call_once(firstOverlayFrame, [] { LogStartupPhase("first overlay frame"); });
+#if defined(__SWITCH__)
+    // Fallback for HOME/sleep: a suspended app comes back with a large gap before its next
+    // presented frame. The applet pump normally handles this; this also covers the boot path.
+    static Clock::time_point lastPresent = Clock::now();
+    const Clock::time_point now = Clock::now();
+    const auto gap = now - lastPresent;
+    if (gap > std::chrono::seconds(2)) {
+        RT_LOGF(RT_TAG_RUNTIME, "perf: resume gap %.1f s, restoring the CPU clock\n",
+                std::chrono::duration<double>(gap).count());
+        NsmbwRestoreCpuClock();
+    }
+    lastPresent = now;
+#endif
     // Wait for the frame worker's DONE phase: it has replayed the previous frame's ImGui draw lists
     // and started the next ImGui frame, so all overlay callers can now safely issue ImGui commands.
     aurora_wait_for_frame_worker();
