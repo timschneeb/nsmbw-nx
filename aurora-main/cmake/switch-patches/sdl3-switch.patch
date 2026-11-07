@@ -540,10 +540,10 @@ index 47ce42cdf..7e7ef4ddf 100644
  // Ends C function definitions when using C++
 diff --git a/src/joystick/switch/SDL_sysjoystick.c b/src/joystick/switch/SDL_sysjoystick.c
 new file mode 100644
-index 000000000..7e0c017ad
+index 000000000..8f3a1c2d4
 --- /dev/null
 +++ b/src/joystick/switch/SDL_sysjoystick.c
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,604 @@
 +/*
 +  Simple DirectMedia Layer
 +  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
@@ -600,23 +600,319 @@ index 000000000..7e0c017ad
 +};
 +#define NB_BUTTONS ((int)SDL_arraysize(button_map))
 +
-+static PadState g_pad;
++#define SWITCH_MAX_PLAYERS 8
++#define SWITCH_MAX_DEVICES (SWITCH_MAX_PLAYERS + 1)
++
++typedef struct SwitchController
++{
++    HidNpadIdType id;
++    PadState pad;
++    u32 style;
++    u64 previous_buttons;
++    bool opened;
++    bool sensors_enabled;
++    HidSixAxisSensorHandle sixaxis[2];
++    bool sixaxis_ready[2];
++    int sixaxis_count;
++    u32 sixaxis_style;
++    HidVibrationDeviceHandle vibration[2];
++    int vibration_count;
++    u32 vibration_style;
++} SwitchController;
++
++struct joystick_hwdata
++{
++    SwitchController *controller;
++};
++
++static SwitchController g_controllers[SWITCH_MAX_DEVICES];
++static HidNpadIdType g_device_ids[SWITCH_MAX_DEVICES];
++static int g_device_count = 0;
++static Uint64 g_last_detect = 0;
++
++static void SWITCH_JoystickDetect(void);
++
++static int ControllerIndex(HidNpadIdType id)
++{
++    if (id == HidNpadIdType_Handheld) {
++        return SWITCH_MAX_PLAYERS;
++    }
++    if (id >= HidNpadIdType_No1 && id <= HidNpadIdType_No8) {
++        return (int)id;
++    }
++    return -1;
++}
++
++static u32 PrimaryStyle(u32 style_set)
++{
++    if (style_set & HidNpadStyleTag_NpadFullKey) {
++        return HidNpadStyleTag_NpadFullKey;
++    }
++    if (style_set & HidNpadStyleTag_NpadHandheld) {
++        return HidNpadStyleTag_NpadHandheld;
++    }
++    if (style_set & HidNpadStyleTag_NpadJoyDual) {
++        return HidNpadStyleTag_NpadJoyDual;
++    }
++    if (style_set & HidNpadStyleTag_NpadJoyLeft) {
++        return HidNpadStyleTag_NpadJoyLeft;
++    }
++    if (style_set & HidNpadStyleTag_NpadJoyRight) {
++        return HidNpadStyleTag_NpadJoyRight;
++    }
++    return 0;
++}
++
++static const char *ControllerName(HidNpadIdType id)
++{
++    const int index = ControllerIndex(id);
++    const u32 style = index >= 0 ? g_controllers[index].style : 0;
++    if (style & HidNpadStyleTag_NpadFullKey) {
++        return "Nintendo Switch Pro Controller";
++    }
++    if (style & HidNpadStyleTag_NpadHandheld) {
++        return "Nintendo Switch Handheld";
++    }
++    if (style & HidNpadStyleTag_NpadJoyDual) {
++        return "Nintendo Switch Joy-Con Pair";
++    }
++    if (style & HidNpadStyleTag_NpadJoyLeft) {
++        return "Nintendo Switch Joy-Con Left";
++    }
++    if (style & HidNpadStyleTag_NpadJoyRight) {
++        return "Nintendo Switch Joy-Con Right";
++    }
++    return "Nintendo Switch Controller";
++}
++
++static Sint16 clamp_axis(int v)
++{
++    if (v > SDL_JOYSTICK_AXIS_MAX) {
++        v = SDL_JOYSTICK_AXIS_MAX;
++    } else if (v < SDL_JOYSTICK_AXIS_MIN) {
++        v = SDL_JOYSTICK_AXIS_MIN;
++    }
++    return (Sint16)v;
++}
++
++static void StopSixAxis(SwitchController *controller)
++{
++    for (int i = 0; i < controller->sixaxis_count; ++i) {
++        hidStopSixAxisSensor(controller->sixaxis[i]);
++        controller->sixaxis_ready[i] = false;
++    }
++    controller->sixaxis_count = 0;
++    controller->sixaxis_style = 0;
++}
++
++static bool EnsureSixAxis(SwitchController *controller)
++{
++    const u32 style = PrimaryStyle(controller->style);
++    if (style == 0) {
++        return false;
++    }
++    if (controller->sixaxis_count > 0 && controller->sixaxis_style == style) {
++        return true;
++    }
++
++    StopSixAxis(controller);
++
++    // Only a detached Joy-Con pair has two sensors. Everything else has one.
++    int count = style == HidNpadStyleTag_NpadJoyDual ? 2 : 1;
++    if (R_FAILED(hidGetSixAxisSensorHandles(controller->sixaxis, count, controller->id, style))) {
++        count = 1;
++        if (R_FAILED(hidGetSixAxisSensorHandles(controller->sixaxis, count, controller->id, style))) {
++            return false;
++        }
++    }
++
++    int started = 0;
++    for (int i = 0; i < count; ++i) {
++        controller->sixaxis_ready[i] = R_SUCCEEDED(hidStartSixAxisSensor(controller->sixaxis[i]));
++        if (controller->sixaxis_ready[i]) {
++            ++started;
++        }
++    }
++    if (started == 0) {
++        return false;
++    }
++
++    controller->sixaxis_count = count;
++    controller->sixaxis_style = style;
++    return true;
++}
++
++static void SendSensors(SwitchController *controller, SDL_Joystick *joystick, Uint64 timestamp)
++{
++    if (!EnsureSixAxis(controller)) {
++        return;
++    }
++
++    HidSixAxisSensorHandle handle;
++    if (controller->sixaxis_count > 1 && controller->sixaxis_ready[1] &&
++        (padGetAttributes(&controller->pad) & HidNpadAttribute_IsRightConnected)) {
++        handle = controller->sixaxis[1];
++    } else if (controller->sixaxis_ready[0]) {
++        handle = controller->sixaxis[0];
++    } else if (controller->sixaxis_count > 1 && controller->sixaxis_ready[1]) {
++        handle = controller->sixaxis[1];
++    } else {
++        return;
++    }
++
++    HidSixAxisSensorState state;
++    if (hidGetSixAxisSensorStates(handle, &state, 1) == 0 ||
++        !(state.attributes & HidSixAxisSensorAttribute_IsConnected)) {
++        return;
++    }
++
++    // HOS axes: x right, y forward, z out of the face, acceleration in g and
++    // angular velocity in turns/s. SDL: x right, y up, z towards the player, in
++    // m/s^2 and rad/s. Lying flat at rest HOS reads (0, 0, -1).
++    const float gravity = 9.80665f;
++    const float tau = 6.28318530718f;
++    const float accel[3] = {
++        -state.acceleration.x * gravity,
++        -state.acceleration.z * gravity,
++        state.acceleration.y * gravity,
++    };
++    const float gyro[3] = {
++        state.angular_velocity.x * tau,
++        state.angular_velocity.z * tau,
++        -state.angular_velocity.y * tau,
++    };
++    SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_ACCEL, timestamp, accel, 3);
++    SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_GYRO, timestamp, gyro, 3);
++}
++
++static bool EnsureVibration(SwitchController *controller)
++{
++    const u32 style = PrimaryStyle(controller->style);
++    if (style == 0) {
++        return false;
++    }
++    if (controller->vibration_count > 0 && controller->vibration_style == style) {
++        return true;
++    }
++
++    // FullKey, Handheld and JoyDual have two actuators; single Joy-Cons have one.
++    int count = (style == HidNpadStyleTag_NpadFullKey || style == HidNpadStyleTag_NpadHandheld ||
++                 style == HidNpadStyleTag_NpadJoyDual)
++                    ? 2
++                    : 1;
++    if (R_FAILED(hidInitializeVibrationDevices(controller->vibration, count, controller->id, style))) {
++        count = 1;
++        if (R_FAILED(hidInitializeVibrationDevices(controller->vibration, count, controller->id, style))) {
++            controller->vibration_count = 0;
++            controller->vibration_style = 0;
++            return false;
++        }
++    }
++
++    controller->vibration_count = count;
++    controller->vibration_style = style;
++    return true;
++}
++
++static bool SendRumble(SwitchController *controller, Uint16 low, Uint16 high)
++{
++    if (!EnsureVibration(controller)) {
++        return SDL_Unsupported();
++    }
++
++    HidVibrationValue values[2];
++    for (int i = 0; i < controller->vibration_count; ++i) {
++        values[i].amp_low = (float)low / 65535.0f;
++        values[i].freq_low = 160.0f;
++        values[i].amp_high = (float)high / 65535.0f;
++        values[i].freq_high = 320.0f;
++    }
++    return R_SUCCEEDED(hidSendVibrationValues(controller->vibration, values, controller->vibration_count));
++}
 +
 +static bool SWITCH_JoystickInit(void)
 +{
-+    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-+    padInitializeDefault(&g_pad);
-+    SDL_PrivateJoystickAdded(1);
++    padConfigureInput(SWITCH_MAX_PLAYERS, HidNpadStyleSet_NpadStandard);
++
++    for (int i = 0; i < SWITCH_MAX_PLAYERS; ++i) {
++        SwitchController *controller = &g_controllers[i];
++        controller->id = (HidNpadIdType)i;
++        padInitializeWithMask(&controller->pad, 1ULL << controller->id);
++    }
++    {
++        SwitchController *controller = &g_controllers[SWITCH_MAX_PLAYERS];
++        controller->id = HidNpadIdType_Handheld;
++        padInitializeWithMask(&controller->pad, 1ULL << HidNpadIdType_Handheld);
++    }
++
++    g_last_detect = 0;
++    SWITCH_JoystickDetect();
 +    return true;
 +}
 +
 +static int SWITCH_JoystickGetCount(void)
 +{
-+    return 1;
++    return g_device_count;
 +}
 +
 +static void SWITCH_JoystickDetect(void)
 +{
++    const Uint64 now = SDL_GetTicks();
++    if (g_last_detect != 0 && now - g_last_detect < 500) {
++        return;
++    }
++    g_last_detect = now;
++
++    HidNpadIdType present[SWITCH_MAX_DEVICES];
++    int present_count = 0;
++
++    // Handheld first: in handheld mode the built-in controls are player 1.
++    const u32 handheld_style = hidGetNpadStyleSet(HidNpadIdType_Handheld);
++    g_controllers[SWITCH_MAX_PLAYERS].style = handheld_style;
++    if (handheld_style != 0) {
++        present[present_count++] = HidNpadIdType_Handheld;
++    }
++    for (int i = 0; i < SWITCH_MAX_PLAYERS; ++i) {
++        const HidNpadIdType id = (HidNpadIdType)i;
++        const u32 style = hidGetNpadStyleSet(id);
++        g_controllers[i].style = style;
++        if (style != 0) {
++            present[present_count++] = id;
++        }
++    }
++
++    HidNpadIdType previous[SWITCH_MAX_DEVICES];
++    const int previous_count = g_device_count;
++    SDL_memcpy(previous, g_device_ids, sizeof(HidNpadIdType) * previous_count);
++
++    SDL_memcpy(g_device_ids, present, sizeof(HidNpadIdType) * present_count);
++    g_device_count = present_count;
++
++    for (int i = 0; i < previous_count; ++i) {
++        bool still_present = false;
++        for (int j = 0; j < present_count; ++j) {
++            if (present[j] == previous[i]) {
++                still_present = true;
++                break;
++            }
++        }
++        if (!still_present) {
++            SDL_PrivateJoystickRemoved((SDL_JoystickID)(previous[i] + 1));
++        }
++    }
++
++    for (int i = 0; i < present_count; ++i) {
++        bool was_present = false;
++        for (int j = 0; j < previous_count; ++j) {
++            if (previous[j] == present[i]) {
++                was_present = true;
++                break;
++            }
++        }
++        if (!was_present) {
++            SDL_PrivateJoystickAdded((SDL_JoystickID)(present[i] + 1));
++        }
++    }
 +}
 +
 +static bool SWITCH_JoystickIsDevicePresent(Uint16 vendor_id, Uint16 product_id, Uint16 version, const char *name)
@@ -626,7 +922,10 @@ index 000000000..7e0c017ad
 +
 +static const char *SWITCH_JoystickGetDeviceName(int device_index)
 +{
-+    return "Nintendo Switch Controller";
++    if (device_index < 0 || device_index >= g_device_count) {
++        return "Nintendo Switch Controller";
++    }
++    return ControllerName(g_device_ids[device_index]);
 +}
 +
 +static const char *SWITCH_JoystickGetDevicePath(int device_index)
@@ -650,25 +949,54 @@ index 000000000..7e0c017ad
 +
 +static SDL_GUID SWITCH_JoystickGetDeviceGUID(int device_index)
 +{
-+    return SDL_CreateJoystickGUIDForName("Nintendo Switch Controller");
++    return SDL_CreateJoystickGUIDForName(SWITCH_JoystickGetDeviceName(device_index));
 +}
 +
 +static SDL_JoystickID SWITCH_JoystickGetDeviceInstanceID(int device_index)
 +{
-+    return device_index + 1;
++    if (device_index < 0 || device_index >= g_device_count) {
++        return 0;
++    }
++    return (SDL_JoystickID)(g_device_ids[device_index] + 1);
 +}
 +
 +static bool SWITCH_JoystickOpen(SDL_Joystick *joystick, int device_index)
 +{
++    if (device_index < 0 || device_index >= g_device_count) {
++        return false;
++    }
++    const int index = ControllerIndex(g_device_ids[device_index]);
++    if (index < 0) {
++        return false;
++    }
++
++    struct joystick_hwdata *hwdata = (struct joystick_hwdata *)SDL_calloc(1, sizeof(*hwdata));
++    if (hwdata == NULL) {
++        return false;
++    }
++    hwdata->controller = &g_controllers[index];
++    joystick->hwdata = hwdata;
++
 +    joystick->nbuttons = NB_BUTTONS;
 +    joystick->naxes = 4; // left stick X/Y, right stick X/Y
 +    joystick->nhats = 0;
++
++    SwitchController *controller = hwdata->controller;
++    controller->opened = true;
++    controller->previous_buttons = 0;
++
++    SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_ACCEL, 200.0f);
++    SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_GYRO, 200.0f);
 +    return true;
 +}
 +
 +static bool SWITCH_JoystickRumble(SDL_Joystick *joystick, Uint16 low_frequency_rumble, Uint16 high_frequency_rumble)
 +{
-+    return SDL_Unsupported();
++    struct joystick_hwdata *hwdata = joystick->hwdata;
++    if (hwdata == NULL || hwdata->controller == NULL) {
++        return SDL_Unsupported();
++    }
++    return SendRumble(hwdata->controller, low_frequency_rumble, high_frequency_rumble);
 +}
 +
 +static bool SWITCH_JoystickRumbleTriggers(SDL_Joystick *joystick, Uint16 left_rumble, Uint16 right_rumble)
@@ -688,28 +1016,34 @@ index 000000000..7e0c017ad
 +
 +static bool SWITCH_JoystickSetSensorsEnabled(SDL_Joystick *joystick, bool enabled)
 +{
-+    return SDL_Unsupported();
-+}
-+
-+static Sint16 clamp_axis(int v)
-+{
-+    if (v > SDL_JOYSTICK_AXIS_MAX) {
-+        v = SDL_JOYSTICK_AXIS_MAX;
-+    } else if (v < SDL_JOYSTICK_AXIS_MIN) {
-+        v = SDL_JOYSTICK_AXIS_MIN;
++    struct joystick_hwdata *hwdata = joystick->hwdata;
++    if (hwdata == NULL || hwdata->controller == NULL) {
++        return SDL_Unsupported();
 +    }
-+    return (Sint16)v;
++    hwdata->controller->sensors_enabled = enabled;
++    if (enabled) {
++        // The sensor may not answer until the controller's style is known; the
++        // first update retries, so a failure here does not disable it.
++        (void)EnsureSixAxis(hwdata->controller);
++    }
++    return true;
 +}
 +
 +static void SWITCH_JoystickUpdate(SDL_Joystick *joystick)
 +{
-+    static u64 previous = 0;
-+    Uint64 timestamp = SDL_GetTicksNS();
++    struct joystick_hwdata *hwdata = joystick->hwdata;
++    if (hwdata == NULL || hwdata->controller == NULL) {
++        return;
++    }
 +
-+    padUpdate(&g_pad);
++    SwitchController *controller = hwdata->controller;
++    const Uint64 timestamp = SDL_GetTicksNS();
 +
-+    u64 held = padGetButtons(&g_pad);
-+    u64 changed = held ^ previous;
++    padUpdate(&controller->pad);
++    controller->style = padGetStyleSet(&controller->pad);
++
++    const u64 held = padGetButtons(&controller->pad);
++    const u64 changed = held ^ controller->previous_buttons;
 +    if (changed) {
 +        for (int i = 0; i < NB_BUTTONS; i++) {
 +            if (changed & button_map[i]) {
@@ -718,22 +1052,46 @@ index 000000000..7e0c017ad
 +            }
 +        }
 +    }
-+    previous = held;
++    controller->previous_buttons = held;
 +
-+    HidAnalogStickState l = padGetStickPos(&g_pad, 0);
-+    HidAnalogStickState r = padGetStickPos(&g_pad, 1);
++    HidAnalogStickState l = padGetStickPos(&controller->pad, 0);
++    HidAnalogStickState r = padGetStickPos(&controller->pad, 1);
 +    SDL_SendJoystickAxis(timestamp, joystick, 0, clamp_axis(l.x));
 +    SDL_SendJoystickAxis(timestamp, joystick, 1, clamp_axis(-l.y));
 +    SDL_SendJoystickAxis(timestamp, joystick, 2, clamp_axis(r.x));
 +    SDL_SendJoystickAxis(timestamp, joystick, 3, clamp_axis(-r.y));
++
++    if (controller->sensors_enabled) {
++        SendSensors(controller, joystick, timestamp);
++    }
 +}
 +
 +static void SWITCH_JoystickClose(SDL_Joystick *joystick)
 +{
++    struct joystick_hwdata *hwdata = joystick->hwdata;
++    if (hwdata != NULL) {
++        SwitchController *controller = hwdata->controller;
++        if (controller != NULL) {
++            StopSixAxis(controller);
++            controller->sensors_enabled = false;
++            controller->opened = false;
++            SendRumble(controller, 0, 0);
++        }
++        SDL_free(hwdata);
++        joystick->hwdata = NULL;
++    }
 +}
 +
 +static void SWITCH_JoystickQuit(void)
 +{
++    for (int i = 0; i < SWITCH_MAX_DEVICES; ++i) {
++        StopSixAxis(&g_controllers[i]);
++        SendRumble(&g_controllers[i], 0, 0);
++        g_controllers[i].opened = false;
++        g_controllers[i].sensors_enabled = false;
++    }
++    g_device_count = 0;
++    g_last_detect = 0;
 +}
 +
 +static bool SWITCH_JoystickGetGamepadMapping(int device_index, SDL_GamepadMapping *out)

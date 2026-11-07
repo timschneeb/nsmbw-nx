@@ -12,6 +12,7 @@
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_sensor.h>
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_timer.h>
 
@@ -50,6 +51,16 @@ constexpr float kDiagonalSlope = 0.4142136f;   // tan(22.5 degrees): eight-way s
 constexpr int kTriggerThreshold = 128;         // of 255
 // aurora's PADRead polls SDL; the game probes and reads all four channels each frame.
 constexpr uint64_t kPadRefreshNs = 4'000'000;
+
+// A controller's own accelerometer and gyro, when it has them. The accelerometer's
+// roll is the tilt (a wheel turn), and a vigorous motion is a shake; both go through
+// the same synthetic KPAD sample the stick and keyboard use.
+constexpr float kStandardGravity = 9.80665f;
+constexpr float kMotionTiltDeadZone = 0.22f;
+constexpr float kMotionShakeGyro = 3.5f;    // rad/s
+constexpr float kMotionShakeAccel = 0.55f;  // g away from rest
+std::array<SDL_JoystickID, PAD_MAX_CONTROLLERS> g_motionSensorsFor{};
+std::array<bool, PAD_MAX_CONTROLLERS> g_motionLogged{};
 
 struct Intent {
     uint32_t buttons = 0;  // WPAD bits, already in the sideways layout
@@ -280,6 +291,64 @@ Intent PadIntent(const PADStatus& pad) {
     return intent;
 }
 
+// Turns on the accelerometer and gyro once per gamepad instance, so a controller with
+// motion sensors can drive the virtual remote like a Wii Remote.
+bool EnsureMotionSensors(SDL_Gamepad* gamepad, uint32_t port) {
+    const SDL_JoystickID id = SDL_GetGamepadID(gamepad);
+    if (g_motionSensorsFor[port] == id) {
+        return true;
+    }
+    bool allEnabled = true;
+    for (SDL_SensorType sensor : {SDL_SENSOR_ACCEL, SDL_SENSOR_GYRO}) {
+        if (SDL_GamepadHasSensor(gamepad, sensor) && !SDL_SetGamepadSensorEnabled(gamepad, sensor, true)) {
+            allEnabled = false;
+        }
+    }
+    if (allEnabled) {
+        g_motionSensorsFor[port] = id;
+        if (!g_motionLogged[port]) {
+            g_motionLogged[port] = true;
+            RT_LOGF(RT_TAG_RUNTIME, "player %u: controller motion %s\n", port + 1,
+                    SDL_GamepadHasSensor(gamepad, SDL_SENSOR_ACCEL) ? "enabled" : "unavailable");
+        }
+    }
+    return allEnabled;
+}
+
+// Reads the controller's own motion in SDL's frame (x right, y up, z towards the
+// player; m/s^2 and rad/s). The roll around the forward axis is the tilt; a fast
+// rotation, or acceleration well away from 1 g, is a shake.
+bool ReadControllerMotion(SDL_Gamepad* gamepad, float& tilt, bool& shake) {
+    float accel[3] = {};
+    if (!SDL_GamepadSensorEnabled(gamepad, SDL_SENSOR_ACCEL) ||
+        !SDL_GetGamepadSensorData(gamepad, SDL_SENSOR_ACCEL, accel, 3) ||
+        !std::isfinite(accel[0]) || !std::isfinite(accel[1]) || !std::isfinite(accel[2])) {
+        return false;
+    }
+    const float gx = accel[0] / kStandardGravity;
+    const float gy = accel[1] / kStandardGravity;
+    const float gz = accel[2] / kStandardGravity;
+    if (gx == 0.0f && gy == 0.0f && gz == 0.0f) {
+        return false;  // SDL has not delivered a sample yet
+    }
+
+    tilt = std::clamp(std::atan2(gx, gy) / kMaxTiltRadians, -1.0f, 1.0f);
+    if (std::fabs(tilt) < kMotionTiltDeadZone) {
+        tilt = 0.0f;
+    }
+
+    float gyro[3] = {};
+    if (SDL_GamepadSensorEnabled(gamepad, SDL_SENSOR_GYRO) &&
+        SDL_GetGamepadSensorData(gamepad, SDL_SENSOR_GYRO, gyro, 3) &&
+        std::isfinite(gyro[0]) && std::isfinite(gyro[1]) && std::isfinite(gyro[2])) {
+        const float spin = std::sqrt(gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2]);
+        shake = spin > kMotionShakeGyro;
+    }
+    const float magnitude = std::sqrt(gx * gx + gy * gy + gz * gz);
+    shake = shake || std::fabs(magnitude - 1.0f) > kMotionShakeAccel;
+    return true;
+}
+
 // Accelerometer for the requested motion, in KPAD's frame (rest: y = -1). Tilting clockwise lowers
 // the right end and raises the left one, where the remote's pointer end is, so gravity shows up on
 // the remote's long axis (KPAD z) as +sin(angle).
@@ -351,6 +420,18 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
     Intent intent;
     if (pad) {
         intent = PadIntent(g_pads[chan]);
+        const s32 index = PADGetIndexForPort(chan);
+        SDL_Gamepad* gamepad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
+        if (gamepad != nullptr && EnsureMotionSensors(gamepad, chan)) {
+            float motionTilt = 0.0f;
+            bool motionShake = false;
+            if (ReadControllerMotion(gamepad, motionTilt, motionShake)) {
+                if (motionTilt != 0.0f) {
+                    intent.tilt = motionTilt;
+                }
+                intent.shake = intent.shake || motionShake;
+            }
+        }
     }
     const auto merge = [&intent](const Intent& other) {
         intent.buttons |= other.buttons;

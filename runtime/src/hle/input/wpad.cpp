@@ -6,6 +6,8 @@
 #include "wii_remote_input.h"
 #include "wpad_speaker.h"
 
+#include <SDL3/SDL_gamepad.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -14,12 +16,17 @@
 #include <vector>
 
 void NandQueueIosCallback(uint32_t callbackPtr, int32_t result, uint32_t callbackArg);
+extern "C" bool PAD_HLE_RumbleEnabled();
 
 namespace {
 
 constexpr uint32_t kDefaultWorkMemSize = 0x20000;
 constexpr uint8_t kDefaultDpdSensitivity = 3;
 constexpr int32_t kStatusOk = 0;
+constexpr uint32_t kWpadMotorStop = 0;
+constexpr uint32_t kWpadMotorRumble = 1;
+std::array<uint32_t, 4> g_lastMotorCommand{};
+std::array<SDL_JoystickID, 4> g_lastMotorPad{};
 
 struct WpadStubState {
     bool initSubRan = false;
@@ -165,8 +172,27 @@ PPC_NATIVE_OVERRIDE(801E0F40, WPADProbe_HLE, int32_t, (uint32_t chan, uint32_t t
 
 extern "C" void WPADControlMotor_HLE(uint32_t chan, uint32_t command)
 {
-    (void)chan;
-    (void)command;
+    if (chan >= g_lastMotorCommand.size()) {
+        return;
+    }
+    if (command == kWpadMotorRumble && !PAD_HLE_RumbleEnabled()) {
+        command = kWpadMotorStop;
+    }
+    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
+    if (gamepad == nullptr) {
+        return;
+    }
+    const SDL_JoystickID pad = SDL_GetGamepadID(gamepad);
+    if (g_lastMotorCommand[chan] == command && g_lastMotorPad[chan] == pad) {
+        return;
+    }
+    g_lastMotorCommand[chan] = command;
+    g_lastMotorPad[chan] = pad;
+    if (command == kWpadMotorRumble) {
+        SDL_RumbleGamepad(gamepad, 0xFFFF, 0xFFFF, 0);
+    } else {
+        SDL_RumbleGamepad(gamepad, 0, 0, 0);
+    }
 }
 PPC_NATIVE_OVERRIDE(801E14E0, WPADControlMotor_HLE, void, (uint32_t chan, uint32_t command), (chan, command));
 
