@@ -1708,6 +1708,20 @@ void LogHorizonPerformanceState() {
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
 #if defined(MKW_PLATFORM_SWITCH)
 extern "C" void NsmbwBootSplashShow();
+extern "C" void NsmbwBootSplashSetStatus(const char* status);
+
+namespace {
+const char* BootSplashStatusForPhase(const char* phase) {
+    if (std::strcmp(phase, "game folder ready") == 0) return "Preparing game data...";
+    if (std::strcmp(phase, "aurora init begin") == 0) return "Starting graphics...";
+    if (std::strcmp(phase, "dawn device ready") == 0) return "Creating render pipelines...";
+    if (std::strcmp(phase, "gfx init begin") == 0) return "Preparing renderer...";
+    if (std::strcmp(phase, "gfx resources ready") == 0) return "Loading shader cache...";
+    if (std::strcmp(phase, "gfx init done") == 0) return "Starting game...";
+    if (std::strcmp(phase, "aurora init done") == 0) return "Booting game...";
+    return nullptr;
+}
+} // namespace
 #endif
 
 extern "C" void LogStartupPhase(const char* phase) {
@@ -1715,6 +1729,11 @@ extern "C" void LogStartupPhase(const char* phase) {
                         std::chrono::steady_clock::now().time_since_epoch())
                         .count();
     RT_LOGF(RT_TAG_RUNTIME, "[startup] %s at %lld ms\n", phase, static_cast<long long>(ms));
+#if defined(MKW_PLATFORM_SWITCH)
+    if (const char* status = BootSplashStatusForPhase(phase)) {
+        NsmbwBootSplashSetStatus(status);
+    }
+#endif
 }
 
 int RuntimeMain(int argc, char** argv) {

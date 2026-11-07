@@ -122,6 +122,10 @@ if(MKW_ENABLE_SHADOW_SAMPLER)
 endif()
 target_link_libraries(mkw_runtime_common PRIVATE
     aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
+if(MKW_PLATFORM_SWITCH AND TARGET Freetype::Freetype)
+    # The boot splash draws the shared system font with FreeType.
+    target_link_libraries(mkw_runtime_common PRIVATE Freetype::Freetype)
+endif()
 target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
 if(MKW_PLATFORM_WINDOWS)
     # ole32/uuid: the first-start game folder picker (game_folder.cpp).
