@@ -1432,7 +1432,7 @@ void DrawStartupScreen() {
         char shaderLine[96] = {};
         if (g_bootShaderNotice && !g_bootShadersReady.load(std::memory_order_relaxed)) {
             std::snprintf(shaderLine, sizeof(shaderLine),
-                          "Compiling shaders, please hold on: %u remaining (press A to continue)",
+                          "Compiling shaders, please hold on: %u remaining",
                           aurora_get_queued_pipeline_count());
         }
         if (gameFonts) {
@@ -1494,39 +1494,8 @@ void DrawStartupScreen() {
     ImGui::PopStyleColor();
 }
 
-bool StartupSkipPressed() {
-    SDL_Gamepad* pad = PADGetSDLGamepadForIndex(0);
-    if (pad == nullptr) {
-        return false;
-    }
-    // South is the game's A; east is the Switch-labelled A. Accept either.
-    return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH) != 0 ||
-           SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST) != 0;
-}
-
 void UpdateBootShaderState() {
     if (g_bootShadersReady.load(std::memory_order_relaxed)) {
-        return;
-    }
-    // Ignore a button already held when the screen appeared; the first skipped boot must come
-    // from a fresh press.
-    static bool skipHeld = true;
-    const bool skipDown = StartupSkipPressed();
-    const bool skipPressed = skipDown && !skipHeld;
-    skipHeld = skipDown;
-    if (skipPressed && !aurora_boot_prewarm_compiled()) {
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            RT_LOGF(RT_TAG_RUNTIME, "prewarm cannot be skipped before it completes once\n");
-        }
-        return;
-    }
-    if (skipPressed) {
-        g_bootShadersReady.store(true, std::memory_order_release);
-        // Stop waiting, but keep the worker below the guest so the game boots normally.
-        aurora_set_prewarm_boost(false);
-        RT_LOGF(RT_TAG_RUNTIME, "prewarm skipped; remaining pipelines compile in the background\n");
         return;
     }
     const auto now = Clock::now();
@@ -1763,6 +1732,14 @@ void InitializeRuntimeSettings() noexcept {
     g_bootShaderNotice = false;
     g_bootShaderWaitStart = {};
     g_bootShaderDrainStart = {};
+    // The boot screen is only for the first run that builds the pipeline cache. Once the prewarm
+    // has drained on this cache, boot straight into the game and compile anything new in the
+    // background.
+    if (aurora_boot_prewarm_compiled()) {
+        g_bootShadersReady.store(true, std::memory_order_release);
+        g_strapInputAccepted.store(true, std::memory_order_relaxed);
+        g_startupDismissFrame.store(0, std::memory_order_relaxed);
+    }
     PADBlockInput(false);
     InputBindings::SetInputBlocked(false);
 }

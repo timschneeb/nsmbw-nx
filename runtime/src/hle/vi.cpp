@@ -1308,12 +1308,10 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         if (!g_vi.black) {
             std::call_once(firstVisibleFrame, [] {
                 RT_LOGF(RT_TAG_VI, "first visible guest frame presented; lifting the startup cover\n");
-                // Clear a boot scene pause, but do not boost the prewarm after a skip.
-                const bool bootShadersPending = settings_overlay::BootShadersPending();
+                // The startup screen is done, so start the background prewarm: enable it, then
+                // drop the boost the screen was using.
                 aurora_set_prewarm_boost(true);
-                if (!bootShadersPending) {
-                    aurora_set_prewarm_boost(false);
-                }
+                aurora_set_prewarm_boost(false);
                 settings_overlay::NotifyStrapInputAccepted();
             });
         }
