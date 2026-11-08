@@ -16,8 +16,6 @@ struct DrawData {
   bool expandedPrimitive;
   GXBindGroups bindGroups;
   uint32_t dstAlpha;
-  // NSMBW profiling: opaque, depth-writing world geometry. Used to reorder or pre-pass the world.
-  bool opaqueWorld = false;
 };
 
 constexpr uint32_t GXPipelineConfigVersion = 19;

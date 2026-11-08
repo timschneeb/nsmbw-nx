@@ -2169,7 +2169,6 @@ struct CachedPipelineState {
   HashType configHash = 0;
   // Carried here so the draw can be recorded without keeping the PipelineConfig that produced it alive; it is the only field of the config the draw itself still needs.
   u32 dstAlpha = UINT32_MAX;
-  bool opaqueWorld = false;
   ShaderInfo shaderInfo{};
 };
 
@@ -2195,8 +2194,6 @@ static const CachedPipelineState& cached_pipeline_state(const PipelineConfig& co
       .ref = gfx::pipeline_ref(config),
       .configHash = hash,
       .dstAlpha = config.dstAlpha,
-      .opaqueWorld = config.blendMode == GX_BM_NONE && config.depthCompare && config.depthUpdate &&
-                     !static_cast<bool>(config.shaderConfig.alphaCompare),
       .shaderInfo = build_shader_info(config.shaderConfig),
   };
   return entry.state;
@@ -2251,33 +2248,8 @@ static bool admit_draw(GXPrimitive prim, GXVtxFmt fmt, u16 count, uint32_t verte
 }
 
 // The last draw a new primitive can be appended to, or nullptr. FIFO and raw draws share these rules.
-static std::atomic<int> g_noMergeMode{-1};
-
-static int no_merge_mode() noexcept {
-  static const bool initialized = [] {
-    if (const char* value = std::getenv("NSMBW_NO_MERGE"); value != nullptr) {
-      g_noMergeMode.store(std::atoi(value), std::memory_order_relaxed);
-    } else {
-      g_noMergeMode.store(0, std::memory_order_relaxed);
-    }
-    return true;
-  }();
-  (void)initialized;
-  const int mode = g_noMergeMode.load(std::memory_order_relaxed);
-  return mode < 0 ? 0 : mode;
-}
-
-void set_no_merge(int mode) noexcept { g_noMergeMode.store(mode, std::memory_order_relaxed); }
-
 static DrawData* merge_target(GXPrimitive prim, u16 vtxCount) {
-  // NSMBW debugging: NSMBW_NO_MERGE turns draw merging off.
-  const int noMergeMode = no_merge_mode();
-  // 1: never merge; 2: not while drawing into the EFB below line 456 (light textures, tile frames);
-  // 3: only there.
-  const bool scratch =
-      noMergeMode >= 2 && g_gxState.xfViewport[4] - 340.0f + g_gxState.xfViewport[1] > 455.0f;
-  const bool noMerge = noMergeMode == 1 || (noMergeMode == 2 && scratch) || (noMergeMode == 3 && !scratch);
-  if (g_gxState.stateDirty || noMerge) {
+  if (g_gxState.stateDirty) {
     return nullptr;
   }
   auto* lastDraw = gfx::get_last_draw_command<DrawData>();
@@ -2418,94 +2390,6 @@ static bool raw_draw_locked(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* verti
   return true;
 }
 
-// NSMBW profiling: skip a draw category to measure its fill cost. Visuals are intentionally broken
-// while a mode other than None is selected; use it with NSMBW_NO_MERGE=1 so skipped draws cannot
-// disturb the merge chain. The mode is settable at runtime so one run can sample several categories
-// at the same spot in the stage (the runtime cycles it and labels each perf window).
-enum class SkipDrawsMode : int {
-  None = 0,
-  Blend,
-  Depth,
-  NoDepth,
-  Indirect,
-  TevAtLeast,
-  TexAtLeast,
-  All,
-};
-
-static std::atomic<int> g_skipDrawsMode{static_cast<int>(SkipDrawsMode::None)};
-static std::atomic<int> g_skipDrawsThreshold{2};
-static std::atomic_bool g_skipTextureCopies{false};
-
-bool skip_texture_copies() noexcept {
-  static const bool initialized = [] {
-    if (const char* value = std::getenv("NSMBW_SKIP_TEX_COPIES"); value != nullptr) {
-      g_skipTextureCopies.store(true, std::memory_order_relaxed);
-    }
-    return true;
-  }();
-  (void)initialized;
-  return g_skipTextureCopies.load(std::memory_order_relaxed);
-}
-
-void set_skip_draws(const char* filter) noexcept {
-  const std::string text = filter != nullptr ? filter : "";
-  const auto parseThreshold = [&](size_t prefixLength) {
-    return static_cast<int>(std::strtol(text.c_str() + prefixLength, nullptr, 10));
-  };
-  if (text.empty()) {
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::None), std::memory_order_relaxed);
-  } else if (text == "blend") {
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::Blend), std::memory_order_relaxed);
-  } else if (text == "depth") {
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::Depth), std::memory_order_relaxed);
-  } else if (text == "nodepth") {
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::NoDepth), std::memory_order_relaxed);
-  } else if (text == "indirect") {
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::Indirect), std::memory_order_relaxed);
-  } else if (text == "all") {
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::All), std::memory_order_relaxed);
-  } else if (text.rfind("tev>=", 0) == 0) {
-    g_skipDrawsThreshold.store(parseThreshold(5), std::memory_order_relaxed);
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::TevAtLeast), std::memory_order_relaxed);
-  } else if (text.rfind("tex>=", 0) == 0) {
-    g_skipDrawsThreshold.store(parseThreshold(5), std::memory_order_relaxed);
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::TexAtLeast), std::memory_order_relaxed);
-  } else {
-    Log.warn("Unknown NSMBW_SKIP_DRAWS filter '{}'", text);
-    g_skipDrawsMode.store(static_cast<int>(SkipDrawsMode::None), std::memory_order_relaxed);
-  }
-}
-
-static bool skip_draw_for_profile() noexcept {
-  static const bool initialized = [] {
-    if (const char* value = std::getenv("NSMBW_SKIP_DRAWS"); value != nullptr) {
-      set_skip_draws(value);
-    }
-    return true;
-  }();
-  (void)initialized;
-  switch (static_cast<SkipDrawsMode>(g_skipDrawsMode.load(std::memory_order_relaxed))) {
-  case SkipDrawsMode::None:
-    return false;
-  case SkipDrawsMode::Blend:
-    return g_gxState.blendMode != GX_BM_NONE;
-  case SkipDrawsMode::Depth:
-    return g_gxState.depthCompare;
-  case SkipDrawsMode::NoDepth:
-    return !g_gxState.depthCompare;
-  case SkipDrawsMode::Indirect:
-    return g_gxState.numIndStages > 0;
-  case SkipDrawsMode::TevAtLeast:
-    return g_gxState.numTevStages >= g_skipDrawsThreshold.load(std::memory_order_relaxed);
-  case SkipDrawsMode::TexAtLeast:
-    return g_gxState.numTexGens >= g_skipDrawsThreshold.load(std::memory_order_relaxed);
-  case SkipDrawsMode::All:
-    return true;
-  }
-  return false;
-}
-
 static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndian) {
   ZoneScoped;
   // Collect diagnostic draw counts only while profiling. In normal gameplay this
@@ -2538,11 +2422,6 @@ static bool handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
 
 
   if (!has_complete_primitive(prim, vtxCount)) {
-    pos += totalVtxBytes;
-    return true;
-  }
-
-  if (skip_draw_for_profile()) {
     pos += totalVtxBytes;
     return true;
   }
@@ -2671,7 +2550,6 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
       .expandedPrimitive = prim == GX_LINES || prim == GX_LINESTRIP || prim == GX_POINTS,
       .bindGroups = bindGroups,
       .dstAlpha = pipelineState.dstAlpha,
-      .opaqueWorld = pipelineState.opaqueWorld,
   });
   g_gxState.stateDirty = false;
 }
@@ -2925,13 +2803,3 @@ extern "C" uint64_t AuroraEndCommandDigest() {
 extern "C" void AuroraSetWidePerspectiveAspect(float aspect) {
   aurora::gx::fifo::g_widePerspectiveAspect.store(aspect, std::memory_order_relaxed);
 }
-
-extern "C" void aurora_set_skip_draws(const char* filter) { aurora::gx::fifo::set_skip_draws(filter); }
-
-extern "C" void aurora_set_skip_texture_copies(int enable) {
-  aurora::gx::fifo::g_skipTextureCopies.store(enable != 0, std::memory_order_relaxed);
-}
-
-extern "C" int aurora_skip_texture_copies(void) { return aurora::gx::fifo::skip_texture_copies() ? 1 : 0; }
-
-extern "C" void aurora_set_no_merge(int mode) { aurora::gx::fifo::set_no_merge(mode); }

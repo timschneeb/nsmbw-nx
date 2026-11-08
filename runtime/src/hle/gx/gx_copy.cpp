@@ -159,11 +159,6 @@ PPC_NATIVE_OVERRIDE_VOID(801c6150, GX__CopyDisp_8016fc38, (uint32_t da, uint32_t
 
 extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     EnsureAuroraFrameActive();
-    // Diagnostic: skip the copy to measure the cost of its resolve pass. The destination textures
-    // keep their previous contents, so the tile animations and shadows go stale.
-    if (aurora_skip_texture_copies()) {
-        return;
-    }
     const uint16_t rawSrcLeft = g_texCopyState.srcLeft;
     const uint16_t rawSrcTop = g_texCopyState.srcTop;
     const uint16_t rawSrcWidth = g_texCopyState.srcWidth;

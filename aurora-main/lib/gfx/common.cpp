@@ -281,9 +281,6 @@ static std::atomic_bool g_inOffscreen{false};
 // NSMBW: scratch strips live below the visible EFB lines. They are rendered into a small offscreen
 // target so a GX texture copy does not have to split (store/load) the full EFB pass.
 static std::atomic_bool g_inStripTarget{false};
-// NSMBW: fuse a frame's EFB passes into one, encoded after the scratch strip passes (see
-// fuse_efb_passes).
-static std::atomic_bool g_fuseEfbPasses{false};
 static float g_stripOriginX = 0.f;
 static float g_stripOriginY = 0.f;
 static uint32_t g_stripEfbWidth = 0;
@@ -1812,10 +1809,8 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
     }
     const bool hasRenderWork = passInfo.clearColor || passInfo.clearDepth || !passInfo.commands.empty();
     if (i == renderPasses.size() - 1) {
-      // A fused frame deliberately ends on the display copy's pass; otherwise the producer always
-      // opens a continuation pass after a resolve, so a frame cannot end on one.
-      ASSERT(g_fuseEfbPasses.load(std::memory_order_relaxed) || !passInfo.resolveTarget,
-             "Final render pass must not have resolve target");
+      // The producer always opens a continuation pass after a resolve, so a frame cannot end on one.
+      ASSERT(!passInfo.resolveTarget, "Final render pass must not have resolve target");
     } else if (!(passInfo.resolveTarget && encodeTextureBakes) && !hasRenderWork) {
       // Skip only empty intermediate passes: offscreen and scratch passes with resolves still have to
       // run for later samplers, and on a replay slot a resolve-only pass has nothing to encode.
@@ -2024,15 +2019,6 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
 #endif
 }
 
-// NSMBW: the game draws scratch strips into the EFB workspace and copies them out between world
-// draws, so a frame ends up split into five or six EFB passes. Each split stores and reloads the
-// full EFB color and depth, and on the Switch that costs about 2 ms per split.
-//
-// A strip pass renders into its own target and never reads the EFB, so the EFB work before and
-// after it can be concatenated: gather every EFB pass's commands into the last one and encode it
-// after the strip passes. The copies a strip pass defers stay between the strip passes and the EFB
-// pass, so the world still samples the textures they produce. The result is one EFB pass per frame.
-void set_fuse_efb_passes(bool enable) noexcept { g_fuseEfbPasses.store(enable, std::memory_order_relaxed); }
 
 // ---------------------------------------------------------------------------------------------
 // NSMBW: GPU timestamp queries. When the adapter supports them (NSMBW_GPU_TIMESTAMPS is set and the
@@ -2183,140 +2169,6 @@ void gpu_timer_end(wgpu::CommandEncoder& cmd) {
   g_timerPassesInFrame = 0;
 }
 
-static void log_fuse_bail(const char* reason) noexcept {
-  static int logged = 0;
-  if (logged++ < 8) {
-    Log.info("fuse_efb_passes: {}", reason);
-  }
-}
-
-static bool fuse_efb_passes(std::vector<RenderPass>& passes) noexcept {
-  if (!g_fuseEfbPasses.load(std::memory_order_relaxed) || passes.size() < 3) {
-    return false;
-  }
-  const auto isEfbPass = [](const RenderPass& pass) {
-    return pass.colorView.Get() == webgpu::g_frameBuffer.view.Get();
-  };
-  // An EFB pass that copies something out of the EFB is a barrier: it must keep its position, and
-  // so must everything after it.
-  const auto isBarrier = [](const RenderPass& pass) {
-    return static_cast<bool>(pass.resolveTarget) || !pass.deferred.empty() || !pass.patches.empty();
-  };
-  // Conservative: a bake keeps its position relative to the passes that sample its output, and
-  // strip passes never produce one.
-  for (const auto& pass : passes) {
-    if (!pass.stripTarget && !isEfbPass(pass)) {
-      log_fuse_bail("bake or offscreen pass in the frame");
-      return false;
-    }
-    if (!pass.paletteConvs.empty()) {
-      log_fuse_bail("palette conversion recorded");
-      return false;
-    }
-  }
-  struct Group {
-    std::vector<size_t> indices;
-    size_t target = SIZE_MAX;
-  };
-  std::vector<Group> groups;
-  Group group;
-  for (size_t i = 0; i < passes.size(); ++i) {
-    if (!isEfbPass(passes[i])) {
-      continue;
-    }
-    group.indices.push_back(i);
-    if (isBarrier(passes[i])) {
-      group.target = i;
-      groups.push_back(std::move(group));
-      group = Group{};
-    }
-  }
-  if (!group.indices.empty()) {
-    for (const size_t i : group.indices) {
-      if (!passes[i].commands.empty()) {
-        group.target = i;
-      }
-    }
-    if (group.target != SIZE_MAX) {
-      groups.push_back(std::move(group));
-    }
-  }
-  bool mergesAnything = false;
-  for (const auto& candidate : groups) {
-    size_t contributors = 0;
-    for (const size_t i : candidate.indices) {
-      if (i == candidate.target || !passes[i].commands.empty()) {
-        ++contributors;
-      }
-    }
-    if (contributors > 1) {
-      mergesAnything = true;
-    }
-  }
-  if (!mergesAnything) {
-    log_fuse_bail("no group has more than one drawing pass");
-    return false;
-  }
-  for (auto& candidate : groups) {
-    if (candidate.target == SIZE_MAX) {
-      continue;
-    }
-    size_t commandCount = 0;
-    bool different = false;
-    for (const size_t i : candidate.indices) {
-      commandCount += passes[i].commands.size();
-      different |= i != candidate.target;
-    }
-    if (!different) {
-      continue;
-    }
-    CommandList combined;
-    combined.reserve(commandCount);
-    for (const size_t i : candidate.indices) {
-      passes[candidate.target].requireReadyPipelines |= passes[i].requireReadyPipelines;
-      auto& source = passes[i].commands;
-      combined.insert(combined.end(), std::make_move_iterator(source.begin()),
-                      std::make_move_iterator(source.end()));
-      release_command_list(std::move(source));
-    }
-    passes[candidate.target].commands = std::move(combined);
-  }
-  // Strip passes move ahead of the merged EFB pass they belong to; merged-away and trailing empty
-  // EFB passes are dropped. The frame's clear at the next begin_frame replaces the display copy's
-  // trailing clear.
-  std::vector<RenderPass> reordered;
-  reordered.reserve(passes.size());
-  std::vector<RenderPass> pendingStrips;
-  for (size_t i = 0; i < passes.size(); ++i) {
-    if (!isEfbPass(passes[i])) {
-      if (passes[i].stripTarget) {
-        pendingStrips.push_back(std::move(passes[i]));
-      }
-      continue;
-    }
-    bool isTarget = false;
-    for (const auto& candidate : groups) {
-      if (candidate.target == i) {
-        isTarget = true;
-        break;
-      }
-    }
-    if (!isTarget) {
-      continue;
-    }
-    for (auto& strip : pendingStrips) {
-      reordered.push_back(std::move(strip));
-    }
-    pendingStrips.clear();
-    reordered.push_back(std::move(passes[i]));
-  }
-  for (auto& strip : pendingStrips) {
-    reordered.push_back(std::move(strip));
-  }
-  passes.swap(reordered);
-  return true;
-}
-
 void seal_frame(SealedFrame& out) noexcept {
   out.data().depthMapping = depth_peek::capture_frame_mapping();
   ZoneScoped;
@@ -2328,7 +2180,6 @@ void seal_frame(SealedFrame& out) noexcept {
   // capacity included, back to the producer.
   recycle_render_passes(passes);
   passes.swap(g_renderPasses);
-  fuse_efb_passes(passes);
   g_stats.renderPassCount = static_cast<uint32_t>(passes.size());
   uint32_t efbPasses = 0;
   for (const auto& pass : passes) {
@@ -2636,7 +2487,6 @@ void aurora_pop_debug_group() {
 
 const AuroraStats* aurora_get_stats() { return &aurora::gfx::g_stats; }
 
-void aurora_set_fuse_efb_passes(int enable) { aurora::gfx::set_fuse_efb_passes(enable != 0); }
 
 extern "C" uint32_t AuroraTakeStagingSplits() {
   return aurora::gfx::g_statStagingSplits.exchange(0, std::memory_order_relaxed);
