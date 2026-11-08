@@ -24,6 +24,8 @@
 #include <SDL3/SDL_iostream.h>
 #include <absl/container/flat_hash_map.h>
 
+#include <aurora/switch_hooks.h>
+
 #include <absl/container/flat_hash_set.h>
 #include <fmt/format.h>
 #include <tracy/Tracy.hpp>
@@ -74,11 +76,6 @@ struct SdlVfsSqliteFile {
 static std::atomic<uint64_t> g_blobReadNanos{0};
 static std::atomic<uint64_t> g_blobReadBytes{0};
 static std::atomic<uint64_t> g_blobReadCalls{0};
-
-#if defined(MKW_PLATFORM_SWITCH)
-// Runtime hook: raise the prewarm worker above the guest while the boot prewarm runs.
-extern "C" void MkwSetPipelineWorkerPriority(int highPriority);
-#endif
 
 static std::mutex g_pipelineMutex;
 static bool g_hasPipelineThread = false;
@@ -1082,6 +1079,13 @@ static void pipeline_cache_writer() {
       std::unique_lock lock{g_pipelineCacheWriterMutex};
       g_pipelineCacheWriterCv.wait(lock,
                                    [] { return g_pipelineCacheWriterStop || !g_pipelineCacheWriteQueue.empty(); });
+      // New pipelines arrive in bursts while a scene loads. Coalesce them instead of committing a
+      // transaction per pipeline; the SD card is also serving that scene's assets.
+      if (!g_pipelineCacheWriterStop && g_pipelineCacheWriteQueue.size() < 16) {
+        g_pipelineCacheWriterCv.wait_for(lock, std::chrono::milliseconds(250), [] {
+          return g_pipelineCacheWriterStop || g_pipelineCacheWriteQueue.size() >= 16;
+        });
+      }
       if (g_pipelineCacheWriterStop && g_pipelineCacheWriteQueue.empty()) {
         return;
       }
@@ -1154,8 +1158,21 @@ static void note_pipeline_queue_drained() {
   mark_boot_prewarm_compiled();
   // Persist the monolithic Vulkan pipeline cache once after boot prewarm only; doing it on
   // every drained burst stalls the device lock mid-race. Later first-use compiles are
-  // covered by the shutdown serialize.
-  webgpu::serialize_pipeline_caches();
+  // covered by the shutdown serialize. On Switch the serialize takes about a second and
+  // freezes the guest when the background prewarm drains, so it is shutdown-only there.
+  static const bool serializeAtBootDrain = [] {
+#if defined(MKW_PLATFORM_SWITCH)
+    const char* value = std::getenv("NSMBW_SERIALIZE_PREWARM");
+    return value != nullptr && value[0] == '1';
+#else
+    return true;
+#endif
+  }();
+  if (serializeAtBootDrain) {
+    webgpu::serialize_pipeline_caches();
+  } else {
+    Log.info("Pipeline prewarm drain: boot serialize skipped (Switch); the shutdown path persists it");
+  }
   const auto elapsed =
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_prewarmStart);
   const auto stats = webgpu::blob_cache_stats();
@@ -1261,6 +1278,13 @@ static void pipeline_worker() {
         --g_activePriorityPipelineWorkers;
       }
     }
+#if defined(MKW_PLATFORM_SWITCH)
+    if (background && !g_prewarmBoost.load(std::memory_order_relaxed)) {
+      // The startup screen was skipped. Give the guest's SD reads a window instead of issuing the
+      // next blob-cache page immediately; the queue still drains, just a little slower.
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+#endif
     g_pipelineCv.notify_all();
   }
 }
@@ -1505,11 +1529,14 @@ void set_prewarm_boost(bool enabled) noexcept {
   g_pipelineCv.notify_all();
 }
 
-void wait_for_boot_pipelines() {
-  std::unique_lock lock{g_pipelineMutex};
-  while (queuedPipelines.load(std::memory_order_relaxed) != 0) {
-    g_pipelineCv.wait_for(lock, std::chrono::milliseconds(50));
+// Starts the queued prewarm at background priority. The caller already has a visible screen, so
+// the worker must not outrank the thread drawing it.
+void allow_prewarm() noexcept {
+  if (!g_prewarmAllowed.exchange(true, std::memory_order_relaxed)) {
+    g_prewarmStart = std::chrono::steady_clock::now();
+    g_prewarmDone.store(0, std::memory_order_relaxed);
   }
+  g_pipelineCv.notify_all();
 }
 
 uint32_t queued_pipeline_count() noexcept {
@@ -1592,4 +1619,4 @@ void aurora_release_shader_modules_light() {
 
 void aurora_set_prewarm_boost(bool enabled) { aurora::gfx::set_prewarm_boost(enabled); }
 
-void aurora_wait_for_boot_pipelines() { aurora::gfx::wait_for_boot_pipelines(); }
+void aurora_prewarm_allow() { aurora::gfx::allow_prewarm(); }

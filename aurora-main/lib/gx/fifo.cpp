@@ -17,9 +17,7 @@
 
 #include "tracy/Tracy.hpp"
 
-#if defined(MKW_PLATFORM_SWITCH)
-extern "C" void MkwConfigureGxWorkerThread();
-#endif
+#include <aurora/switch_hooks.h>
 
 namespace aurora::gx::fifo {
 static Module Log("aurora::gx::fifo");

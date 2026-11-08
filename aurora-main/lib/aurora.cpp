@@ -22,9 +22,7 @@
 #include "system_info.hpp"
 #include "thread_utils.hpp"
 
-#if defined(MKW_PLATFORM_SWITCH)
-extern "C" void MkwConfigureFrameWorkerThread();
-#endif
+#include <aurora/switch_hooks.h>
 #include "tracy/Tracy.hpp"
 
 #if defined(_WIN32)

@@ -153,6 +153,10 @@ Things that are specific to Newer:
 
 ## Other tools
 
+- `make_pipeline_seed.py <out.db> <pipeline_cache.db> [...]` merges caches a console wrote
+  (`Cache/pipeline_cache.db`, with its `-wal` file beside it) into the shipped
+  `runtime/assets/pipeline/initial_pipeline_cache.db`, so a fresh install prewarms the shaders that
+  console discovered. The first input seeds the output; later ones add their missing recipes.
 - `build_function_map.py` made [`MAP.txt`](MAP.txt), the function map the translator follows.
 - `ppcdis.py`, `symhash.py`, `nsmbw_versions.py`, `hook_size_check.py`, `verify_runtime_addrs.py`:
   the reverse-engineering helpers used to move WiiCompiled's Mario Kart Wii hooks to NSMBW.

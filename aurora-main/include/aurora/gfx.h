@@ -56,18 +56,6 @@ typedef struct {
 const AuroraStats* aurora_get_stats();
 void aurora_get_present_timing(AuroraPresentTiming* timing);
 
-// NSMBW profiling: skip one draw category ("", "blend", "depth", "nodepth", "indirect", "tev>=N",
-// "tex>=N", "all") and/or the GX texture copies to measure their cost in one run. Both are intended
-// for diagnostics only: visuals are broken while they are active.
-void aurora_set_skip_draws(const char* filter);
-void aurora_set_skip_texture_copies(int enable);
-int aurora_skip_texture_copies(void);
-void aurora_set_no_merge(int mode);
-
-// NSMBW: encode the frame's EFB work as one pass after the scratch strip passes instead of one
-// pass per strip entry. Removes the store/reload of the EFB color and depth at every split.
-void aurora_set_fuse_efb_passes(int enable);
-
 // Interpolation health: the per-frame fields describe the last sealed frame, the counters
 // accumulate since it was configured. This answers "output FPS dropped but the game held 60".
 typedef struct {
@@ -110,11 +98,10 @@ bool aurora_boot_prewarm_compiled();
 void aurora_release_shader_modules();
 // Same release without the device tick, for use while the prewarm is still running.
 void aurora_release_shader_modules_light();
-// Blocks until every queued boot pipeline has been built. Call before starting the guest when the
-// first frames must not wait on a build.
-void aurora_wait_for_boot_pipelines();
 // Raises the boot prewarm above the guest once its first visible frame is on screen.
 void aurora_set_prewarm_boost(bool enabled);
+// Lets the queued boot prewarm run at background priority, without raising it above the guest.
+void aurora_prewarm_allow();
 
 // Controls whether display copies bypass the Wii's vertical copy filter.
 void aurora_set_disable_copy_filter(bool disabled);

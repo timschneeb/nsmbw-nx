@@ -14,6 +14,12 @@ void Draw() noexcept;
 bool StartupScreenVisible() noexcept;
 // True while the first boot's pipeline prewarm is still running, so the guest may not run yet.
 bool BootShadersPending() noexcept;
+// True while the startup screen should show the shader count.
+bool BootShaderNoticeActive() noexcept;
+// Resets the startup screen and prewarm gate for this run; call once at startup.
+void ResetBootShaderState() noexcept;
+// Advances the startup screen and prewarm gate; call once per presented frame.
+void UpdateBootShaderState() noexcept;
 // The Switch boot splash ran the first-boot prewarm: release the guest and retire the overlay's
 // startup screen, so only the boot splash showed the shader progress.
 void MarkBootShadersReady() noexcept;

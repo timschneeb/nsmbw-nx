@@ -197,7 +197,7 @@ if(NOT MKW_BASE_COMMON_SHARDS)
     message(FATAL_ERROR "Translator build graph contains no shared base shards")
 endif()
 
-add_library(mkw_base_shared STATIC ${MKW_BASE_HOT_SHARDS} ${MKW_BASE_COMMON_SHARDS})
+add_library(mkw_base_shared STATIC ${MKW_BASE_COMMON_SHARDS})
 mkw_configure_translated_target(mkw_base_shared)
 target_precompile_headers(mkw_base_shared PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
 

@@ -403,6 +403,7 @@ inline std::filesystem::path ResolveConfigPath() {
 // writing while this process still holds a read handle on it, so settings go to a
 // scratch file that replaces the target.
 inline bool WriteFileText(const std::filesystem::path& path, const std::string& text) {
+#if defined(MKW_PLATFORM_SWITCH)
     const std::string target = PathToUtf8(path);
     const std::string temp = target + ".tmp";
     std::FILE* file = std::fopen(temp.c_str(), "wb");
@@ -421,6 +422,14 @@ inline bool WriteFileText(const std::filesystem::path& path, const std::string& 
     }
     std::remove(temp.c_str());
     return false;
+#else
+    std::ofstream output(path, std::ios::trunc);
+    if (!output) {
+        return false;
+    }
+    output << text;
+    return static_cast<bool>(output);
+#endif
 }
 
 inline void EnsureConfigFile() {

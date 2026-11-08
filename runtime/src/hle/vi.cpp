@@ -14,6 +14,7 @@
 #include "runtime_log.h"
 #include "host_suspend.h"
 #include "guest_profiler.h"
+#include "frame_stats.h"
 #include "perf_stats.h"
 #include "runtime_config.h"
 #include "shadow_sampler.h"
@@ -647,12 +648,6 @@ void LogSceneChanges() {
     }
     RT_LOGF(RT_TAG_VI, "scene -> 0x%03X %s (frame %u)\n", now, name,
             s_presentedXfbFrames.load(std::memory_order_relaxed));
-    if (now == 0x005u) {
-        // Gameplay starts; keep the prewarm running at background priority.
-        aurora_set_prewarm_boost(false);
-        RT_LOGF(RT_TAG_VI, "prewarm continues for gameplay (%u queued)\n",
-                aurora_get_queued_pipeline_count());
-    }
 }
 
 void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool serviceAurora) {
@@ -1013,120 +1008,9 @@ static bool FullStats() {
     return PerfStats::Full();
 }
 
-static double PercentileMs(std::vector<double> values, double fraction) {
-    if (values.empty()) {
-        return 0.0;
-    }
-    const size_t index = std::min(values.size() - 1, static_cast<size_t>(fraction * static_cast<double>(values.size())));
-    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(index), values.end());
-    return values[index];
-}
-
-// One CSV row per two second window so a run can be diffed by scripts/perf_compare.py.
-// The guest thread only formats and enqueues: on Switch, stderr and perf.csv are
-// unbuffered SD writes, and doing them inline stalled the guest for 150-200 ms at
-// every window boundary. This sink owns both writes on core 1.
-class StatsSink {
-public:
-    static StatsSink& Instance() {
-        static StatsSink* sink = new StatsSink();
-        return *sink;
-    }
-
-    void Csv(std::string text) { Push(true, std::move(text)); }
-    void Log(std::string text) { Push(false, std::move(text)); }
-
-private:
-    struct Item {
-        bool csv = false;
-        std::string text;
-    };
-
-    StatsSink() {
-        thread_ = std::thread([this] { Run(); });
-        thread_.detach();
-    }
-
-    void Push(bool csv, std::string text) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            queue_.push_back(Item{csv, std::move(text)});
-        }
-        cv_.notify_one();
-    }
-
-    void Run() {
-#if defined(MKW_PLATFORM_SWITCH)
-        // Host-side I/O belongs on core 1 with the frame worker and GX thread.
-        svcSetThreadCoreMask(threadGetCurHandle(), 1, 1ull << 1);
-#endif
-        std::FILE* csv = nullptr;
-        for (;;) {
-            Item item;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [this] { return !queue_.empty(); });
-                item = std::move(queue_.front());
-                queue_.pop_front();
-            }
-            if (item.csv) {
-                if (csv == nullptr) {
-                    const auto path = RuntimeConfigFile::ApplicationDataDirectory() / "Logs" / "perf.csv";
-                    std::error_code ec;
-                    std::filesystem::create_directories(path.parent_path(), ec);
-                    const std::string text = RuntimeConfigFile::PathToUtf8(path);
-                    const bool exists = std::filesystem::exists(path, ec);
-                    csv = std::fopen(text.c_str(), "ab");
-                    if (csv == nullptr) {
-                        continue;
-                    }
-                    if (!exists) {
-                        std::fputs("build,scene,frames,fps,p50,p95,p99,worst,game_ms,gx_ms,guest_ms,audio_ms,"
-                                   "gxfifo_ms,gxfifo_writes,bp_ms,dl_ms,draw_ms,submit_ms,guest_core,audio_core,over20,"
-                                   "mode,passes,efb_passes,scale\n",
-                                   csv);
-                    }
-                }
-                std::fputs(item.text.c_str(), csv);
-                std::fflush(csv);
-            } else {
-                std::fputs(item.text.c_str(), stderr);
-            }
-        }
-    }
-
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    std::deque<Item> queue_;
-    std::thread thread_;
-};
-
+// The CSV keeps a mode column so scripts keep their column positions; the profiling cycle that
+// filled it is gone.
 constexpr const char* kProfilePhaseName = "none";
-
-static void AppendPerfCsv(uint32_t scene, int frames, double fps, double p50, double p95, double p99, double worst,
-                          double gameMs, double gxMs, double guestMs, double audioMs, double gxFifoMs, double gxFifoWrites, double bpMs, double dlMs, double drawMs, double submitMs,
-                          int guestCore, int audioCore, int over20, const char* profilePhase, uint32_t renderPasses,
-                          uint32_t efbPasses, float renderScale) {
-    char row[512];
-    std::snprintf(row, sizeof(row),
-                 "%s %s,0x%03X,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%s,%u,%u,%.2f\n",
-                 __DATE__, __TIME__, scene, frames, fps, p50, p95, p99, worst, gameMs, gxMs, guestMs, audioMs,
-                 gxFifoMs, gxFifoWrites, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, over20, profilePhase,
-                 renderPasses, efbPasses, static_cast<double>(renderScale));
-    StatsSink::Instance().Csv(row);
-}
-
-// Window stats go through the same sink instead of fprintf(stderr) on the guest.
-static void StatsLog(const char* format, ...) {
-    char buffer[512];
-    va_list args;
-    va_start(args, format);
-    std::vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-    std::string line("[vi] ");
-    line += buffer;
-    StatsSink::Instance().Log(std::move(line));
-}
 
 // The scheduler's idle time (no guest thread runnable, though its idle loop runs the audio DMA
 // callbacks, which are guest code), and how many of those waits ended within a millisecond after a
@@ -1353,7 +1237,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             if (frame > 20.0 && frame < 2000.0 && s_logged++ < 30) {
                 uint32_t sceneWord = 0;
                 Memory::TryRead32(0x80428730u, sceneWord);
-                StatsLog(
+                FrameStats::Log(
                         "slow frame %.1f ms (scene 0x%03X): game %.2f (gx %.2f, disc %.2f in %u reads), present %.2f, "
                         "end_frame %.2f, pace %.2f; thread cpu %.1f user + %.1f kernel, %u page faults\n",
                         frame, sceneWord & 0xFFFFu, ms(presentStart - s_lastEnd), gxMs, dvdMs, frameReads,
@@ -1390,7 +1274,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             AuroraTakeCopyStats(&copies, &creates);
             uint32_t clockCpu = 0, clockGpu = 0, clockEmc = 0;
             NsmbwPerfClocks(&clockCpu, &clockGpu, &clockEmc);
-            StatsLog(
+            FrameStats::Log(
                     "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.0f unmerged, %.1f copies, "
                     "%.1f new copy textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, "
                     "%d over 20 ms, clocks %u/%u/%u MHz\n",
@@ -1401,9 +1285,9 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     clockGpu, clockEmc);
             uint32_t sceneWord = 0;
             Memory::TryRead32(0x80428730u, sceneWord);
-            const double p50 = PercentileMs(times.samples, 0.50);
-            const double p95 = PercentileMs(times.samples, 0.95);
-            const double p99 = PercentileMs(times.samples, 0.99);
+            const double p50 = FrameStats::Percentile(times.samples, 0.50);
+            const double p95 = FrameStats::Percentile(times.samples, 0.95);
+            const double p99 = FrameStats::Percentile(times.samples, 0.99);
             // Exchange-on-read: the value is this window's decode time already.
             const uint64_t gxWindowTotal = AuroraTakeFifoDecodeNanos();
             const double gxWindowMs = static_cast<double>(gxWindowTotal) / 1e6;
@@ -1446,7 +1330,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             s_lastStagedBytes = stagedBytes;
             uint64_t sealStages[8] = {};
             AuroraTakeSealStages(sealStages, 8);
-            StatsLog("seal: lock %.2f enc %.2f efbdl %.2f end %.2f win %.2f imgui %.2f detach %.2f expire %.2f ms/frame, "
+            FrameStats::Log("seal: lock %.2f enc %.2f efbdl %.2f end %.2f win %.2f imgui %.2f detach %.2f expire %.2f ms/frame, "
                      "parallel texture decodes %.2f/frame, staging splits %.2f/frame\n",
                      sealStages[7] / 1e6 / n, sealStages[0] / 1e6 / n, sealStages[1] / 1e6 / n,
                      sealStages[2] / 1e6 / n, sealStages[3] / 1e6 / n, sealStages[4] / 1e6 / n,
@@ -1458,7 +1342,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                                       workerStages[4] + workerStages[5] + workerStages[6]) /
                                      1e6 / n;
             const double workerCycle = workerStages[7] / 1e6 / n;
-            StatsLog("worker: cycle %.2f seal %.2f enc %.2f record %.2f fill %.2f finish %.2f submit %.2f tail %.2f "
+            FrameStats::Log("worker: cycle %.2f seal %.2f enc %.2f record %.2f fill %.2f finish %.2f submit %.2f tail %.2f "
                      "prep %.2f ms/frame\n", workerCycle, workerStages[0] / 1e6 / n, workerStages[1] / 1e6 / n,
                      workerStages[2] / 1e6 / n, workerStages[3] / 1e6 / n, workerStages[4] / 1e6 / n,
                      workerStages[5] / 1e6 / n, workerStages[6] / 1e6 / n, workerCycle - workerSum);
@@ -1469,7 +1353,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                                          ? static_cast<double>(mapWait - s_lastMapWait) / 1e6 / n
                                          : 0.0;
             s_lastMapWait = mapWait;
-            StatsLog(
+            FrameStats::Log(
                     "perf: p50 %.2f p95 %.2f p99 %.2f worst %.2f ms; guest cpu %.2f ms core %d, audio %.2f ms core "
                     "%d, gx %.2f ms, gx fifo %.2f ms in %.1f k writes (%.0f KiB): bp %.2f x %.1f k, dl %.2f x %.0f, submit %.2f, "
                     "draw %.2f x %.0f, mmio %.1f k, %d over 20 ms; passes %u (efb %u), profile %s; dd %.2f w %.2f map %.2f "
@@ -1483,7 +1367,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     PerfStats::TakeFastmemMmioLoads() / n / 1000.0, times.slow, renderPasses, efbPasses,
                     kProfilePhaseName, presentDrawDone / 1e6 / presentWaitN, presentWorkerWait / 1e6 / presentWaitN,
                     mapWaitMs, fifoSealedWait / 1e6 / n, fifoSyncWait / 1e6 / n, stagingCopyMs, stagedMb);
-            AppendPerfCsv(sceneWord & 0xFFFFu, times.frames, n * 1000.0 / window, p50, p95, p99, times.worstMs,
+            FrameStats::Csv(sceneWord & 0xFFFFu, times.frames, n * 1000.0 / window, p50, p95, p99, times.worstMs,
                           times.gameMs / n, gxWindowMs / n, guestMs / n, audioMs / n, gxFifoNanos / 1e6 / n,
                           gxFifoCalls / n, bpMs, dlMs, drawMs, submitMs, guestCore, audioCore, times.slow,
                           kProfilePhaseName, renderPasses, efbPasses, RuntimeConfigFile::ResolutionMultiplier(1.0f));
@@ -1497,7 +1381,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     std::lock_guard<std::mutex> lock(g_viMutex);
                     retraceCount = g_vi.retraceCount;
                 }
-                StatsLog(
+                FrameStats::Log(
                         "idle %.2f ms a frame in %.1f waits, %.0f%% of them ending at a retrace; %.2f retraces a frame\n",
                         g_idleNanos.exchange(0, std::memory_order_relaxed) / 1e6 / n, waits / n,
                         waits ? 100.0 * retraceEnds / waits : 0.0,
@@ -1521,14 +1405,14 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     std::snprintf(part, sizeof(part), " %08X %.2f ms;", threads[i].first, threads[i].second / 1e6 / n);
                     waiters += part;
                 }
-                StatsLog("idle ended by (a frame):%s thread that waited:%s\n", enders.c_str(), waiters.c_str());
+                FrameStats::Log("idle ended by (a frame):%s thread that waited:%s\n", enders.c_str(), waiters.c_str());
                 std::vector<std::pair<uint64_t, MainWait>> mainWaits(g_mainWaits.begin(), g_mainWaits.end());
                 std::sort(mainWaits.begin(), mainWaits.end(),
                           [](const auto& a, const auto& b) { return a.second.blocked > b.second.blocked; });
                 for (size_t i = 0; i < mainWaits.size() && i < 5; ++i) {
                     const MainWait& wait = mainWaits[i].second;
                     const uint32_t lr = static_cast<uint32_t>(mainWaits[i].first);
-                    StatsLog("main thread slept %.2f ms a frame (%.2f idle, %.1f times) on queue %08X from %08X\n",
+                    FrameStats::Log("main thread slept %.2f ms a frame (%.2f idle, %.1f times) on queue %08X from %08X\n",
                             wait.blocked / 1e6 / n, wait.idle / 1e6 / n, wait.count / n,
                             static_cast<uint32_t>(mainWaits[i].first >> 32), lr);
                 }
@@ -1537,21 +1421,21 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                     uint32_t mixes = 0;
                     int mixCpu = -1;
                     AxDspHle::TakeMixStats(&mixNanos, &mixWaitNanos, &mixes, &mixCpu);
-                    StatsLog("audio mix: %.2f ms a frame in %.1f mixes (%.3f ms each, last on cpu %d), guest waited %.2f ms\n",
+                    FrameStats::Log("audio mix: %.2f ms a frame in %.1f mixes (%.3f ms each, last on cpu %d), guest waited %.2f ms\n",
                             mixNanos / 1e6 / n, mixes / n, mixes ? mixNanos / 1e6 / mixes : 0.0, mixCpu,
                             mixWaitNanos / 1e6 / n);
                     uint64_t steps[7] = {};
                     OS_HLE_TakeIdleSteps(steps);
-                    StatsLog("retrace poll sleeps: %.2f ms a frame in %.1f (%.1f begun)\n",
+                    FrameStats::Log("retrace poll sleeps: %.2f ms a frame in %.1f (%.1f begun)\n",
                             g_retracePollSleepNanos.exchange(0) / 1e6 / n, g_retracePollSleeps.exchange(0) / n,
                             g_retracePollEntries.exchange(0) / n);
-                    StatsLog("idle loop (ms a frame): sleep timers %.2f, audio %.2f, retrace %.2f, fiber timers %.2f, "
+                    FrameStats::Log("idle loop (ms a frame): sleep timers %.2f, audio %.2f, retrace %.2f, fiber timers %.2f, "
                             "alarms %.2f, wait %.2f; %.1f passes\n", steps[0] / 1e6 / n, steps[1] / 1e6 / n, steps[2] / 1e6 / n,
                             steps[3] / 1e6 / n, steps[4] / 1e6 / n, steps[5] / 1e6 / n, steps[6] / n);
                     uint64_t pushNanos = 0, callbackNanos = 0;
                     uint32_t blocks = 0;
                     Audio_HLE_TakeTickStats(&pushNanos, &callbackNanos, &blocks);
-                    StatsLog("audio blocks: %.1f a frame, speaker push %.2f ms, AI callback %.2f ms (%.3f ms each)\n",
+                    FrameStats::Log("audio blocks: %.1f a frame, speaker push %.2f ms, AI callback %.2f ms (%.3f ms each)\n",
                             blocks / n, pushNanos / 1e6 / n, callbackNanos / 1e6 / n,
                             blocks ? callbackNanos / 1e6 / blocks : 0.0);
                 }
