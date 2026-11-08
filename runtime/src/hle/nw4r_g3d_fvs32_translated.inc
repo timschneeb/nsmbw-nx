@@ -1,8 +1,8 @@
 // Verbatim copy of the translator's output for 0x802403C0
-// (nw4r::g3d::CalcAnimationFVS<CAnmFmtTraits<ResAnmChrFVS32Data>>), kept only as
-// the reference for NSMBW_G3D_COMPARE=on. The native override replaces the guest
-// address, so emit-build-shards no longer generates this body; nothing else may
-// change here, or the comparison stops being bit-exact ground truth.
+// (nw4r::g3d::CalcAnimationFVS<CAnmFmtTraits<ResAnmChrFVS32Data>>), kept as the
+// fallback for the GQR encodings the native fast path does not handle. The native
+// override replaces the guest address, so emit-build-shards no longer generates
+// this body.
 void CalcAnimationFVS32Translated(CpuContext* MKW_RESTRICT ctx)
 {
     uint32_t cr0_0 = 0;

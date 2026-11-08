@@ -9,9 +9,8 @@
 //   Blends the ChrAnmResult of every child that can provide `id` into one
 //   ChrAnmResult, including the matrix/quaternion fixup.
 //
-// NSMBW_G3D_COMPARE=on additionally runs the translated reference, compares the
-// results bit-exactly and returns the translated one. Default (unset or off)
-// returns the native result.
+// The translated bodies stay as the fallback for the GQR encodings and blend paths the
+// natives do not cover. NSMBW_G3D_NATIVE=0 forces them for A/B.
 #include "hle_stubs.h"
 #include "memory.h"
 #include "ppc_runtime.h"
@@ -80,9 +79,8 @@ double Slope(uint32_t raw, uint32_t s16Scale) {
         PpcDequantizePsqInline<int16_t>(static_cast<int16_t>(SlopeS16(raw)), s16Scale));
 }
 
-// The translator's body for 0x802403C0. Reached when the GQRs are not the
-// encodings the nw4r fast-cast path installs, and used as the reference for
-// NSMBW_G3D_COMPARE.
+// The translator's body for 0x802403C0, kept as the fallback when the GQRs are not the
+// encodings the nw4r fast-cast path installs.
 #include "nw4r_g3d_fvs32_translated.inc"
 
 // math::FInv: fres followed by one Newton-Raphson step, as the translated helper.
@@ -179,18 +177,6 @@ double CalcAnimationFVS32(uint32_t pFVSData, double frame, uint32_t gqr2, uint32
     return PPC_Fmadds(deltaTimesS1, tangents, result);
 }
 
-bool CompareEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("NSMBW_G3D_COMPARE");
-        if (value == nullptr) {
-            return false;
-        }
-        return std::strcmp(value, "on") == 0 || std::strcmp(value, "1") == 0 ||
-               std::strcmp(value, "compare") == 0;
-    }();
-    return enabled;
-}
-
 // NSMBW_G3D_NATIVE=0 runs the translated bodies, for A/B and as a kill switch.
 bool NativeEnabled() {
     static const bool enabled = [] {
@@ -219,58 +205,7 @@ extern "C" void NW4R_G3D_CalcAnimationFVS32_HLE(CpuContext* ctx) {
         CalcAnimationFVS32Translated(ctx);
         return;
     }
-    if (!CompareEnabled()) {
-        ctx->fpr[1].d = CalcAnimationFVS32(pFVSData, frame, gqr2, gqr3, gqr6);
-        return;
-    }
-
-    // Compare mode: run the translated reference on the caller's registers, then
-    // rewind them and run the native body on the same inputs. The translated
-    // result is the one left behind.
-    uint32_t gpr[8];
-    PPC_FPR fpr[12];
-    for (uint32_t i = 0; i < 8; ++i) {
-        gpr[i] = ctx->gpr[i];
-    }
-    for (uint32_t i = 0; i < 12; ++i) {
-        fpr[i] = ctx->fpr[i];
-    }
-    const uint32_t cr = ctx->cr;
-    const uint32_t xer = ctx->xer;
-
-    CalcAnimationFVS32Translated(ctx);
-    const uint32_t translatedBits = PpcBitCastToU32Inline(static_cast<float>(ctx->fpr[1].d));
-
-    for (uint32_t i = 0; i < 8; ++i) {
-        ctx->gpr[i] = gpr[i];
-    }
-    for (uint32_t i = 0; i < 12; ++i) {
-        ctx->fpr[i] = fpr[i];
-    }
-    ctx->cr = cr;
-    ctx->xer = xer;
-
-    const uint32_t nativeBits = PpcBitCastToU32Inline(
-        static_cast<float>(CalcAnimationFVS32(pFVSData, frame, gqr2, gqr3, gqr6)));
-
-    static uint32_t compares = 0;
-    static uint32_t mismatches = 0;
-    ++compares;
-    if (translatedBits != nativeBits) {
-        if (mismatches++ == 0) {
-            RT_LOGF(RT_TAG_HLE,
-                    "g3d fvs32 compare mismatch: fvs %08X frame %.9g translated %08X native %08X\n",
-                    pFVSData, frame, translatedBits, nativeBits);
-        }
-    }
-    if (compares == 1) {
-        RT_LOGF(RT_TAG_HLE, "g3d fvs32 compare: first call fvs %08X frame %.9g\n", pFVSData, frame);
-    }
-    if (compares % 100000u == 0) {
-        RT_LOGF(RT_TAG_HLE, "g3d fvs32 compare: %u calls, %u mismatches\n", compares, mismatches);
-    }
-
-    ctx->fpr[1].d = static_cast<double>(PpcBitCastToFloatInline(translatedBits));
+    ctx->fpr[1].d = CalcAnimationFVS32(pFVSData, frame, gqr2, gqr3, gqr6);
 }
 
 PPC_NATIVE_OVERRIDE_VOID(802403C0, NW4R_G3D_CalcAnimationFVS32_HLE, (CpuContext* ctx), (ctx));
@@ -297,7 +232,6 @@ constexpr uint32_t kFlagUseAccScale = 0x10;
 constexpr uint32_t kResultFlags = 0x00;
 constexpr uint32_t kResultScale = 0x04;  // Vec s
 constexpr uint32_t kResultMtx = 0x1C;    // math::MTX34 rt
-constexpr uint32_t kResultDwords = 0x4C / 4;  // flags + s + rawR + rt
 
 // ChrAnmResult::flags bits.
 constexpr uint32_t kChrFlagScaleOne = 0x08;
@@ -468,7 +402,7 @@ double GuestFExp(CpuContext* ctx, double value) {
     return ctx->fpr[1].d;
 }
 
-// The translated body for 0x80248330, kept as the NSMBW_G3D_COMPARE reference.
+// The translated body for 0x80248330, kept as the fallback for the untested blend paths.
 #include "nw4r_g3d_chrblend_translated.inc"
 
 void AnmObjChrBlendGetResultNative(CpuContext* ctx) {
@@ -764,57 +698,6 @@ void AnmObjChrBlendGetResultNative(CpuContext* ctx) {
     ctx->gpr[3] = result;
 }
 
-struct BlendRegisters {
-    uint32_t gpr[32];
-    PPC_FPR fpr[32];
-    uint32_t cr;
-    uint32_t lr;
-    uint32_t ctr;
-    uint32_t xer;
-};
-
-void SaveBlendRegisters(CpuContext* ctx, BlendRegisters& out) {
-    std::memcpy(out.gpr, ctx->gpr, sizeof(out.gpr));
-    std::memcpy(out.fpr, ctx->fpr, sizeof(out.fpr));
-    out.cr = ctx->cr;
-    out.lr = ctx->lr;
-    out.ctr = ctx->ctr;
-    out.xer = ctx->xer;
-}
-
-void LoadBlendRegisters(CpuContext* ctx, const BlendRegisters& in) {
-    std::memcpy(ctx->gpr, in.gpr, sizeof(in.gpr));
-    std::memcpy(ctx->fpr, in.fpr, sizeof(in.fpr));
-    ctx->cr = in.cr;
-    ctx->lr = in.lr;
-    ctx->ctr = in.ctr;
-    ctx->xer = in.xer;
-}
-
-void ReadChrAnmResult(uint32_t addr, uint32_t (&out)[kResultDwords]) {
-    for (uint32_t i = 0; i < kResultDwords; ++i) {
-        out[i] = MemoryInline::FlatRead32(addr + i * 4u);
-    }
-}
-
-void WriteChrAnmResult(uint32_t addr, const uint32_t (&in)[kResultDwords]) {
-    for (uint32_t i = 0; i < kResultDwords; ++i) {
-        MemoryInline::FlatWrite32(addr + i * 4u, in[i]);
-    }
-}
-
-void ReadFrame(uint32_t addr, uint32_t (&out)[kFrameSize / 4]) {
-    for (uint32_t i = 0; i < kFrameSize / 4; ++i) {
-        out[i] = MemoryInline::FlatRead32(addr + i * 4u);
-    }
-}
-
-void WriteFrame(uint32_t addr, const uint32_t (&in)[kFrameSize / 4]) {
-    for (uint32_t i = 0; i < kFrameSize / 4; ++i) {
-        MemoryInline::FlatWrite32(addr + i * 4u, in[i]);
-    }
-}
-
 }  // namespace
 
 extern "C" void NW4R_G3D_AnmObjChrBlendGetResult_HLE(CpuContext* ctx) {
@@ -822,98 +705,11 @@ extern "C" void NW4R_G3D_AnmObjChrBlendGetResult_HLE(CpuContext* ctx) {
     // have no bit-exact coverage yet, so they stay on the translated body.
     const uint32_t blendFlags = MemoryInline::FlatRead32(ctx->gpr[3] + kBlendFlags);
     const bool untestedBlendPath = (blendFlags & (kFlagUseQuatBlend | kFlagUseAccScale)) != 0;
-    if (!CompareEnabled()) {
-        if (NativeEnabled() && !untestedBlendPath) {
-            AnmObjChrBlendGetResultNative(ctx);
-        } else {
-            AnmObjChrBlendGetResultTranslated(ctx);
-        }
-        return;
+    if (NativeEnabled() && !untestedBlendPath) {
+        AnmObjChrBlendGetResultNative(ctx);
+    } else {
+        AnmObjChrBlendGetResultTranslated(ctx);
     }
-
-    // Compare mode: run the translated reference on the caller's registers,
-    // snapshot the ChrAnmResult it wrote, restore the guest stack frame the child
-    // results are built in (children leave parts of that buffer untouched, so both
-    // runs must start from the same bytes), replay the same entry state through
-    // the native body and compare the two results. Child evaluations are
-    // repeated, which only costs time: a child result depends on `id` and the
-    // object.
-    BlendRegisters entry;
-    SaveBlendRegisters(ctx, entry);
-
-    uint32_t frameWords[kFrameSize / 4];
-    const uint32_t frameBase = entry.gpr[1] - kFrameSize;
-    ReadFrame(frameBase, frameWords);
-
-    AnmObjChrBlendGetResultTranslated(ctx);
-    const uint32_t referenceReturn = ctx->gpr[3];
-    uint32_t reference[kResultDwords];
-    ReadChrAnmResult(entry.gpr[4], reference);
-
-    LoadBlendRegisters(ctx, entry);
-    WriteFrame(frameBase, frameWords);
-    AnmObjChrBlendGetResultNative(ctx);
-    uint32_t native[kResultDwords];
-    ReadChrAnmResult(entry.gpr[4], native);
-
-    static uint32_t compares = 0;
-    static uint32_t mismatches = 0;
-    static uint32_t quatPath = 0;
-    static uint32_t accScalePath = 0;
-    ++compares;
-    const uint32_t anmFlags = MemoryInline::FlatRead32(entry.gpr[3] + kBlendFlags);
-    if ((anmFlags & kFlagUseQuatBlend) != 0) {
-        ++quatPath;
-    }
-    if ((anmFlags & kFlagUseAccScale) != 0) {
-        ++accScalePath;
-    }
-    for (uint32_t i = 0; i < kResultDwords; ++i) {
-        if (reference[i] == native[i]) {
-            continue;
-        }
-        if (mismatches++ == 0) {
-            RT_LOGF(RT_TAG_HLE,
-                    "g3d chrblend compare mismatch: this %08X result %08X id %u offset %02X"
-                    " translated %08X native %08X\n",
-                    entry.gpr[3], entry.gpr[4], entry.gpr[5], i * 4u, reference[i], native[i]);
-            const uint32_t obj = entry.gpr[3];
-            RT_LOGF(RT_TAG_HLE, "g3d chrblend mm: objflags %08X nChild %u\n",
-                    MemoryInline::FlatRead32(obj + kBlendFlags),
-                    MemoryInline::FlatRead32(obj + kBlendNumChild));
-            for (uint32_t c = 0; c < 4; ++c) {
-                RT_LOGF(RT_TAG_HLE, "g3d chrblend mm: child %u %08X weight %.9g\n", c,
-                        MemoryInline::FlatRead32(
-                            MemoryInline::FlatRead32(obj + kBlendChildren) + c * 4u),
-                        ReadF32(MemoryInline::FlatRead32(obj + kBlendWeights) + c * 4u));
-            }
-            RT_LOG(RT_TAG_HLE) << "g3d chrblend mm ref:";
-            for (uint32_t d = 0; d < kResultDwords; ++d) {
-                RT_LOG(RT_TAG_HLE) << " " << std::hex << reference[d];
-            }
-            RT_LOG(RT_TAG_HLE) << "\n";
-            RT_LOG(RT_TAG_HLE) << "g3d chrblend mm nat:";
-            for (uint32_t d = 0; d < kResultDwords; ++d) {
-                RT_LOG(RT_TAG_HLE) << " " << std::hex << native[d];
-            }
-            RT_LOG(RT_TAG_HLE) << std::dec << "\n";
-        }
-        break;
-    }
-    if (compares == 1) {
-        RT_LOGF(RT_TAG_HLE,
-                "g3d chrblend compare: first call this %08X result %08X id %u\n",
-                entry.gpr[3], entry.gpr[4], entry.gpr[5]);
-    }
-    if (compares % 100000u == 0) {
-        RT_LOGF(RT_TAG_HLE,
-                "g3d chrblend compare: %u calls, %u mismatches, %u quat, %u accscale\n", compares,
-                mismatches, quatPath, accScalePath);
-    }
-
-    WriteChrAnmResult(entry.gpr[4], reference);
-    LoadBlendRegisters(ctx, entry);
-    ctx->gpr[3] = referenceReturn;
 }
 
 PPC_NATIVE_OVERRIDE_VOID(80248330, NW4R_G3D_AnmObjChrBlendGetResult_HLE, (CpuContext* ctx), (ctx));

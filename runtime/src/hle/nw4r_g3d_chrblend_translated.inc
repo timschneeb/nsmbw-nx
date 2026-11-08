@@ -1,8 +1,7 @@
 // Verbatim copy of the translator's output for 0x80248330
-// (nw4r::g3d::AnmObjChrBlend::GetResult), kept only as the reference for
-// NSMBW_G3D_COMPARE=on. The native override replaces the guest address, so
-// emit-build-shards no longer generates this body; nothing else may change
-// here, or the comparison stops being bit-exact ground truth.
+// (nw4r::g3d::AnmObjChrBlend::GetResult), kept as the fallback for the blend
+// paths the native body does not cover. The native override replaces the guest
+// address, so emit-build-shards no longer generates this body.
 void AnmObjChrBlendGetResultTranslated(CpuContext* MKW_RESTRICT ctx)
 {
     uint32_t addr_lfsx_802483CC_loc_0 = 0;

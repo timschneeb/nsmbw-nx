@@ -7,9 +7,8 @@
 // 0x802405B0 GetAnmRotation (const and FVS32 formats native, others fall back)
 // 0x80241020 GetAnmTranslation (const and FVS32 formats native, others fall back)
 //
-// NSMBW_G3D_COMPARE=on runs the translated reference on the same entry registers and compares
-// the outputs bit-for-bit, returning the translated result. NSMBW_G3D_NATIVE=0 runs the
-// translated bodies directly.
+// The translated bodies stay as the fallback for the curve formats the natives do not cover.
+// NSMBW_G3D_NATIVE=0 forces them for A/B.
 #include "hle_stubs.h"
 
 #include "memory.h"
@@ -25,18 +24,6 @@ namespace {
 
 constexpr uint32_t kSinCosTable = 0x802F74A0;  // detail::gSinCosTbl, 256 x 16 bytes
 constexpr uint32_t kFidxScaleSda = 19160;      // SDA float: degrees to table index
-
-bool CompareEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("NSMBW_G3D_COMPARE");
-        if (value == nullptr) {
-            return false;
-        }
-        return std::strcmp(value, "on") == 0 || std::strcmp(value, "1") == 0 ||
-               std::strcmp(value, "compare") == 0;
-    }();
-    return enabled;
-}
 
 bool NativeEnabled() {
     static const bool enabled = [] {
@@ -94,36 +81,8 @@ void RotXYZFIdxNative(uint32_t mtx, float fx, float fy, float fz) {
     MemoryInline::FlatWriteFloat32(mtx + 0x2C, 0.0f);
 }
 
-struct SavedRegisters {
-    uint32_t gpr[32];
-    PPC_FPR fpr[32];
-    uint32_t cr;
-    uint32_t lr;
-    uint32_t ctr;
-    uint32_t xer;
-};
-
-void SaveRegisters(CpuContext* ctx, SavedRegisters& saved) {
-    std::memcpy(saved.gpr, ctx->gpr, sizeof(saved.gpr));
-    std::memcpy(saved.fpr, ctx->fpr, sizeof(saved.fpr));
-    saved.cr = ctx->cr;
-    saved.lr = ctx->lr;
-    saved.ctr = ctx->ctr;
-    saved.xer = ctx->xer;
-}
-
-void LoadRegisters(CpuContext* ctx, const SavedRegisters& saved) {
-    std::memcpy(ctx->gpr, saved.gpr, sizeof(saved.gpr));
-    std::memcpy(ctx->fpr, saved.fpr, sizeof(saved.fpr));
-    ctx->cr = saved.cr;
-    ctx->lr = saved.lr;
-    ctx->ctr = saved.ctr;
-    ctx->xer = saved.xer;
-}
-
 }  // namespace
 
-extern "C" void NW4R_G3D_RotXYZFIdx_Translated(CpuContext* ctx);
 extern "C" void NW4R_G3D_AnmRotation_Translated(CpuContext* ctx);
 extern "C" void NW4R_G3D_AnmTranslation_Translated(CpuContext* ctx);
 extern "C" void NW4R_G3D_CalcAnimationFVS32_HLE(CpuContext* ctx);
@@ -134,55 +93,12 @@ extern "C" void func_80240240(CpuContext* ctx);
 #define MKW_STATIC_TRANSLATED_CALL(Target, Entry, Context) \
     do { ApplyRuntimeCallOptions(Target, Context); Entry(Context); } while (false)
 
-#include "nw4r_g3d_rotxyz_translated.inc"
-
 extern "C" void NW4R_G3D_RotXYZFIdx_HLE(CpuContext* ctx) {
     const uint32_t mtx = ctx->gpr[3];
     const float fx = static_cast<float>(ctx->fpr[1].d);
     const float fy = static_cast<float>(ctx->fpr[2].d);
     const float fz = static_cast<float>(ctx->fpr[3].d);
-    if (!NativeEnabled()) {
-        NW4R_G3D_RotXYZFIdx_Translated(ctx);
-        return;
-    }
-    if (!CompareEnabled()) {
-        RotXYZFIdxNative(mtx, fx, fy, fz);
-        return;
-    }
-
-    SavedRegisters entry;
-    SaveRegisters(ctx, entry);
-    NW4R_G3D_RotXYZFIdx_Translated(ctx);
-    float reference[12];
-    for (uint32_t i = 0; i < 12; ++i) {
-        reference[i] = ReadF32(mtx + i * 4u);
-    }
-    LoadRegisters(ctx, entry);
     RotXYZFIdxNative(mtx, fx, fy, fz);
-
-    bool mismatch = false;
-    for (uint32_t i = 0; i < 12; ++i) {
-        const float native = ReadF32(mtx + i * 4u);
-        if (std::memcmp(&native, &reference[i], sizeof(float)) != 0) {
-            mismatch = true;
-            break;
-        }
-    }
-    static uint32_t compares = 0;
-    static uint32_t mismatches = 0;
-    ++compares;
-    if (mismatch && mismatches++ == 0) {
-        RT_LOGF(RT_TAG_HLE, "g3d rotxyz compare mismatch: mtx %08X (%.9g %.9g %.9g)\n", mtx, fx, fy,
-                fz);
-    }
-    if (compares % 100000u == 0) {
-        RT_LOGF(RT_TAG_HLE, "g3d rotxyz compare: %u calls, %u mismatches\n", compares, mismatches);
-    }
-    if (mismatch) {
-        for (uint32_t i = 0; i < 12; ++i) {
-            MemoryInline::FlatWriteFloat32(mtx + i * 4u, reference[i]);
-        }
-    }
 }
 
 PPC_NATIVE_OVERRIDE_VOID(802382B0, NW4R_G3D_RotXYZFIdx_HLE, (CpuContext* ctx), (ctx));
@@ -295,58 +211,7 @@ extern "C" void NW4R_G3D_AnmRotation_HLE(CpuContext* ctx) {
         NW4R_G3D_AnmRotation_Translated(ctx);
         return;
     }
-    if (!CompareEnabled()) {
-        ctx->gpr[3] = AnmRotationNative(ctx);
-        return;
-    }
-
-    const uint32_t mtx = ctx->gpr[3];
-    const uint32_t raw = ctx->gpr[4];
-    SavedRegisters entry;
-    SaveRegisters(ctx, entry);
-    NW4R_G3D_AnmRotation_Translated(ctx);
-    const uint32_t referenceReturn = ctx->gpr[3];
-    float reference[12];
-    float referenceRaw[3];
-    for (uint32_t i = 0; i < 12; ++i) {
-        reference[i] = ReadF32(mtx + i * 4u);
-    }
-    for (uint32_t i = 0; i < 3; ++i) {
-        referenceRaw[i] = ReadF32(raw + i * 4u);
-    }
-    LoadRegisters(ctx, entry);
-
-    const uint32_t nativeReturn = AnmRotationNative(ctx);
-    bool mismatch = nativeReturn != referenceReturn;
-    for (uint32_t i = 0; i < 12 && !mismatch; ++i) {
-        const float native = ReadF32(mtx + i * 4u);
-        mismatch = std::memcmp(&native, &reference[i], sizeof(float)) != 0;
-    }
-    for (uint32_t i = 0; i < 3 && !mismatch; ++i) {
-        const float native = ReadF32(raw + i * 4u);
-        mismatch = std::memcmp(&native, &referenceRaw[i], sizeof(float)) != 0;
-    }
-    static uint32_t compares = 0;
-    static uint32_t mismatches = 0;
-    ++compares;
-    if (mismatch && mismatches++ == 0) {
-        RT_LOGF(RT_TAG_HLE, "g3d anmrot compare mismatch: node %08X anm %u flags %08X\n",
-                entry.gpr[6], entry.gpr[7], flags);
-    }
-    if (compares % 100000u == 0) {
-        RT_LOGF(RT_TAG_HLE, "g3d anmrot compare: %u calls, %u mismatches\n", compares, mismatches);
-    }
-    if (mismatch) {
-        for (uint32_t i = 0; i < 12; ++i) {
-            MemoryInline::FlatWriteFloat32(mtx + i * 4u, reference[i]);
-        }
-        for (uint32_t i = 0; i < 3; ++i) {
-            MemoryInline::FlatWriteFloat32(raw + i * 4u, referenceRaw[i]);
-        }
-        ctx->gpr[3] = referenceReturn;
-    } else {
-        ctx->gpr[3] = nativeReturn;
-    }
+    ctx->gpr[3] = AnmRotationNative(ctx);
 }
 
 PPC_NATIVE_OVERRIDE_VOID(802405B0, NW4R_G3D_AnmRotation_HLE, (CpuContext* ctx), (ctx));
@@ -357,47 +222,7 @@ extern "C" void NW4R_G3D_AnmTranslation_HLE(CpuContext* ctx) {
         NW4R_G3D_AnmTranslation_Translated(ctx);
         return;
     }
-    if (!CompareEnabled()) {
-        ctx->gpr[3] = AnmTranslationNative(ctx);
-        return;
-    }
-
-    const uint32_t trans = ctx->gpr[3];
-    SavedRegisters entry;
-    SaveRegisters(ctx, entry);
-    NW4R_G3D_AnmTranslation_Translated(ctx);
-    const uint32_t referenceReturn = ctx->gpr[3];
-    float reference[3];
-    for (uint32_t i = 0; i < 3; ++i) {
-        reference[i] = ReadF32(trans + i * 4u);
-    }
-    LoadRegisters(ctx, entry);
-
-    const uint32_t nativeReturn = AnmTranslationNative(ctx);
-    bool mismatch = nativeReturn != referenceReturn;
-    for (uint32_t i = 0; i < 3 && !mismatch; ++i) {
-        const float native = ReadF32(trans + i * 4u);
-        mismatch = std::memcmp(&native, &reference[i], sizeof(float)) != 0;
-    }
-    static uint32_t compares = 0;
-    static uint32_t mismatches = 0;
-    ++compares;
-    if (mismatch && mismatches++ == 0) {
-        RT_LOGF(RT_TAG_HLE, "g3d anmtrans compare mismatch: node %08X anm %u flags %08X\n",
-                entry.gpr[4], entry.gpr[5], flags);
-    }
-    if (compares % 100000u == 0) {
-        RT_LOGF(RT_TAG_HLE, "g3d anmtrans compare: %u calls, %u mismatches\n", compares,
-                mismatches);
-    }
-    if (mismatch) {
-        for (uint32_t i = 0; i < 3; ++i) {
-            MemoryInline::FlatWriteFloat32(trans + i * 4u, reference[i]);
-        }
-        ctx->gpr[3] = referenceReturn;
-    } else {
-        ctx->gpr[3] = nativeReturn;
-    }
+    ctx->gpr[3] = AnmTranslationNative(ctx);
 }
 
 PPC_NATIVE_OVERRIDE_VOID(80241020, NW4R_G3D_AnmTranslation_HLE, (CpuContext* ctx), (ctx));
