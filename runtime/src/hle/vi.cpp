@@ -668,6 +668,9 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
 #endif
     LogGuestModulesOnce();
     LogSceneChanges();
+#if defined(MKW_PLATFORM_SWITCH)
+    settings_overlay::TickBootPrewarmOnSplash();
+#endif
 
     uint32_t preCb = 0;
     uint32_t postCb = 0;
@@ -748,8 +751,14 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
         // Process window events (but don't present - that happens in GXCopyDisp)
         UpdateAuroraAndProcessEvents();
 
-        // Start a new Aurora frame if one isn't already active
-        if (!g_auroraFrameActive.load(std::memory_order_acquire)) {
+#if defined(MKW_PLATFORM_SWITCH)
+        const bool bootPrewarmPending = settings_overlay::BootShadersPending();
+#else
+        const bool bootPrewarmPending = false;
+#endif
+        // Start a new Aurora frame if one isn't already active. On the Switch's first boot the
+        // boot splash owns the screen until the pipeline prewarm has drained.
+        if (!bootPrewarmPending && !g_auroraFrameActive.load(std::memory_order_acquire)) {
             if (BeginAuroraFrame()) {
                 g_auroraFrameActive.store(true, std::memory_order_release);
             }
@@ -1648,7 +1657,12 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     // Pre-warm the next frame so subsequent GX work has a valid frame context.
     {
         UpdateAuroraAndProcessEvents();
-        if (BeginAuroraFrame()) {
+#if defined(MKW_PLATFORM_SWITCH)
+        const bool bootPrewarmPending = settings_overlay::BootShadersPending();
+#else
+        const bool bootPrewarmPending = false;
+#endif
+        if (!bootPrewarmPending && BeginAuroraFrame()) {
             g_auroraFrameActive.store(true, std::memory_order_release);
         }
     }

@@ -113,3 +113,7 @@ void _malloc_stats_r(struct _reent* reent) {
     (void)reent;
     dlmalloc_stats();
 }
+
+extern "C" size_t NsmbwMallocFreeBytes() {
+    return static_cast<size_t>(dlmallinfo().fordblks);
+}

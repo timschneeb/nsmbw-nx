@@ -124,5 +124,7 @@ struct BlobCacheStats {
 BlobCacheStats blob_cache_stats() noexcept;
 // Persists the monolithic Vulkan pipeline cache into the blob cache (no-op elsewhere).
 void serialize_pipeline_caches() noexcept;
+// Serializes the pipeline cache and ticks the device so deleted pipelines are actually released.
+void tick_pipeline_cache() noexcept;
 
 } // namespace aurora::webgpu

@@ -14,6 +14,11 @@ void Draw() noexcept;
 bool StartupScreenVisible() noexcept;
 // True while the first boot's pipeline prewarm is still running, so the guest may not run yet.
 bool BootShadersPending() noexcept;
+// The Switch boot splash ran the first-boot prewarm: release the guest and retire the overlay's
+// startup screen, so only the boot splash showed the shader progress.
+void MarkBootShadersReady() noexcept;
+// Switch first boot: run the pipeline prewarm on the boot splash while the guest is gated.
+void TickBootPrewarmOnSplash() noexcept;
 void NotifyStrapInputAccepted() noexcept;
 void AdvancePresentedFrame() noexcept;
 // Put host controllers back to a neutral state before the process ends.

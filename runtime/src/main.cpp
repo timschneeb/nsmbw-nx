@@ -1597,6 +1597,33 @@ static void TerminateHandler() {
         std::fflush(stderr);
         std::_Exit(EXIT_FAILURE);
     }
+#if defined(MKW_PLATFORM_SWITCH)
+    // The detailed report below allocates strings and can itself fail on memory exhaustion.
+    // Log the exception without allocating, then show the system error applet directly.
+    char message[256] = "WiiCompiled stopped: unhandled C++ exception";
+    if (auto ex = std::current_exception()) {
+        try {
+            std::rethrow_exception(ex);
+        } catch (const std::exception& e) {
+            std::snprintf(message, sizeof(message), "WiiCompiled stopped: %s", e.what());
+            std::fprintf(stderr, "[runtime] unhandled C++ exception: %s\n", e.what());
+        } catch (...) {
+            std::snprintf(message, sizeof(message), "WiiCompiled stopped: unknown C++ exception");
+            std::fputs("[runtime] unhandled non-std C++ exception\n", stderr);
+        }
+    } else {
+        std::snprintf(message, sizeof(message), "WiiCompiled stopped: std::terminate()");
+        std::fputs("[runtime] std::terminate() without current exception\n", stderr);
+    }
+    std::fflush(stderr);
+    {
+        ErrorSystemConfig config{};
+        if (R_SUCCEEDED(errorSystemCreate(&config, message, ""))) {
+            errorSystemShow(&config);
+        }
+    }
+    std::_Exit(EXIT_FAILURE);
+#endif
     std::string terminateDetails;
     if (auto ex = std::current_exception()) {
         try {

@@ -4,6 +4,7 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -14,6 +15,8 @@ namespace {
 constexpr u32 kFbWidth = 1280;
 constexpr u32 kFbHeight = 720;
 
+using Pixel = u32;
+
 Framebuffer g_framebuffer{};
 bool g_framebufferReady = false;
 PrintConsole* g_console = nullptr;
@@ -23,10 +26,11 @@ FT_Face g_face = nullptr;
 bool g_plReady = false;
 
 char g_status[96] = "Starting up...";
+float g_progress = -1.0f;
 
-inline u32 PackColor(u8 r, u8 g, u8 b) { return RGBA8(r, g, b, 0xFF); }
+inline Pixel PackColor(u8 r, u8 g, u8 b) { return RGBA8(r, g, b, 0xFF); }
 
-void BlendPixel(u32* pixel, u8 r, u8 g, u8 b, u8 alpha) {
+void BlendPixel(Pixel* pixel, u8 r, u8 g, u8 b, u8 alpha) {
     if (alpha == 0) {
         return;
     }
@@ -34,7 +38,7 @@ void BlendPixel(u32* pixel, u8 r, u8 g, u8 b, u8 alpha) {
         *pixel = PackColor(r, g, b);
         return;
     }
-    const u32 dst = *pixel;
+    const Pixel dst = *pixel;
     const u32 inverse = 0xFFu - alpha;
     const u32 dr = dst & 0xFFu;
     const u32 dg = (dst >> 8) & 0xFFu;
@@ -43,14 +47,14 @@ void BlendPixel(u32* pixel, u8 r, u8 g, u8 b, u8 alpha) {
                    (b * alpha + db * inverse) / 255, 0xFF);
 }
 
-void FillBackground(u32* framebuffer, u32 stridePixels) {
+void FillBackground(Pixel* framebuffer, u32 stridePixels) {
     for (u32 y = 0; y < kFbHeight; ++y) {
         const float t = static_cast<float>(y) / static_cast<float>(kFbHeight - 1);
         const u8 r = static_cast<u8>(18.0f + (4.0f - 18.0f) * t);
         const u8 g = static_cast<u8>(24.0f + (6.0f - 24.0f) * t);
         const u8 b = static_cast<u8>(44.0f + (12.0f - 44.0f) * t);
-        const u32 color = PackColor(r, g, b);
-        u32* row = framebuffer + static_cast<size_t>(y) * stridePixels;
+        const Pixel color = PackColor(r, g, b);
+        Pixel* row = framebuffer + static_cast<size_t>(y) * stridePixels;
         for (u32 x = 0; x < kFbWidth; ++x) {
             row[x] = color;
         }
@@ -62,7 +66,7 @@ void FillBackground(u32* framebuffer, u32 stridePixels) {
     constexpr int kRadius = 420;
     for (int y = 0; y < static_cast<int>(kFbHeight); ++y) {
         const int dy = y - kCenterY;
-        u32* row = framebuffer + static_cast<size_t>(y) * stridePixels;
+        Pixel* row = framebuffer + static_cast<size_t>(y) * stridePixels;
         for (int x = 0; x < static_cast<int>(kFbWidth); ++x) {
             const int dx = x - kCenterX;
             const int distanceSq = dx * dx + dy * dy;
@@ -98,8 +102,8 @@ int TextWidth(FT_Face face, const char* text) {
     return width;
 }
 
-void DrawGlyph(u32* framebuffer, u32 stridePixels, const FT_Bitmap& bitmap, int x, int y, u8 r, u8 g,
-               u8 b) {
+void DrawGlyph(Pixel* framebuffer, u32 stridePixels, const FT_Bitmap& bitmap, int x, int y, u8 r,
+               u8 g, u8 b) {
     if (bitmap.pixel_mode != FT_PIXEL_MODE_GRAY) {
         return;
     }
@@ -109,7 +113,7 @@ void DrawGlyph(u32* framebuffer, u32 stridePixels, const FT_Bitmap& bitmap, int 
             continue;
         }
         const u8* source = bitmap.buffer + row * bitmap.pitch;
-        u32* target = framebuffer + static_cast<size_t>(targetY) * stridePixels;
+        Pixel* target = framebuffer + static_cast<size_t>(targetY) * stridePixels;
         for (u32 column = 0; column < bitmap.width; ++column) {
             const int targetX = x + static_cast<int>(column);
             if (targetX < 0 || targetX >= static_cast<int>(kFbWidth)) {
@@ -120,8 +124,8 @@ void DrawGlyph(u32* framebuffer, u32 stridePixels, const FT_Bitmap& bitmap, int 
     }
 }
 
-void DrawText(FT_Face face, u32* framebuffer, u32 stridePixels, int x, int baseline, const char* text,
-              u8 r, u8 g, u8 b) {
+void DrawText(FT_Face face, Pixel* framebuffer, u32 stridePixels, int x, int baseline,
+              const char* text, u8 r, u8 g, u8 b) {
     int penX = x;
     const size_t length = std::strlen(text);
     for (size_t i = 0; i < length;) {
@@ -171,7 +175,7 @@ void ShowConsoleFallback() {
     consoleUpdate(g_console);
 }
 
-void DrawLogo(u32* framebuffer, u32 stridePixels) {
+void DrawLogo(Pixel* framebuffer, u32 stridePixels) {
     constexpr int kLogoWidth = 820;
     constexpr int kLogoHeight = 339;
     constexpr int kLogoX = (static_cast<int>(kFbWidth) - kLogoWidth) / 2;
@@ -181,7 +185,7 @@ void DrawLogo(u32* framebuffer, u32 stridePixels) {
         if (targetY < 0 || targetY >= static_cast<int>(kFbHeight)) {
             continue;
         }
-        u32* row = framebuffer + static_cast<size_t>(targetY) * stridePixels;
+        Pixel* row = framebuffer + static_cast<size_t>(targetY) * stridePixels;
         const unsigned char* source = nsmbw_logo_rgba + y * kLogoWidth * 4;
         for (int x = 0; x < kLogoWidth; ++x) {
             const int targetX = kLogoX + x;
@@ -194,7 +198,33 @@ void DrawLogo(u32* framebuffer, u32 stridePixels) {
     }
 }
 
-void DrawSplash(FT_Face face, u32* framebuffer, u32 stridePixels) {
+void DrawProgressBar(Pixel* framebuffer, u32 stridePixels, float fraction) {
+    constexpr int kBarWidth = 520;
+    constexpr int kBarHeight = 10;
+    constexpr int kBarTop = 630;
+    const int left = (static_cast<int>(kFbWidth) - kBarWidth) / 2;
+    const int filled = static_cast<int>(kBarWidth * std::clamp(fraction, 0.0f, 1.0f));
+    for (int y = 0; y < kBarHeight; ++y) {
+        const int targetY = kBarTop + y;
+        if (targetY < 0 || targetY >= static_cast<int>(kFbHeight)) {
+            continue;
+        }
+        Pixel* row = framebuffer + static_cast<size_t>(targetY) * stridePixels;
+        for (int x = 0; x < kBarWidth; ++x) {
+            const int targetX = left + x;
+            if (targetX < 0 || targetX >= static_cast<int>(kFbWidth)) {
+                continue;
+            }
+            if (x < filled) {
+                BlendPixel(&row[targetX], 230, 0, 18, 0xFF);
+            } else {
+                BlendPixel(&row[targetX], 48, 54, 70, 0xFF);
+            }
+        }
+    }
+}
+
+void DrawSplash(FT_Face face, Pixel* framebuffer, u32 stridePixels) {
     FillBackground(framebuffer, stridePixels);
     DrawLogo(framebuffer, stridePixels);
 
@@ -202,6 +232,9 @@ void DrawSplash(FT_Face face, u32* framebuffer, u32 stridePixels) {
     DrawText(face, framebuffer, stridePixels,
              (static_cast<int>(kFbWidth) - TextWidth(face, g_status)) / 2, 590, g_status, 226, 232,
              244);
+    if (g_progress >= 0.0f) {
+        DrawProgressBar(framebuffer, stridePixels, g_progress);
+    }
 }
 
 bool RedrawSplash() {
@@ -209,8 +242,8 @@ bool RedrawSplash() {
         return false;
     }
     u32 stride = 0;
-    if (u32* framebuffer = static_cast<u32*>(framebufferBegin(&g_framebuffer, &stride))) {
-        DrawSplash(g_face, framebuffer, stride / sizeof(u32));
+    if (void* pixels = framebufferBegin(&g_framebuffer, &stride)) {
+        DrawSplash(g_face, static_cast<Pixel*>(pixels), stride / sizeof(Pixel));
         framebufferEnd(&g_framebuffer);
         return true;
     }
@@ -244,8 +277,8 @@ extern "C" void NsmbwBootSplashShow() {
             framebufferMakeLinear(&g_framebuffer);
 
             u32 stride = 0;
-            if (u32* framebuffer = static_cast<u32*>(framebufferBegin(&g_framebuffer, &stride))) {
-                DrawSplash(g_face, framebuffer, stride / sizeof(u32));
+            if (void* pixels = framebufferBegin(&g_framebuffer, &stride)) {
+                DrawSplash(g_face, static_cast<Pixel*>(pixels), stride / sizeof(Pixel));
                 framebufferEnd(&g_framebuffer);
                 g_framebufferReady = true;
             }
@@ -276,6 +309,19 @@ extern "C" void NsmbwBootSplashSetStatus(const char* status) {
     }
     std::snprintf(g_status, sizeof(g_status), "%s", status);
 
+    if (g_console != nullptr) {
+        PrintCentered(g_console, g_status);
+        consoleUpdate(g_console);
+        return;
+    }
+    RedrawSplash();
+}
+
+extern "C" void NsmbwBootSplashSetProgress(float fraction, const char* status) {
+    g_progress = std::clamp(fraction, 0.0f, 1.0f);
+    if (status != nullptr && status[0] != '\0') {
+        std::snprintf(g_status, sizeof(g_status), "%s", status);
+    }
     if (g_console != nullptr) {
         PrintCentered(g_console, g_status);
         consoleUpdate(g_console);

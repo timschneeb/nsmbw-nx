@@ -1186,6 +1186,16 @@ void serialize_pipeline_caches() noexcept {
 #endif
 }
 
+void tick_pipeline_cache() noexcept {
+#if defined(WEBGPU_DAWN)
+  if (!g_device || g_backendType != wgpu::BackendType::Vulkan) {
+    return;
+  }
+  dawn::native::PerformIdleTasks(g_device);
+  dawn::native::DeviceTick(g_device.Get());
+#endif
+}
+
 void shutdown() {
   serialize_pipeline_caches();
   g_initialized.store(false, std::memory_order_release);

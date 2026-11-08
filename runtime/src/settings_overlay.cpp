@@ -69,6 +69,8 @@ void SetMixWorkerEnabled(bool enabled);
 
 #if defined(__SWITCH__)
 extern "C" void NsmbwRestoreCpuClock();
+extern "C" void NsmbwBootSplashSetProgress(float fraction, const char* status);
+extern "C" size_t NsmbwMallocFreeBytes();
 #endif
 
 namespace settings_overlay {
@@ -2169,6 +2171,80 @@ void Draw() noexcept {
 }
 
 bool BootShadersPending() noexcept { return !g_bootShadersReady.load(std::memory_order_acquire); }
+
+void MarkBootShadersReady() noexcept {
+    g_bootShadersReady.store(true, std::memory_order_release);
+    g_bootShaderNotice = false;
+    g_strapInputAccepted.store(true, std::memory_order_relaxed);
+    g_startupDismissFrame.store(0, std::memory_order_relaxed);
+    aurora_set_prewarm_boost(false);
+}
+void TickBootPrewarmOnSplash() noexcept {
+#if defined(__SWITCH__)
+    if (!BootShadersPending()) {
+        return;
+    }
+    static Clock::time_point start{};
+    static Clock::time_point lastDraw{};
+    static Clock::time_point doneAt{};
+    static uint32_t total = 0;
+    static bool started = false;
+
+    const Clock::time_point now = Clock::now();
+    if (!started) {
+        started = true;
+        total = aurora_get_queued_pipeline_count();
+        start = now;
+        // Background priority: the boot splash redraws on the guest thread while the prewarm
+        // runs, and a boosted worker would starve those updates.
+        aurora_set_prewarm_boost(true);
+        aurora_set_prewarm_boost(false);
+    }
+
+    if (doneAt == Clock::time_point{}) {
+        if (lastDraw == Clock::time_point{} ||
+            now - lastDraw >= std::chrono::milliseconds(200)) {
+            lastDraw = now;
+            const uint32_t remaining = aurora_get_queued_pipeline_count();
+            const float done = total > 0
+                                   ? 1.0f - static_cast<float>(remaining) / static_cast<float>(total)
+                                   : 1.0f;
+            char status[64];
+            std::snprintf(status, sizeof(status), "Compiling shaders: %u remaining", remaining);
+            NsmbwBootSplashSetProgress(done, status);
+        }
+        // The parsed Tint programs dominate the live set. Releasing them as the prewarm runs keeps
+        // the arena near the retained pipeline size instead of growing to the whole heap.
+        static Clock::time_point lastShaderRelease{};
+        if (lastShaderRelease == Clock::time_point{} ||
+            now - lastShaderRelease >= std::chrono::seconds(10)) {
+            lastShaderRelease = now;
+            aurora_release_shader_modules_light();
+        }
+        if (!aurora_boot_pipelines_pending() ||
+            now - start > std::chrono::minutes(10)) {
+            // The compiled pipelines stay in g_pipelines. Releasing the shader module cache drops
+            // the last external refs, so Dawn frees the parsed Tint programs instead of holding
+            // them for the whole session.
+            static bool releasedShaderModules = false;
+            if (!releasedShaderModules) {
+                releasedShaderModules = true;
+                const size_t before = NsmbwMallocFreeBytes();
+                aurora_release_shader_modules();
+                RT_LOGF(RT_TAG_RUNTIME, "[mem] released shader parse cache: free %zu -> %zu MiB\n",
+                        before >> 20, NsmbwMallocFreeBytes() >> 20);
+            }
+            doneAt = now;
+            NsmbwBootSplashSetProgress(1.0f, "Shaders ready, starting game...");
+        }
+        return;
+    }
+
+    if (now - doneAt > std::chrono::milliseconds(500)) {
+        MarkBootShadersReady();
+    }
+#endif
+}
 
 bool StartupScreenVisible() noexcept {
     return !g_strapInputAccepted.load(std::memory_order_acquire) ||

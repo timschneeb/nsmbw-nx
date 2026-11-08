@@ -1581,6 +1581,15 @@ bool aurora_boot_pipelines_pending() { return aurora::gfx::boot_pipelines_pendin
 
 bool aurora_boot_prewarm_compiled() { return aurora::gfx::boot_prewarm_compiled(); }
 
+void aurora_release_shader_modules() {
+  aurora::gx::clear_shader_module_cache();
+  aurora::webgpu::tick_pipeline_cache();
+}
+
+void aurora_release_shader_modules_light() {
+  aurora::gx::clear_shader_module_cache();
+}
+
 void aurora_set_prewarm_boost(bool enabled) { aurora::gfx::set_prewarm_boost(enabled); }
 
 void aurora_wait_for_boot_pipelines() { aurora::gfx::wait_for_boot_pipelines(); }
