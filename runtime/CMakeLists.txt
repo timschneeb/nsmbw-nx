@@ -748,7 +748,8 @@ else()
             ${MKW_SWITCH_SDL_INCLUDE_DIRS}
             "${CMAKE_BINARY_DIR}/_deps/mkw_mbedtls_upstream-src/include"
             "${CMAKE_BINARY_DIR}/_deps/imgui-src"
-            "${CMAKE_BINARY_DIR}/_deps/xxhash-src")
+            "${CMAKE_BINARY_DIR}/_deps/xxhash-src"
+            "${MKW_SWITCH_PORTLIBS}/include")
         target_compile_features(mkw_switch_native_compile PRIVATE cxx_std_20)
         target_compile_definitions(mkw_switch_native_compile PRIVATE
             SDL_MAIN_HANDLED TARGET_PC NOMINMAX

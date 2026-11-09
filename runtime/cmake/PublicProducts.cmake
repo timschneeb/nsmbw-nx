@@ -126,6 +126,11 @@ if(MKW_PLATFORM_SWITCH AND TARGET Freetype::Freetype)
     # The boot splash draws the shared system font with FreeType.
     target_link_libraries(mkw_runtime_common PRIVATE Freetype::Freetype)
 endif()
+if(MKW_PLATFORM_SWITCH)
+    # switch-curl: the HD texture pack download (src/hd_texture_pack.cpp) runs in-process,
+    # because Horizon has no curl or wget on the PATH.
+    target_include_directories(mkw_runtime_common SYSTEM PRIVATE "${MKW_SWITCH_PORTLIBS}/include")
+endif()
 target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls)
 nsmbw_bt_passthrough_configure_runtime(mkw_runtime_common)
 if(MKW_PLATFORM_WINDOWS)
@@ -321,6 +326,7 @@ function(mkw_configure_product target)
         # (SDL's egl refs resolve to stubs in egl_stubs.cpp; harfbuzz+bz2 ride
         # on Freetype::Freetype itself, see runtime/CMakeLists.txt.)
         target_link_libraries(${target} PRIVATE mkw_switch_nvk)
+        target_link_libraries(${target} PRIVATE "${MKW_SWITCH_PORTLIBS}/lib/libcurl.a")
         # libnx_shims.cpp: force 4 MiB stacks on attribute-less pthreads and map
         # thrd_create's newlib success code to 0 for Mesa.
         target_link_options(${target} PRIVATE

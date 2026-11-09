@@ -40,6 +40,10 @@ std::string DownloadFile(const std::string& url, const std::string& path);
 #ifndef WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
 #define WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY 4
 #endif
+#elif defined(MKW_PLATFORM_SWITCH)
+// Horizon: switch-curl (portlibs), whose TLS is libnx's ssl service (the console's CA store).
+#include <curl/curl.h>
+#include <switch.h>
 #else
 #include <spawn.h>
 #include <sys/wait.h>
@@ -179,10 +183,113 @@ std::string HttpGet(const std::string& url, const fs::path& out) {
     return file ? std::string() : "couldn't write " + RuntimeConfigFile::PathToUtf8(out);
 }
 #elif defined(MKW_PLATFORM_SWITCH)
-// No external downloader or extractor tools on Horizon.
-int Run(const std::vector<std::string>&) { return 127; }
+// Horizon has neither curl nor wget on the PATH, so switch-curl does the transfer in-process.
+// libnx's socket service has to be up before the first connection; the ssl service comes with
+// libcurl's libnx backend.
+std::once_flag g_networkInit;
+bool g_networkReady = false;
 
-std::string HttpGet(const std::string&, const fs::path&) { return "not available on Switch"; }
+bool EnsureNetwork() {
+    std::call_once(g_networkInit, [] {
+        // libnx's default receive window (64 KiB, growing to 256 KiB) caps a download well below
+        // what the console's Wi-Fi can do. A wider window costs a few MB of transfer memory.
+        SocketInitConfig config = *socketGetDefaultInitConfig();
+        config.tcp_tx_buf_size = 0x10000;
+        config.tcp_tx_buf_max_size = 0x40000;
+        config.tcp_rx_buf_size = 0x40000;
+        config.tcp_rx_buf_max_size = 0x100000;
+        config.sb_efficiency = 8;
+        config.num_bsd_sessions = 4;
+        if (R_FAILED(socketInitialize(&config)) && R_FAILED(socketInitializeDefault())) {
+            return;
+        }
+        g_networkReady = curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
+    });
+    return g_networkReady;
+}
+
+// The fs service charges per write, and libcurl hands over 16 KiB at a time, so the sink buffers a
+// mebibyte and writes that. Same reason for CURLOPT_BUFFERSIZE below.
+constexpr size_t kWriteChunk = 1 << 20;
+
+struct Sink {
+    std::ofstream file;
+    std::vector<char> pending;
+    std::string error;
+};
+
+bool FlushSink(Sink& sink) {
+    if (sink.pending.empty()) {
+        return true;
+    }
+    sink.file.write(sink.pending.data(), static_cast<std::streamsize>(sink.pending.size()));
+    sink.pending.clear();
+    if (!sink.file) {
+        sink.error = "couldn't write the download";
+        return false;
+    }
+    return true;
+}
+
+size_t WriteSink(char* data, size_t size, size_t count, void* opaque) {
+    auto* sink = static_cast<Sink*>(opaque);
+    const size_t total = size * count;
+    sink->pending.insert(sink->pending.end(), data, data + total);
+    if (sink->pending.size() >= kWriteChunk && !FlushSink(*sink)) {
+        return 0;
+    }
+    g_received += total;
+    return total;
+}
+
+std::string HttpGet(const std::string& url, const fs::path& out) {
+    if (!EnsureNetwork()) {
+        return "no network connection";
+    }
+    CURL* curl = curl_easy_init();
+    if (curl == nullptr) {
+        return "can't start the download";
+    }
+    Sink sink;
+    sink.pending.reserve(kWriteChunk + (1 << 16));
+    sink.file.open(out, std::ios::binary | std::ios::trunc);
+    if (!sink.file) {
+        curl_easy_cleanup(curl);
+        return "couldn't write " + RuntimeConfigFile::PathToUtf8(out);
+    }
+    char errorBuffer[CURL_ERROR_SIZE] = {};
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 8L);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTPS));
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, static_cast<long>(CURLPROTO_HTTPS));
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, static_cast<long>(256 * 1024));
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "NSMBW");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteSink);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errorBuffer);
+    const CURLcode result = curl_easy_perform(curl);
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_easy_cleanup(curl);
+    if (result == CURLE_OK) {
+        FlushSink(sink);
+    }
+    sink.file.close();
+    if (result != CURLE_OK) {
+        std::string error = errorBuffer[0] != '\0' ? errorBuffer : curl_easy_strerror(result);
+        if (status != 0) {
+            error += " (HTTP " + std::to_string(status) + ")";
+        }
+        return error;
+    }
+    return sink.error;
+}
 #else
 // Linux: curl, else wget (as the updater does).
 int Run(const std::vector<std::string>& args) {
