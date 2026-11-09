@@ -354,8 +354,7 @@ const std::vector<MemoryReservation>& MemoryReservations() {
 // it; the address itself is stored in the CpuContext so no thread-local access is needed.
 
 uint32_t CurrentTranslatedExecutionAddress() noexcept {
-    const CpuContext* cpu = TryGetCpuContext();
-    return cpu != nullptr ? cpu->translatedExecutionAddress : 0;
+    return g_guestThreadState.translatedExecutionAddress;
 }
 
 void RegisterExecutableRange(uint32_t start, uint32_t end, std::string name) {

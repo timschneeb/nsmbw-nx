@@ -1377,6 +1377,10 @@ static bool wait_for_staging_map() {
 
 static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
   ZoneScoped;
+  if (clearEfb && !capacityResume) {
+    // Texture replacement switched on or off since the last frame (aurora_set_texture_replacements).
+    texture_replacement::apply_pending();
+  }
   ++g_stagingEpoch;
   // The frame sealed just before this one still owns the current staging slot until the worker
   // stages it; this frame records into the next one.

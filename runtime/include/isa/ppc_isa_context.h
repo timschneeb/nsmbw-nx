@@ -1,6 +1,7 @@
 #pragma once
 #include "ppc_isa_fpenv.h"
 #include "guest_flat_memory.h"
+#include "../guest_thread_state.h"
 
 #include <cmath>
 #include <cstdint>
@@ -24,8 +25,6 @@ union PPC_FPR {
 #endif
     } paired;
 };
-
-struct IndirectDispatchMemo;
 
 // PowerPC CPU Context
 struct CpuContext {
@@ -54,46 +53,14 @@ struct CpuContext {
     uint32_t srr0;      // Save/Restore Register 0
     uint32_t srr1;      // Save/Restore Register 1
     uint32_t msr;       // Machine State Register
-
-    // Per-context indirect-dispatch memo. The dispatcher already holds this context, so the
-    // bctrl path reaches its cache without touching thread-local storage, which devkitA64
-    // compiles into a call to __aarch64_read_tp on Switch.
-    IndirectDispatchMemo* dispatchMemo = nullptr;
-
-    // Diagnostic-only: innermost translated target, read by the fatal reporters. It lives here
-    // instead of in thread-local storage for the same reason the memo does; three TLS reads per
-    // indirect dispatch became three ordinary loads and stores.
-    uint32_t translatedExecutionAddress = 0;
 };
-
-#if defined(__SWITCH__)
-// On Horizon a thread_local access is an out-of-line __aarch64_read_tp call. The current context
-// is read by every out-of-line ISA helper and by every HLE entry that needs the register file, so
-// it lives in one of libnx's per-thread slots instead, read inline through tpidrro_el0. The slot
-// is allocated before main and is per host thread, matching the old thread_local exactly.
-uint32_t MkwAllocCurrentCpuTlsSlot() noexcept;
-inline const uint32_t g_mkwCurrentCpuTlsOffset = MkwAllocCurrentCpuTlsSlot();
-#else
-inline thread_local CpuContext* g_currentCpuContext = nullptr;
-#endif
-
-MKW_PPC_FORCE_INLINE CpuContext*& MkwCurrentCpuSlotRef() noexcept
-{
-#if defined(__SWITCH__)
-    uint64_t tls = 0;
-    __asm__("mrs %0, tpidrro_el0" : "=r"(tls));
-    return *reinterpret_cast<CpuContext**>(static_cast<uintptr_t>(tls) + g_mkwCurrentCpuTlsOffset);
-#else
-    return g_currentCpuContext;
-#endif
-}
 
 class CpuContextScope {
 public:
     explicit CpuContextScope(CpuContext* ctx)
-        : previous_(MkwCurrentCpuSlotRef())
+        : previous_(g_guestThreadState.currentCpuContext)
     {
-        MkwCurrentCpuSlotRef() = ctx;
+        g_guestThreadState.currentCpuContext = ctx;
         // x28 is per-thread and only survives across calls because the whole program is built
         // with -ffixed-x28 and the cooperative switch saves it. A host thread or a fresh fiber
         // starts with whatever the stack had, so restore it here instead of on every dispatch.
@@ -106,7 +73,7 @@ public:
 
     ~CpuContextScope()
     {
-        MkwCurrentCpuSlotRef() = previous_;
+        g_guestThreadState.currentCpuContext = previous_;
         if (previous_ != nullptr)
             MkwApplyHostNiMode(previous_->fpscr);
         else
@@ -123,7 +90,7 @@ private:
 
 inline CpuContext* TryGetCpuContext() noexcept
 {
-    return MkwCurrentCpuSlotRef();
+    return g_guestThreadState.currentCpuContext;
 }
 
 inline CpuContext* CurrentCpuContext()

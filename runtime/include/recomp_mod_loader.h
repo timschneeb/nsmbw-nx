@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "guest_thread_state.h"
+
 struct CpuContext;
 
 namespace RecompMod {
@@ -21,9 +23,31 @@ struct MemoryReservation {
 };
 
 // Diagnostic-only, read by fatal reporters (unmapped access, executable-write, CPU dumps).
-// The value lives in the CpuContext (see isa/ppc_isa_context.h): every indirect dispatch
-// scopes it, and a thread_local access on devkitA64 is an out-of-line call.
-uint32_t CurrentTranslatedExecutionAddress() noexcept;
+// The backing variable is g_guestThreadState.translatedExecutionAddress (guest_thread_state.h),
+// header-inline with a constant initializer: every indirect dispatch scopes this, so an
+// out-of-line ctor/dtor would cost two un-inlinable calls plus a register spill each for three
+// instructions of work.
+class ScopedTranslatedExecutionAddress {
+public:
+    explicit ScopedTranslatedExecutionAddress(uint32_t address) noexcept
+        : previous_(g_guestThreadState.translatedExecutionAddress) {
+        // Address 0 means "nothing new to report" - the enclosing scope's value
+        // stays visible, and the unconditional restore below keeps nesting exact.
+        if (address != 0) {
+            g_guestThreadState.translatedExecutionAddress = address;
+        }
+    }
+
+    ~ScopedTranslatedExecutionAddress() noexcept {
+        g_guestThreadState.translatedExecutionAddress = previous_;
+    }
+
+    ScopedTranslatedExecutionAddress(const ScopedTranslatedExecutionAddress&) = delete;
+    ScopedTranslatedExecutionAddress& operator=(const ScopedTranslatedExecutionAddress&) = delete;
+
+private:
+    uint32_t previous_ = 0;
+};
 
 inline constexpr uint32_t kExecutableWriteGuardPageShift = 12;
 inline constexpr uint32_t kExecutableWriteGuardPageCount = 1u << (32 - kExecutableWriteGuardPageShift);
