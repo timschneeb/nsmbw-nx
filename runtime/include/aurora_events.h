@@ -16,6 +16,10 @@
 #include <windows.h>
 #endif
 
+#if defined(MKW_PLATFORM_SWITCH)
+#include "platform/switch/touch_input.h"
+#endif
+
 extern "C" bool g_dynamicAspectRatioEnabled;
 void ConfigureMkwDynamicAspect(bool widescreen, bool forceAspect169, uint32_t surfaceWidth, uint32_t surfaceHeight);
 void SetMkwForceAspect169(bool enabled);
@@ -143,5 +147,9 @@ inline bool BeginAuroraFrame() {
 
 // Poll Aurora events and update cached window/framebuffer dimensions.
 inline void UpdateAuroraAndProcessEvents() {
+#if defined(MKW_PLATFORM_SWITCH)
+    // Queued before the poll below so a tap is handled in the frame it happened.
+    SwitchTouch::Pump();
+#endif
     ProcessAuroraEvents(aurora_update());
 }

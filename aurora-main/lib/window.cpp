@@ -11,6 +11,9 @@
 #include <aurora/event.h>
 #include <aurora/gfx.h>
 #include <aurora/render_size_limits.hpp>
+#if defined(MKW_PLATFORM_SWITCH)
+#include <aurora/switch_hooks.h>
+#endif
 #include <SDL3/SDL_error.h>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_keyboard.h>
@@ -503,6 +506,10 @@ bool create_window(AuroraBackend backend) {
   SDL_SetWindowMinimumSize(g_window, 640, 480);
   g_displayMode.store(g_config.startFullscreen ? AURORA_DISPLAY_MODE_BORDERLESS : AURORA_DISPLAY_MODE_WINDOWED,
                       std::memory_order_release);
+#if defined(MKW_PLATFORM_SWITCH)
+  // The touchscreen pump lives in the runtime and needs the window id to address its events.
+  MkwAttachTouchWindow(g_window);
+#endif
 #if defined(_WIN32)
   install_window_proc_hook();
 #endif

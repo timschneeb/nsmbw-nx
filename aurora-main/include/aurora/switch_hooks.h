@@ -10,5 +10,7 @@ void MkwConfigureGxWorkerThread();
 void MkwConfigureFrameWorkerThread();
 // level 0 idle, 1 background prewarm, 2 boosted prewarm.
 void MkwSetPipelineWorkerPriority(int level);
+// Gives the runtime's touchscreen pump the window its pointer events address (an SDL_Window*).
+void MkwAttachTouchWindow(void* sdlWindow);
 }
 #endif
