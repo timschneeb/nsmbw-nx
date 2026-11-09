@@ -63,10 +63,15 @@ inline std::filesystem::path ResolveConfiguredPath(const std::string& value) {
 inline std::string GameSaveKey() {
     const std::filesystem::path root = RuntimeConfigFile::ResolvedDvdRoot();
     std::error_code ec;
-    if (root.empty() || !std::filesystem::is_directory(root, ec)) {
+    if (root.empty()) {
         return {};
     }
     std::vector<std::pair<std::string, uint64_t>> files;
+    // A disc image has no fingerprint of its own: it uses the shared NAND, so switching from an
+    // extracted folder to an image of the same disc keeps the saves.
+    if (!std::filesystem::is_directory(root, ec) || ec) {
+        return {};
+    }
     for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code fileError;
         if (it->is_regular_file(fileError)) {

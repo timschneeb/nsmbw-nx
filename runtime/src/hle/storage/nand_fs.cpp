@@ -5,6 +5,7 @@
 
 #include "isa/big_endian.h"
 #include "hle/storage/riivolution.h"
+#include "disc_files.h"
 #include "runtime_log.h"
 #include "bt_passthrough.h"
 
@@ -317,6 +318,9 @@ struct U8Node {
     uint32_t size;
 };
 
+static bool ExtractFromU8Image(std::vector<uint8_t> data, const char* targetName,
+                               std::vector<uint8_t>& outData);
+
 static bool ExtractFromU8(const std::filesystem::path& archivePath, const char* targetName,
                           std::vector<uint8_t>& outData) {
     std::ifstream file(archivePath, std::ios::binary);
@@ -333,6 +337,15 @@ static bool ExtractFromU8(const std::filesystem::path& archivePath, const char* 
 
     std::vector<uint8_t> data(static_cast<size_t>(size));
     if (!file.read(reinterpret_cast<char*>(data.data()), size)) {
+        return false;
+    }
+    return ExtractFromU8Image(std::move(data), targetName, outData);
+}
+
+// The archive itself, for a disc image: the same walk without a host file to open.
+static bool ExtractFromU8Image(std::vector<uint8_t> data, const char* targetName,
+                               std::vector<uint8_t>& outData) {
+    if (data.size() < 0x20) {
         return false;
     }
 
@@ -406,7 +419,12 @@ static constexpr char kFaceLibResourceName[] = "RFL_Res.dat";
 
 bool SeedFaceLibResource(const std::filesystem::path& hostPath) {
     std::vector<uint8_t> payload;
-    if (const auto dvdRoot = RuntimeConfigFile::ResolvedDvdRoot(); !dvdRoot.empty()) {
+    if (DiscFiles::ImageMode()) {
+        std::vector<uint8_t> archive;
+        if (DiscFiles::ReadWhole("contents/RFLRes01.arc", archive)) {
+            ExtractFromU8Image(std::move(archive), kFaceLibResourceName, payload);
+        }
+    } else if (const auto dvdRoot = RuntimeConfigFile::ResolvedDvdRoot(); !dvdRoot.empty()) {
         const auto arcPath = dvdRoot / "files" / "contents" / "RFLRes01.arc";
         std::error_code ec;
         if (std::filesystem::exists(arcPath, ec)) {

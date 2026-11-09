@@ -160,17 +160,15 @@ std::string GameFolderName() {
 std::string Steps(const char* openDolphin) {
     return "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
            ", from a disc you own. Choose one of these:\n\n"
-           "Open ISO: the disc image you dumped from your disc (.iso or .wbfs). It's extracted once, next to "
-           "this program or into its data folder, and the game reads that copy from then on.\n\n"
+           "Open Disc Image: the image you dumped from your disc. .iso, .wbfs, .ciso, .wia and .rvz all "
+           "work, and the game reads the image itself, so nothing is extracted and nothing is copied.\n\n"
            "Open Extracted Disc Folder: a folder Dolphin extracted the disc to.\n"
            "1. " + openDolphin + " and find " + GameName() + " in the game list.\n"
            "2. Right-click it, choose Properties, then the Filesystem tab.\n"
            "3. Right-click the disc at the top and choose Extract Entire Disc, then pick an empty folder.\n"
            "4. Choose that folder here. Keep it: the game reads it every time.\n\n"
-           "A compressed image (.rvz, .wia, .gcz) has to become an .iso first: in Dolphin, right-click the "
-           "game, Convert File..., Format: ISO.\n\n"
            "(Dolphin shows the revision under Properties > Info. Or put the extracted folder next to this "
-           "program and name it \"" + GameFolderName() + "\".)";
+           "program and name it \"" + GameFolderName() + "\", or put one disc image next to it.)";
 }
 
 GamePicker::Text PickerText() {
@@ -377,11 +375,12 @@ bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomple
 #endif
 
 #if defined(MKW_PLATFORM_SWITCH)
-// No folder picker on Switch: the beside-program game folder in EnsureConfigured is the only source.
+// No folder picker on Switch: the beside-program game folder, or one disc image beside it.
 namespace {
 fs::path ProgramDirectory() {
     return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});
 }
+
 } // namespace
 #endif
 
@@ -396,6 +395,10 @@ fs::path Find(const fs::path& path) {
     }
     if (IsExtractedDisc(path / "DATA")) {
         return path / "DATA";
+    }
+    std::error_code ec;
+    if (fs::is_regular_file(path, ec) && !ec) {
+        return path;  // a disc image: Problem() opens it
     }
     return {};
 }
@@ -419,6 +422,66 @@ std::optional<Offer> For(std::string_view, int) {
 } // namespace SupportModule
 
 namespace {
+// The game's code modules were translated with the rest: a disc whose modules were changed (a
+// repacked or modded image keeps the disc ID) would link nothing and stop at the first scene.
+// Each is the original's LZ file or, decompressed, the original's .rel. Newer's disc has the same.
+struct Module {
+    const char* name;
+    uintmax_t lzSize, relSize;
+};
+constexpr Module kModules[] = {
+    {"d_profileNP", 8791, 24244},
+    {"d_basesNP", 1190805, 3019336},
+    {"d_enemiesNP", 779805, 2137424},
+    {"d_en_bossNP", 229984, 605552},
+};
+
+// `sizeOf` answers for a path inside files/ ("rels/d_profileNP.rel.LZ") with UINT64_MAX when the
+// disc has no such file. The same checks therefore run for an extracted folder and for an image.
+template <typename SizeOf>
+std::string CheckModules(const std::string& id, const std::string& disc, SizeOf sizeOf) {
+    for (const Module& module : kModules) {
+        const std::string lz = std::string("rels/") + module.name + ".rel.LZ";
+        const std::string rel = std::string("rels/") + module.name + ".rel";
+        const uintmax_t lzSize = sizeOf(lz);
+        const uintmax_t relSize = sizeOf(rel);
+        if ((lzSize != UINT64_MAX && lzSize == module.lzSize) ||
+            (relSize != UINT64_MAX && relSize == module.relSize)) {
+            continue;
+        }
+        if (lzSize == UINT64_MAX && relSize == UINT64_MAX) {
+            return "That copy of " + id + " has no files/" + lz + ". This build needs " + disc +
+                   " as Dolphin's Extract Entire Disc makes it, with nothing changed or left out.";
+        }
+        const bool lzMissing = lzSize == UINT64_MAX;
+        return "That copy of " + id + " has a changed files/" + (lzMissing ? rel : lz) + " (" +
+               std::to_string(lzMissing ? relSize : lzSize) + " bytes, not " +
+               std::to_string(lzMissing ? module.relSize : module.lzSize) +
+               "): it isn't the original disc (a modded or repacked image?). This build runs only " + disc +
+               ", unchanged: it was translated from that disc's code.";
+    }
+    return {};
+}
+
+// A mod keeps its disc ID from version to version; its own code tells them apart.
+template <typename SizeOf>
+std::string CheckVersionFile(const std::string& id, const std::string& disc, const std::string& versionFile,
+                             uintmax_t expected, SizeOf sizeOf) {
+    if (versionFile.empty()) {
+        return {};
+    }
+    const uintmax_t size = sizeOf(versionFile);
+    if (size == UINT64_MAX) {
+        return "That is " + id + ", but it has no files/" + versionFile + ". This build runs only " + disc + ".";
+    }
+    if (size != expected) {
+        return "That is another version of " + GameName() + " (its files/" + versionFile + " is " +
+               std::to_string(size) + " bytes, not " + std::to_string(expected) + "). This build runs only " +
+               disc + ": it was translated from that version's code.";
+    }
+    return {};
+}
+
 std::string Check(const fs::path& root, bool* incomplete) {
     // Files left out: kIncomplete (in the player's language) and which ones, for the chooser's red line.
     const auto leftOut = [&](const std::string& which) {
@@ -459,57 +522,62 @@ std::string Check(const fs::path& root, bool* incomplete) {
                                            : "Missing: " + missing[0] + " and " + std::to_string(missing.size() - 1) +
                                                  " more files.");
     }
-    // The game's code modules were translated with the rest: a disc whose modules were changed (a
-    // repacked or modded image keeps the disc ID) would link nothing and stop at the first scene.
-    // Each is the original's LZ file or, decompressed, the original's .rel. Newer's disc has the same.
-    struct Module {
-        const char* name;
-        uintmax_t lzSize, relSize;
-    };
-    static constexpr Module kModules[] = {
-        {"d_profileNP", 8791, 24244},
-        {"d_basesNP", 1190805, 3019336},
-        {"d_enemiesNP", 779805, 2137424},
-        {"d_en_bossNP", 229984, 605552},
-    };
-    for (const Module& module : kModules) {
-        const std::string lz = "files/rels/" + std::string(module.name) + ".rel.LZ";
-        const std::string rel = "files/rels/" + std::string(module.name) + ".rel";
-        std::error_code lzError, relError;
-        const uintmax_t lzSize = fs::file_size(root / fs::u8path(lz), lzError);
-        const uintmax_t relSize = fs::file_size(root / fs::u8path(rel), relError);
-        if ((!lzError && lzSize == module.lzSize) || (!relError && relSize == module.relSize)) {
-            continue;
-        }
-        if (lzError && relError) {
-            return "That copy of " + id + " has no " + lz + ". This build needs " + disc +
-                   " as Dolphin's Extract Entire Disc makes it, with nothing changed or left out.";
-        }
-        const std::string& present = lzError ? rel : lz;
-        return "That copy of " + id + " has a changed " + present + " (" + std::to_string(lzError ? relSize : lzSize) +
-               " bytes, not " + std::to_string(lzError ? module.relSize : module.lzSize) +
-               "): it isn't the original disc (a modded or repacked image?). This build runs only " + disc +
-               ", unchanged: it was translated from that disc's code.";
-    }
-    // A mod keeps its disc ID from version to version; its own code tells them apart.
-    if (!product.versionFile.empty()) {
-        const std::string file = "files/" + std::string(product.versionFile);
+    const auto sizeOf = [&](std::string_view relative) -> uintmax_t {
         std::error_code ec;
-        const uintmax_t size = fs::file_size(root / fs::u8path(file), ec);
-        if (ec) {
-            return "That is " + id + ", but it has no " + file + ". This build runs only " + disc + ".";
-        }
-        if (size != product.versionFileSize) {
-            return "That is another version of " + GameName() + " (its " + file + " is " + std::to_string(size) +
-                   " bytes, not " + std::to_string(product.versionFileSize) + "). This build runs only " + disc +
-                   ": it was translated from that version's code.";
-        }
+        const uintmax_t size = fs::file_size(root / fs::u8path("files/" + std::string(relative)), ec);
+        return ec ? UINT64_MAX : size;
+    };
+    if (std::string problem = CheckModules(id, disc, sizeOf); !problem.empty()) {
+        return problem;
+    }
+    return CheckVersionFile(id, disc, std::string(product.versionFile), product.versionFileSize, sizeOf);
+}
+} // namespace
+
+namespace {
+// "that isn't a Wii disc image" -> "That isn't a Wii disc image."
+std::string SentenceOf(std::string text) {
+    if (!text.empty()) {
+        text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
+        text += '.';
+    }
+    return text;
+}
+
+// A disc image is checked by opening it and asking the same questions a folder is asked: the disc ID
+// and revision, the code modules the translated build needs, and a mod's version file.
+std::string CheckImage(const fs::path& image, bool* incomplete) {
+    (void)incomplete;
+    std::string error;
+    const std::unique_ptr<WiiDisc::Disc> disc = WiiDisc::Disc::Open(image, error);
+    if (!disc) {
+        RT_LOGF(RT_TAG_RUNTIME, "disc image %s: %s\n", RuntimeConfigFile::PathToUtf8(image).c_str(), error.c_str());
+        return SentenceOf(error);
+    }
+    const std::string id = disc->Id();
+    const RuntimeProduct::Descriptor& product = RuntimeProduct::Active();
+    const std::string discName(product.discName);
+    if (std::string problem = IdProblem(id, disc->Revision()); !problem.empty()) {
+        return problem;
+    }
+    const auto sizeOf = [&](std::string_view relative) -> uintmax_t { return disc->FileSize(relative); };
+    if (std::string problem = CheckModules(id, discName, sizeOf); !problem.empty()) {
+        return problem;
+    }
+    if (std::string problem =
+            CheckVersionFile(id, discName, std::string(product.versionFile), product.versionFileSize, sizeOf);
+        !problem.empty()) {
+        return problem;
     }
     return {};
 }
 } // namespace
 
 std::string Problem(const fs::path& root) {
+    std::error_code ec;
+    if (!IsExtractedDisc(root) && fs::is_regular_file(root, ec) && !ec) {
+        return CheckImage(root, nullptr);
+    }
     return Check(root, nullptr);
 }
 
@@ -525,6 +593,55 @@ constexpr RetailDol kRetailDols[] = {
     {"SMNP01", "51a2a8b0941e8fe3390404a9b2094e3c78246a999efa58fcc8a7c534c11d7b5b"},  // Europe rev 1
 };
 
+// SHA-256 in lowercase hex, the spelling kRetailDols uses.
+std::string Sha256Hex(const uint8_t* data, size_t size) {
+    CryptoPP::SHA256 hash;
+    hash.Update(data, size);
+    CryptoPP::byte digest[CryptoPP::SHA256::DIGESTSIZE];
+    hash.Final(digest);
+    static const char* hex = "0123456789abcdef";
+    std::string text;
+    for (const auto b : digest) {
+        text += hex[b >> 4];
+        text += hex[b & 15];
+    }
+    return text;
+}
+
+// The one supported image next to the program. None or several is the player's Config.toml; the log
+// says what was found, and EnsureConfigured falls back to [paths] dvd_root.
+// The one supported image next to the program. None or several is the player's Config.toml; the log
+// says what was found, and EnsureConfigured falls back to [paths] dvd_root.
+fs::path FindProgramImage(const fs::path& program) {
+    if (program.empty()) {
+        return {};
+    }
+    std::vector<fs::path> images;
+    std::error_code ec;
+    for (fs::directory_iterator it(program, ec), end; !ec && it != end; it.increment(ec)) {
+        const fs::path& path = it->path();
+        // A macOS ._ sidecar is not an image.
+        if (path.filename().native().rfind(fs::path("._").native(), 0) == 0) {
+            continue;
+        }
+        if (WiiDisc::Disc::LooksLikeImage(path)) {
+            images.push_back(path);
+        }
+    }
+    if (images.size() == 1) {
+        return images.front();
+    }
+    if (images.size() > 1) {
+        std::string names;
+        for (const fs::path& image : images) {
+            names += (names.empty() ? "" : ", ") + RuntimeConfigFile::PathToUtf8(image.filename());
+        }
+        RT_LOGF(RT_TAG_RUNTIME,
+                "disc image: %zu beside the program (%s); set [paths] dvd_root in Config.toml to pick one\n",
+                images.size(), names.c_str());
+    }
+    return {};
+}
 // A file's SHA-256 in lowercase hex; empty when it can't be read.
 std::string MainDolSha256(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
@@ -557,15 +674,31 @@ bool RetailDisc() {
         if (root.empty()) {
             return false;
         }
-        std::ifstream boot(root / "sys" / "boot.bin", std::ios::binary);
-        char header[6] = {};
-        if (!boot.read(header, sizeof(header))) {
-            return false;
+        std::string id;
+        std::string dolSha256;
+        if (IsExtractedDisc(root)) {
+            std::ifstream boot(root / "sys" / "boot.bin", std::ios::binary);
+            char header[6] = {};
+            if (!boot.read(header, sizeof(header))) {
+                return false;
+            }
+            id.assign(header, sizeof(header));
+            dolSha256 = MainDolSha256(root / "sys" / "main.dol");
+        } else {
+            std::string error;
+            const std::unique_ptr<WiiDisc::Disc> disc = WiiDisc::Disc::Open(root, error);
+            if (!disc) {
+                return false;
+            }
+            id = disc->Id();
+            std::vector<uint8_t> dol;
+            if (disc->Read("sys/main.dol", dol)) {
+                dolSha256 = Sha256Hex(dol.data(), dol.size());
+            }
         }
-        const std::string id(header, 6);
         for (const RetailDol& dol : kRetailDols) {
             if (id == dol.id) {
-                const bool same = MainDolSha256(root / "sys" / "main.dol") == dol.sha256;
+                const bool same = dolSha256 == dol.sha256;
                 RT_LOGF(RT_TAG_RUNTIME, "game folder: %s, %s main.dol\n", id.c_str(), same ? "the retail" : "a changed");
                 return same;
             }
@@ -601,8 +734,19 @@ bool EnsureConfigured() {
         RT_LOGF(RT_TAG_RUNTIME, "game folder: %s can't be used: %s\n", RuntimeConfigFile::PathToUtf8(besidePath).c_str(),
                 besideProblem.c_str());
     }
+    // One disc image beside the program is used by itself too, as a folder is.
+    if (const fs::path image = FindProgramImage(ProgramDirectory());
+        !image.empty() && Problem(image).empty()) {
+        if (RuntimeConfigFile::DvdRoot().empty()) {
+            RuntimeConfigFile::SetDvdRoot(image);
+        } else {
+            RuntimeConfigFile::UseDvdRootForThisRun(image);
+        }
+        RT_LOGF(RT_TAG_RUNTIME, "disc image: %s\n", RuntimeConfigFile::PathToUtf8(image).c_str());
+        return true;
+    }
 #elif defined(MKW_PLATFORM_SWITCH)
-    // No folder picker on Switch: the game folder beside the program is the only source.
+    // No folder picker on Switch: the game folder beside the program, then one disc image beside it.
     if (const fs::path beside = Find(ProgramDirectory() / "game"); !beside.empty() && Problem(beside).empty()) {
         if (RuntimeConfigFile::DvdRoot().empty()) {
             RuntimeConfigFile::SetDvdRoot(beside);
@@ -610,6 +754,16 @@ bool EnsureConfigured() {
             RuntimeConfigFile::UseDvdRootForThisRun(beside);
         }
         RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(beside).c_str());
+        return true;
+    }
+    if (const fs::path image = FindProgramImage(ProgramDirectory());
+        !image.empty() && Problem(image).empty()) {
+        if (RuntimeConfigFile::DvdRoot().empty()) {
+            RuntimeConfigFile::SetDvdRoot(image);
+        } else {
+            RuntimeConfigFile::UseDvdRootForThisRun(image);
+        }
+        RT_LOGF(RT_TAG_RUNTIME, "disc image: %s\n", RuntimeConfigFile::PathToUtf8(image).c_str());
         return true;
     }
 #endif
@@ -644,8 +798,18 @@ bool EnsureConfigured() {
             return false;
         }
         if (picked.choice == GamePicker::Choice::Iso) {
-            if (!ImportDiscImage(picked.path, problem, incomplete)) {
-                continue;
+            // The image is read in place. NSMBW_IMPORT_DISC=1 keeps the old "extract once" path, for
+            // testing the extractor itself; nothing else uses it.
+            if (std::getenv("NSMBW_IMPORT_DISC") != nullptr) {
+                if (!ImportDiscImage(picked.path, problem, incomplete)) {
+                    continue;
+                }
+            } else {
+                problem = CheckImage(picked.path, &incomplete);
+                if (!problem.empty()) {
+                    continue;
+                }
+                RuntimeConfigFile::SetDvdRoot(picked.path);
             }
         } else {
             const fs::path root = Find(picked.path);

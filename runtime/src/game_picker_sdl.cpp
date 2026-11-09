@@ -31,7 +31,7 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr float kWidth = 560;        // the window's width at 100 %
-constexpr float kButtonWidth = 340;  // Open ISO and Open Extracted Disc Folder
+constexpr float kButtonWidth = 340;  // Open Disc Image and Open Extracted Disc Folder
 
 struct Window {
     SDL_Window* window = nullptr;
@@ -344,9 +344,9 @@ Picked ShowWithoutWindow(const Text& text, const std::string& problem) {
         const SDL_MessageBoxButtonData buttons[] = {
             {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
             {0, 2, "Open Extracted Disc Folder"},
-            {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Open ISO"},
+            {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Open Disc Image"},
         };
-        const std::string body = message + "\n\nOpen ISO, or Open Extracted Disc Folder.";
+        const std::string body = message + "\n\nOpen Disc Image, or Open Extracted Disc Folder.";
         const SDL_MessageBoxData data = {SDL_MESSAGEBOX_INFORMATION, nullptr, text.title.c_str(), body.c_str(), 3,
                                          buttons, nullptr};
         int pressed = 0;
@@ -451,7 +451,7 @@ Picked Show(const Text& text, const std::string& problem) {
             if (g_window.frames == 0) {
                 ImGui::SetKeyboardFocusHere();
             }
-            if (ImGui::Button("Open ISO", ImVec2(buttonWidth, 0))) {
+            if (ImGui::Button("Open Disc Image", ImVec2(buttonWidth, 0))) {
                 folderAsked = false;
                 notice.clear();
                 Ask(answer, false, text.isoTitle);

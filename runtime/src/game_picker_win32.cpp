@@ -369,7 +369,7 @@ Picked Show(const Text& text, const std::string& problem) {
     t.Item(kHead, kStaticClass, SS_LEFT | SS_NOPREFIX, L"Choose your game files");
     t.Item(kBody, kStaticClass, SS_LEFT | SS_NOPREFIX, Widen(text.body));
     t.Item(kProblem, kStaticClass, SS_LEFT | SS_NOPREFIX, Widen(problem));
-    t.Item(kIso, kButtonClass, BS_DEFPUSHBUTTON | WS_TABSTOP | WS_GROUP, L"&Open ISO");
+    t.Item(kIso, kButtonClass, BS_DEFPUSHBUTTON | WS_TABSTOP | WS_GROUP, L"&Open Disc Image");
     t.Item(kOr, kStaticClass, SS_CENTER | SS_NOPREFIX, L"or");
     t.Item(kFolder, kButtonClass, BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, L"Open &Extracted Disc Folder");
     t.Item(kMods, kButtonClass, BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, L"&Mods");

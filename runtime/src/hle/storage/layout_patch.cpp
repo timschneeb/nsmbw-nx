@@ -680,6 +680,12 @@ bool PatchPauseArchive(std::vector<uint8_t>& arc, float& pitch) {
 } // namespace
 
 fs::path AdaptLanguageArchive(const std::string& dvdPath, const fs::path& hostPath) {
+    std::ifstream in(hostPath, std::ios::binary);
+    std::vector<uint8_t> archive((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return AdaptLanguageArchive(dvdPath, std::move(archive));
+}
+
+fs::path AdaptLanguageArchive(const std::string& dvdPath, std::vector<uint8_t> arc) {
     if (RuntimeProduct::Active().gameId != "SMNE01" || RuntimeConfigFile::Language() != "it") {
         return {};
     }
@@ -692,8 +698,6 @@ fs::path AdaptLanguageArchive(const std::string& dvdPath, const fs::path& hostPa
         return {};
     }
 
-    std::ifstream in(hostPath, std::ios::binary);
-    std::vector<uint8_t> arc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (arc.empty()) {
         RT_LOGF(RT_TAG_DVD, "layout compatibility: %s is not a supported Italian archive; leaving it unchanged\n",
                 dvdPath.c_str());
@@ -729,6 +733,12 @@ fs::path AdaptLanguageArchive(const std::string& dvdPath, const fs::path& hostPa
 }
 
 fs::path Patch(const std::string& dvdPath, const fs::path& hostPath) {
+    std::ifstream in(hostPath, std::ios::binary);
+    std::vector<uint8_t> archive((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return Patch(dvdPath, std::move(archive));
+}
+
+fs::path Patch(const std::string& dvdPath, std::vector<uint8_t> arc) {
     std::string lower = dvdPath;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     const bool map = lower == "/layout/corseselectmenu/corseselectmenu.arc";
@@ -746,8 +756,6 @@ fs::path Patch(const std::string& dvdPath, const fs::path& hostPath) {
     if ((DetClock::Enabled() && !forced) || std::getenv("NSMBW_NO_MENU_PATCH") != nullptr) {
         return {};
     }
-    std::ifstream in(hostPath, std::ios::binary);
-    std::vector<uint8_t> arc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     float pitch = 70.0f;
     if (map) {
         if (arc.empty() || !PatchMapArchive(arc)) {

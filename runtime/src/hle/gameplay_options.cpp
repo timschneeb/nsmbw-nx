@@ -19,6 +19,7 @@
 #include "gameplay_options.h"
 
 #include "abi_bridge.h"
+#include "disc_files.h"
 #include "det_clock.h"
 #include "guest_interrupt_context.h"
 #include "hle_stubs.h"
@@ -445,9 +446,14 @@ uint32_t Be32(const std::vector<uint8_t>& d, size_t at) {
 // The canvas's tiled pixels, empty when the disc has no such file (a mod's).
 std::vector<uint8_t> LoadMarioPortrait() {
     std::vector<uint8_t> canvas;
-    std::ifstream in(RuntimeConfigFile::ResolvedDvdRoot() / "files" / "Layout" / "pointResult" / "pointResult.arc",
-                     std::ios::binary);
-    const std::vector<uint8_t> arc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<uint8_t> arc;
+    if (DiscFiles::ImageMode()) {
+        DiscFiles::ReadWhole("Layout/pointResult/pointResult.arc", arc);
+    } else {
+        std::ifstream in(RuntimeConfigFile::ResolvedDvdRoot() / "files" / "Layout" / "pointResult" / "pointResult.arc",
+                         std::ios::binary);
+        arc.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
     if (Be32(arc, 0) != 0x55AA382Du) {
         return canvas;
     }

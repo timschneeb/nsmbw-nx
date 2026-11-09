@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 // NSMBW: the pause window gets a third button, Settings, that is the game's own: its archive
 // (/Layout/pauseMenu/pauseMenu.arc) is served with Exit's button copied under new names between
@@ -18,10 +20,13 @@ namespace LayoutPatch {
 // U8 entries use EU resource names. Return a cached, USA-named copy when one
 // of the known Italian language archives is supplied.
 std::filesystem::path AdaptLanguageArchive(const std::string& dvdPath, const std::filesystem::path& hostPath);
+// The same, with the archive's bytes already in hand (a disc image has no host path to give).
+std::filesystem::path AdaptLanguageArchive(const std::string& dvdPath, std::vector<uint8_t> archive);
 
 // dvd.cpp, once per disc path the game may read, after the overlays: a patched copy of the file to
 // serve in its place, or empty to serve it as it is.
 std::filesystem::path Patch(const std::string& dvdPath, const std::filesystem::path& hostPath);
+std::filesystem::path Patch(const std::string& dvdPath, std::vector<uint8_t> archive);
 
 // The pause window's archive is served with the Settings button.
 bool PauseButtonPatched() noexcept;

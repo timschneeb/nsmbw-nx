@@ -10,6 +10,7 @@
 extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include "hle/storage/riivolution.h"
 #include "hle/storage/layout_patch.h"
+#include "disc_files.h"
 #include "ppc_runtime.h"
 #include "recomp_mod_loader.h"
 #include "runtime_config.h"
@@ -134,6 +135,7 @@ FileBytes CachedFile(const fs::path& path) {
     return it != g_readCache.end() ? it->second : nullptr;
 }
 
+
 #if defined(__ANDROID__)
 // Files the game has read, kept open (with their sizes), so the next read of one skips the open.
 struct OpenFile {
@@ -231,7 +233,30 @@ bool ReadHostFile(const fs::path& path, uint64_t offset, uint32_t length, std::v
     return ok;
 }
 
+// `length` bytes of `entry` at `offset` within the file: from the host file, or from the disc image
+// when the index was built from one (no host path, but a partition offset).
+static bool ReadEntry(const DVDFileEntry& entry, uint64_t offset, uint32_t length,
+                      std::vector<uint8_t>& destination, DvdReadContract::HostReadFailure& failure) {
+    if (!entry.hostPath.empty()) {
+        return ReadHostFile(entry.hostPath, offset, length, destination, failure);
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const bool ok = DiscFiles::ReadAt(uint64_t(entry.discOffsetWords) * 4ull + offset, length, destination);
+    g_dvdReadNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                       std::chrono::steady_clock::now() - start)
+                                                       .count()),
+                             std::memory_order_relaxed);
+    g_dvdReads.fetch_add(1, std::memory_order_relaxed);
+    failure = ok ? DvdReadContract::HostReadFailure::None : DvdReadContract::HostReadFailure::ShortRead;
+    return ok;
+}
+
 void StartReadCachePreload() {
+    if (DiscFiles::ImageMode()) {
+        // The image keeps its own decompressed-chunk cache. Reading whole files into RAM as well
+        // made the game wait on the reader's lock (a .wia chunk can take seconds to unpack).
+        return;
+    }
 #if defined(__ANDROID__)
     const uint64_t ram = static_cast<uint64_t>(sysconf(_SC_PHYS_PAGES)) * static_cast<uint64_t>(sysconf(_SC_PAGE_SIZE));
     if (ram < (3ull << 30) || std::getenv("NSMBW_NO_DVD_PRELOAD") != nullptr) {
@@ -351,6 +376,12 @@ static std::string HostPathText(const fs::path& path) {
     return RuntimeConfigFile::PathToUtf8(path);
 }
 
+// What a file entry is called in a log line or a fatal report: the host file, or the disc path when
+// the entry reads from a disc image.
+static std::string EntryText(const DVDFileEntry& entry) {
+    return entry.hostPath.empty() ? entry.dvdPath : HostPathText(entry.hostPath);
+}
+
 static bool IsDvdDataRoot(const fs::path& path) {
     std::error_code ec;
     return fs::is_directory(path, ec) && !ec &&
@@ -376,15 +407,17 @@ static bool IsDvdDataRoot(const fs::path& path) {
         std::fprintf(stderr, ": %s", HostPathText(path).c_str());
     }
     std::fprintf(stderr,
-                 "\n[dvd] Set [paths] dvd_root in Config.toml to your New Super Mario Bros. Wii, "
-                 "extracted with Dolphin's Extract Entire Disc.\n");
+                 "\n[dvd] Set [paths] dvd_root in Config.toml to your New Super Mario Bros. Wii "
+                 "(a disc image such as .iso, .wbfs, .ciso, .wia or .rvz, or the folder Dolphin's "
+                 "Extract Entire Disc made).\n");
     std::string details = source ? source : "The configured DVD root could not be opened.";
     if (!path.empty()) {
         details += "\n\nPath: ";
         details += HostPathText(path);
     }
     details += "\n\nSet [paths] dvd_root in Config.toml to your New Super Mario Bros. Wii "
-               "(SMNE01 revision 1), extracted with Dolphin's Extract Entire Disc.";
+               "(SMNE01 revision 1): the disc image itself (.iso, .wbfs, .ciso, .wia, .rvz), or the "
+               "folder Dolphin's Extract Entire Disc made.";
     FailDvd("dvd_root", "DVD data is unavailable", details);
 }
 
@@ -395,7 +428,7 @@ static const fs::path& GetDvdRoot() {
             FailDvdRoot("No DVD root is configured");
         }
         if (!IsDvdDataRoot(path)) {
-            FailDvdRoot("Configured DVD root is not an extracted DATA directory", path);
+            FailDvdRoot("Configured DVD root is neither a disc image nor an extracted DATA directory", path);
         }
         g_dvdRoot = path;
     });
@@ -644,6 +677,21 @@ static void RegisterFileEntry(std::string dvdPath, const fs::path& hostPath, uin
     fileEntry.hostPath = hostPath;
     fileEntry.dvdPath = dvdPath;
     fileEntry.size = size;
+
+    const int32_t entryNum = static_cast<int32_t>(g_fileEntries.size());
+    g_fileEntries.push_back(std::move(fileEntry));
+    g_pathToEntry[NormalizePath(dvdPath)] = entryNum;
+}
+
+// A file read from the disc image instead of the host: `discOffsetWords` is where it starts in the
+// decrypted partition, which is also what the published FST hands the game.
+static void RegisterImageEntry(std::string dvdPath, uint32_t discOffsetWords, uint32_t size) {
+    dvdPath = DvdFstContract::CanonicalizePath(dvdPath);
+
+    DVDFileEntry fileEntry;
+    fileEntry.dvdPath = dvdPath;
+    fileEntry.size = size;
+    fileEntry.discOffsetWords = discOffsetWords;
 
     const int32_t entryNum = static_cast<int32_t>(g_fileEntries.size());
     g_fileEntries.push_back(std::move(fileEntry));
@@ -1124,14 +1172,25 @@ extern "C" void DVDInit_8015EA1C()
     Memory::Write32(diskHeader + 0x00, CurrentDiscGameCode());
     Memory::Write16(diskHeader + 0x04, 0x3031);     // '01' (Maker)
     Memory::Write8(diskHeader + 0x06, 0x01);        // Disk #1
-    // 4. Scan Files
-    const fs::path& rootPath = GetDvdRoot();
-    
-    // Map "<dvd_root>/files" -> "/"
-    ScanDirectory(rootPath / "files", "/");
+    // 4. Scan Files: the disc image, or the extracted folder's files/ and sys/.
+    if (DiscFiles::ImageMode()) {
+        std::string error;
+        if (!DiscFiles::Open(error)) {
+            FailDvdRoot(error.c_str());
+        }
+        for (const WiiDisc::Disc::File& file : DiscFiles::Files()) {
+            RegisterImageEntry("/" + file.path, static_cast<uint32_t>(file.offset / 4u),
+                               static_cast<uint32_t>(file.size));
+        }
+    } else {
+        const fs::path& rootPath = GetDvdRoot();
 
-    // Map "<dvd_root>/sys" -> "/sys/" (e.g. main.dol, bi2.bin)
-    ScanDirectory(rootPath / "sys", "/sys/");
+        // Map "<dvd_root>/files" -> "/"
+        ScanDirectory(rootPath / "files", "/");
+
+        // Map "<dvd_root>/sys" -> "/sys/" (e.g. main.dol, bi2.bin)
+        ScanDirectory(rootPath / "sys", "/sys/");
+    }
 
     const auto& overlays = RuntimeRiivolution::Overlays();
     if (overlays.empty() && RuntimeProduct::IsRetroRewind()) {
@@ -1160,8 +1219,17 @@ extern "C" void DVDInit_8015EA1C()
         if (entry == g_pathToEntry.end()) {
             continue;
         }
-        const fs::path adapted =
-            LayoutPatch::AdaptLanguageArchive(path, g_fileEntries[static_cast<size_t>(entry->second)].hostPath);
+        const DVDFileEntry& languageEntry = g_fileEntries[static_cast<size_t>(entry->second)];
+        fs::path adapted;
+        if (languageEntry.hostPath.empty()) {
+            std::vector<uint8_t> bytes;
+            if (!DiscFiles::ReadWhole(languageEntry.dvdPath, bytes) || bytes.empty()) {
+                continue;
+            }
+            adapted = LayoutPatch::AdaptLanguageArchive(path, std::move(bytes));
+        } else {
+            adapted = LayoutPatch::AdaptLanguageArchive(path, languageEntry.hostPath);
+        }
         std::error_code ec;
         const auto size = adapted.empty() ? 0 : fs::file_size(adapted, ec);
         if (!adapted.empty() && !ec && size > 0) {
@@ -1176,7 +1244,17 @@ extern "C" void DVDInit_8015EA1C()
         if (entry == g_pathToEntry.end()) {
             continue;
         }
-        const fs::path patched = LayoutPatch::Patch(path, g_fileEntries[static_cast<size_t>(entry->second)].hostPath);
+        const DVDFileEntry& layoutEntry = g_fileEntries[static_cast<size_t>(entry->second)];
+        fs::path patched;
+        if (layoutEntry.hostPath.empty()) {
+            std::vector<uint8_t> bytes;
+            if (!DiscFiles::ReadWhole(layoutEntry.dvdPath, bytes) || bytes.empty()) {
+                continue;
+            }
+            patched = LayoutPatch::Patch(path, std::move(bytes));
+        } else {
+            patched = LayoutPatch::Patch(path, layoutEntry.hostPath);
+        }
         std::error_code ec;
         const auto size = patched.empty() ? 0 : fs::file_size(patched, ec);
         if (!patched.empty() && !ec && size > 0) {
@@ -1186,8 +1264,10 @@ extern "C" void DVDInit_8015EA1C()
 
     StartReadCachePreload();
 
-    // Load FST mapping so real files keep their physical disc extents.
-    LoadFstIndex();
+    if (!DiscFiles::ImageMode()) {
+        // Load FST mapping so real files keep their physical disc extents.
+        LoadFstIndex();
+    }
     BuildAndPublishRuntimeFst();
 
     // Initialize the translated DVD filesystem so it can use the published FST.
@@ -1229,7 +1309,7 @@ extern "C" int32_t DVDReadPrio_8015E834(uint32_t fileInfoPtr, uint32_t bufferPtr
     const DVDFileEntry& entry = g_fileEntries[extent->entryIndex];
 
     if (offset < 0 || length < 0) {
-        return DvdReadFatal(fileInfoPtr, HostPathText(entry.hostPath), offset,
+        return DvdReadFatal(fileInfoPtr, EntryText(entry), offset,
                             length > 0 ? static_cast<uint32_t>(length) : 0,
                             "negative DVD read offset or length");
     }
@@ -1239,7 +1319,7 @@ extern "C" int32_t DVDReadPrio_8015E834(uint32_t fileInfoPtr, uint32_t bufferPtr
     uint32_t uLength = (uint32_t)length;
 
     if (requestedOffset >= entry.size) {
-        return DvdReadFatal(fileInfoPtr, HostPathText(entry.hostPath), offset, uLength,
+        return DvdReadFatal(fileInfoPtr, EntryText(entry), offset, uLength,
                             "read offset is outside the indexed DVD file");
     }
     const uint32_t uOffset = static_cast<uint32_t>(requestedOffset);
@@ -1249,14 +1329,14 @@ extern "C" int32_t DVDReadPrio_8015E834(uint32_t fileInfoPtr, uint32_t bufferPtr
     }
 
     if (uLength != 0 && !Memory::Contains(bufferPtr, uLength)) {
-        return DvdReadFatal(fileInfoPtr, HostPathText(entry.hostPath), offset, uLength,
+        return DvdReadFatal(fileInfoPtr, EntryText(entry), offset, uLength,
                             "DVD read destination is outside guest memory");
     }
 
     std::vector<uint8_t> tempBuf;
     DvdReadContract::HostReadFailure failure;
-    if (!ReadHostFile(entry.hostPath, uOffset, uLength, tempBuf, failure)) {
-        return DvdReadFatal(fileInfoPtr, HostPathText(entry.hostPath), offset, uLength,
+    if (!ReadEntry(entry, uOffset, uLength, tempBuf, failure)) {
+        return DvdReadFatal(fileInfoPtr, EntryText(entry), offset, uLength,
                             DvdReadContract::Describe(failure));
     }
 
@@ -1312,22 +1392,22 @@ extern "C" int32_t DVD__ReadAbsAsyncPrio_HLE_801628cc(uint32_t cmdBlockPtr,
                                      requestedLength,
                                      "absolute DVD read offset is not mapped to a host file");
         } else if (requestedLength != 0 && readInfo.readLength != requestedLength) {
-            bytesRead = DvdReadFatal(cmdBlockPtr, HostPathText(readInfo.entry->hostPath),
+            bytesRead = DvdReadFatal(cmdBlockPtr, EntryText(*readInfo.entry),
                                      readInfo.fileOffset, requestedLength,
                                      "requested range extends beyond the indexed DVD file");
         } else if (requestedLength != 0 && !Memory::Contains(bufferPtr, requestedLength)) {
-            bytesRead = DvdReadFatal(cmdBlockPtr, HostPathText(readInfo.entry->hostPath),
+            bytesRead = DvdReadFatal(cmdBlockPtr, EntryText(*readInfo.entry),
                                      readInfo.fileOffset, requestedLength,
                                      "DVD read destination is outside guest memory");
         } else {
             std::vector<uint8_t> tempBuf;
             DvdReadContract::HostReadFailure failure;
-            if (!ReadHostFile(readInfo.entry->hostPath,
-                                            readInfo.fileOffset,
-                                            readInfo.readLength,
-                                            tempBuf,
-                                            failure)) {
-                bytesRead = DvdReadFatal(cmdBlockPtr, HostPathText(readInfo.entry->hostPath),
+            if (!ReadEntry(*readInfo.entry,
+                                       readInfo.fileOffset,
+                                       readInfo.readLength,
+                                       tempBuf,
+                                       failure)) {
+                bytesRead = DvdReadFatal(cmdBlockPtr, EntryText(*readInfo.entry),
                                          readInfo.fileOffset, readInfo.readLength,
                                          DvdReadContract::Describe(failure));
             } else {
@@ -1426,24 +1506,24 @@ extern "C" int32_t DVDLowRead_80166330(uint32_t buffer, uint32_t length, uint32_
         return finish(false);
     }
     if (readInfo.readLength != length) {
-        ReportDvdReadError(HostPathText(readInfo.entry->hostPath), readInfo.fileOffset, length,
+        ReportDvdReadError(EntryText(*readInfo.entry), readInfo.fileOffset, length,
                            "requested range extends beyond the indexed DVD file");
         return finish(false);
     }
     if (!Memory::Contains(buffer, length)) {
-        ReportDvdReadError(HostPathText(readInfo.entry->hostPath), readInfo.fileOffset, length,
+        ReportDvdReadError(EntryText(*readInfo.entry), readInfo.fileOffset, length,
                            "DVD read destination is outside guest memory");
         return finish(false);
     }
 
     std::vector<uint8_t> tempBuf;
     DvdReadContract::HostReadFailure failure;
-    if (!ReadHostFile(readInfo.entry->hostPath,
-                                    readInfo.fileOffset,
-                                    readInfo.readLength,
-                                    tempBuf,
-                                    failure)) {
-        ReportDvdReadError(HostPathText(readInfo.entry->hostPath), readInfo.fileOffset,
+    if (!ReadEntry(*readInfo.entry,
+                               readInfo.fileOffset,
+                               readInfo.readLength,
+                               tempBuf,
+                               failure)) {
+        ReportDvdReadError(EntryText(*readInfo.entry), readInfo.fileOffset,
                            readInfo.readLength, DvdReadContract::Describe(failure));
         return finish(false);
     }

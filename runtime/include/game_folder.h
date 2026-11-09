@@ -34,11 +34,11 @@ struct Offer {
 std::optional<Offer> For(std::string_view id, int revision);
 } // namespace SupportModule
 
-// At startup, before anything reads the disc. Windows and Linux: a game folder that is missing or
-// wrong is asked for (Open ISO, or Open Extracted Disc Folder; a disc image is extracted once, next
-// to the program or into the data folder), and saved to Config.toml. A "game" folder next to the
-// program ("game-newer" for Newer) is picked up by itself. Files left out are also said in a message
-// box. Elsewhere the app supplies the folder.
+// At startup, before anything reads the disc. Windows and Linux: the game is asked for when it is
+// missing or wrong (Open Disc Image, which is read in place, or Open Extracted Disc Folder), and
+// saved to Config.toml. A "game" folder next to the program ("game-newer" for Newer) is picked up by
+// itself, and so is one disc image next to it. Files left out are also said in a message box.
+// Switch has no chooser: the beside-program folder, then one beside-program image.
 // Returns false when the player gave up (the program then quits).
 bool EnsureConfigured();
 

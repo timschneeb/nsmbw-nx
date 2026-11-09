@@ -111,6 +111,20 @@ function(mkw_configure_translated_target target)
     mkw_bound_translated_compiles(${target})
 endfunction()
 
+# Codecs the disc image reader needs for .wia/.rvz groups. Zstandard is the copy aurora already
+# builds; bzip2 comes from the platform (absent on a platform that has none: those images are then
+# refused with a sentence instead of being misread).
+add_library(mkw_disc_codecs INTERFACE)
+if(TARGET libzstd_static)
+    target_link_libraries(mkw_disc_codecs INTERFACE libzstd_static)
+elseif(TARGET zstd::libzstd_static)
+    target_link_libraries(mkw_disc_codecs INTERFACE zstd::libzstd_static)
+endif()
+find_package(BZip2 QUIET)
+if(BZip2_FOUND)
+    target_link_libraries(mkw_disc_codecs INTERFACE BZip2::BZip2)
+endif()
+
 add_library(mkw_runtime_common OBJECT ${SOURCES})
 mkw_configure_object_target(mkw_runtime_common)
 target_compile_features(mkw_runtime_common PRIVATE cxx_std_20)
@@ -131,7 +145,8 @@ if(MKW_PLATFORM_SWITCH)
     # because Horizon has no curl or wget on the PATH.
     target_include_directories(mkw_runtime_common SYSTEM PRIVATE "${MKW_SWITCH_PORTLIBS}/include")
 endif()
-target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls)
+target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp
+    mkw::mbedtls mkw_disc_codecs)
 nsmbw_bt_passthrough_configure_runtime(mkw_runtime_common)
 if(MKW_PLATFORM_WINDOWS)
     # ole32/uuid/comctl32: the first-start game picker (game_picker_win32.cpp).
@@ -263,7 +278,8 @@ function(mkw_configure_product target)
     # include the same fat translated headers; bound them by the same pool.
     mkw_bound_translated_compiles(${target})
     target_link_libraries(${target} PRIVATE
-        mkw_platform mkw_base_shared mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls)
+        mkw_platform mkw_base_shared mkw::pugixml mkw::lzma mkw::toml11 mkw::cryptopp mkw::mbedtls
+        mkw_disc_codecs)
 
     target_link_libraries(${target} PRIVATE
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
