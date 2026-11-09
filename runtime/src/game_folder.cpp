@@ -29,6 +29,10 @@ bool IsExtractedDisc(const fs::path& path) {
     return fs::is_directory(path / "files", ec) && fs::is_regular_file(path / "sys" / "fst.bin", ec);
 }
 
+// Why Switch found no game, for the report main.cpp shows before the boot; empty elsewhere and
+// whenever one was found.
+std::string g_startupProblem;
+
 // The game this build was translated from (runtime_product.h: the original, or a mod such as Newer).
 std::string GameName() {
     return std::string(RuntimeProduct::Active().displayName);
@@ -381,6 +385,30 @@ fs::path ProgramDirectory() {
     return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});
 }
 
+// What a player is told when nothing usable was found. The NRO's folder is whatever getcwd() said
+// (host_platform.cpp); nothing here is a fixed path.
+std::string NoGameProblem(const fs::path& program, const fs::path& image, const std::string& imageProblem,
+                          const std::string& folderProblem, const std::string& configuredProblem) {
+    const std::string where = program.empty() ? std::string("next to WiiCompiled.nro")
+                                              : RuntimeConfigFile::PathToUtf8(program);
+    // What to do comes last, after whatever was found and rejected: leading with "No game was found"
+    // while naming a folder that is plainly there reads as a contradiction.
+    std::string reasons;
+    if (!folderProblem.empty()) {
+        reasons += "The game folder can't be used: " + folderProblem + "\n\n";
+    }
+    if (!image.empty() && !imageProblem.empty()) {
+        reasons += "The disc image " + RuntimeConfigFile::PathToUtf8(image.filename()) + " can't be used: " +
+                   imageProblem + "\n\n";
+    }
+    if (!configuredProblem.empty()) {
+        reasons += "The [paths] dvd_root entry can't be used: " + configuredProblem + "\n\n";
+    }
+    const std::string guidance =
+        "Put your own copy of " + std::string(RuntimeProduct::Active().discName) + " next to WiiCompiled.nro (" +
+        where + "): a disc image (.iso, .wbfs, .ciso, .wia or .rvz), or the extracted game folder, named \"game\".";
+    return reasons.empty() ? "No game was found. " + guidance : reasons + guidance;
+}
 } // namespace
 #endif
 
@@ -573,6 +601,10 @@ std::string CheckImage(const fs::path& image, bool* incomplete) {
 }
 } // namespace
 
+const std::string& StartupProblem() {
+    return g_startupProblem;
+}
+
 std::string Problem(const fs::path& root) {
     std::error_code ec;
     if (!IsExtractedDisc(root) && fs::is_regular_file(root, ec) && !ec) {
@@ -608,15 +640,13 @@ std::string Sha256Hex(const uint8_t* data, size_t size) {
     return text;
 }
 
-// The one supported image next to the program. None or several is the player's Config.toml; the log
-// says what was found, and EnsureConfigured falls back to [paths] dvd_root.
-// The one supported image next to the program. None or several is the player's Config.toml; the log
-// says what was found, and EnsureConfigured falls back to [paths] dvd_root.
-fs::path FindProgramImage(const fs::path& program) {
-    if (program.empty()) {
-        return {};
-    }
+// Every supported image beside the program, by name, so which one is "first" does not depend on the
+// order the directory happens to hand out.
+std::vector<fs::path> FindProgramImages(const fs::path& program) {
     std::vector<fs::path> images;
+    if (program.empty()) {
+        return images;
+    }
     std::error_code ec;
     for (fs::directory_iterator it(program, ec), end; !ec && it != end; it.increment(ec)) {
         const fs::path& path = it->path();
@@ -628,17 +658,26 @@ fs::path FindProgramImage(const fs::path& program) {
             images.push_back(path);
         }
     }
-    if (images.size() == 1) {
-        return images.front();
-    }
-    if (images.size() > 1) {
-        std::string names;
-        for (const fs::path& image : images) {
-            names += (names.empty() ? "" : ", ") + RuntimeConfigFile::PathToUtf8(image.filename());
+    std::sort(images.begin(), images.end());
+    return images;
+}
+
+// The first image beside the program that passes the checks. `problem` and `failed` describe the
+// first one that did not, for the message when none does.
+fs::path FirstUsableImage(const fs::path& program, std::string* problem, fs::path* failed) {
+    for (const fs::path& image : FindProgramImages(program)) {
+        const std::string reason = Problem(image);
+        if (reason.empty()) {
+            return image;
         }
-        RT_LOGF(RT_TAG_RUNTIME,
-                "disc image: %zu beside the program (%s); set [paths] dvd_root in Config.toml to pick one\n",
-                images.size(), names.c_str());
+        RT_LOGF(RT_TAG_RUNTIME, "disc image: %s can't be used: %s\n",
+                RuntimeConfigFile::PathToUtf8(image).c_str(), reason.c_str());
+        if (problem != nullptr && problem->empty()) {
+            *problem = reason;
+        }
+        if (failed != nullptr && failed->empty()) {
+            *failed = image;
+        }
     }
     return {};
 }
@@ -734,9 +773,8 @@ bool EnsureConfigured() {
         RT_LOGF(RT_TAG_RUNTIME, "game folder: %s can't be used: %s\n", RuntimeConfigFile::PathToUtf8(besidePath).c_str(),
                 besideProblem.c_str());
     }
-    // One disc image beside the program is used by itself too, as a folder is.
-    if (const fs::path image = FindProgramImage(ProgramDirectory());
-        !image.empty() && Problem(image).empty()) {
+    // A disc image beside the program is used by itself too, as a folder is.
+    if (const fs::path image = FirstUsableImage(ProgramDirectory(), nullptr, nullptr); !image.empty()) {
         if (RuntimeConfigFile::DvdRoot().empty()) {
             RuntimeConfigFile::SetDvdRoot(image);
         } else {
@@ -746,25 +784,54 @@ bool EnsureConfigured() {
         return true;
     }
 #elif defined(MKW_PLATFORM_SWITCH)
-    // No folder picker on Switch: the game folder beside the program, then one disc image beside it.
-    if (const fs::path beside = Find(ProgramDirectory() / "game"); !beside.empty() && Problem(beside).empty()) {
-        if (RuntimeConfigFile::DvdRoot().empty()) {
-            RuntimeConfigFile::SetDvdRoot(beside);
-        } else {
-            RuntimeConfigFile::UseDvdRootForThisRun(beside);
+    // No folder picker on Switch: the game folder beside the program, then one disc image beside it,
+    // then [paths] dvd_root. Finding nothing is reported by StartupProblem(), before the boot.
+    {
+        const fs::path program = ProgramDirectory();
+        std::string folderProblem;
+        if (const fs::path beside = Find(program / "game"); !beside.empty()) {
+            folderProblem = Problem(beside);
+            if (folderProblem.empty()) {
+                if (RuntimeConfigFile::DvdRoot().empty()) {
+                    RuntimeConfigFile::SetDvdRoot(beside);
+                } else {
+                    RuntimeConfigFile::UseDvdRootForThisRun(beside);
+                }
+                RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(beside).c_str());
+                return true;
+            }
+            RT_LOGF(RT_TAG_RUNTIME, "game folder: %s can't be used: %s\n",
+                    RuntimeConfigFile::PathToUtf8(beside).c_str(), folderProblem.c_str());
         }
-        RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(beside).c_str());
-        return true;
-    }
-    if (const fs::path image = FindProgramImage(ProgramDirectory());
-        !image.empty() && Problem(image).empty()) {
-        if (RuntimeConfigFile::DvdRoot().empty()) {
-            RuntimeConfigFile::SetDvdRoot(image);
-        } else {
-            RuntimeConfigFile::UseDvdRootForThisRun(image);
+        std::string imageProblem;
+        fs::path rejectedImage;
+        if (const fs::path image = FirstUsableImage(program, &imageProblem, &rejectedImage); !image.empty()) {
+            if (RuntimeConfigFile::DvdRoot().empty()) {
+                RuntimeConfigFile::SetDvdRoot(image);
+            } else {
+                RuntimeConfigFile::UseDvdRootForThisRun(image);
+            }
+            RT_LOGF(RT_TAG_RUNTIME, "disc image: %s\n", RuntimeConfigFile::PathToUtf8(image).c_str());
+            return true;
         }
-        RT_LOGF(RT_TAG_RUNTIME, "disc image: %s\n", RuntimeConfigFile::PathToUtf8(image).c_str());
-        return true;
+        std::string configuredProblem;
+        const fs::path configuredPath = Find(RuntimeConfigFile::ResolvedDvdRoot());
+        if (configuredPath.empty()) {
+            if (!RuntimeConfigFile::DvdRoot().empty()) {
+                const fs::path saved = RuntimeConfigFile::ResolvedDvdRoot();
+                std::error_code existsError;
+                configuredProblem = fs::exists(saved, existsError)
+                                        ? Problem(saved)
+                                        : "it isn't there any more (" + RuntimeConfigFile::PathToUtf8(saved) + ")";
+            }
+        } else if (Problem(configuredPath).empty()) {
+            return true;  // this is what ResolvedDvdRoot() already answers with
+        } else {
+            configuredProblem = Problem(configuredPath);
+        }
+        g_startupProblem = NoGameProblem(program, rejectedImage, imageProblem, folderProblem, configuredProblem);
+        RT_LOGF(RT_TAG_RUNTIME, "ERROR: %s\n", g_startupProblem.c_str());
+        return false;
     }
 #endif
     const fs::path configured = Find(RuntimeConfigFile::ResolvedDvdRoot());

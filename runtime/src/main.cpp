@@ -903,6 +903,44 @@ void MarkFatalErrorReported() {
     g_fatalErrorReported.store(true, std::memory_order_release);
 }
 
+// Puts `text` in front of the player: a message box on Windows, a dialog on a Linux desktop, and the
+// system error applet on the Switch. Callers compose the whole text; the applet's details page is
+// never used, so nothing is hidden behind a button. Takes a view, so a caller with no heap to spare
+// (the applet-mode refusal runs before the runtime has allocated anything) can pass a literal.
+static void ShowFatalText(std::string_view text) noexcept {
+    try {
+        constexpr size_t kMaxAppletText = 0x7FF;
+#if defined(_WIN32)
+        const std::string message(text);
+        ::MessageBoxA(nullptr, message.c_str(), "WiiCompiled - Fatal Error",
+                      MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TASKMODAL);
+#else
+        // The console keeps the diagnostic; a Linux desktop also gets a dialog (SDL's, through X11,
+        // or zenity / kdialog on Wayland), since a game started from a file manager has no console.
+        RT_LOGF(RT_TAG_RUNTIME, "fatal dialog: %.*s\n",
+                static_cast<int>(std::min<size_t>(text.size(), kMaxAppletText)), text.data());
+#if defined(__linux__) && !defined(__ANDROID__)
+        const std::string message(text);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "NSMBW - Fatal Error", message.c_str(), nullptr);
+#elif defined(MKW_PLATFORM_SWITCH)
+        // The Switch has no SDL message-box backend, so fatal errors would otherwise be invisible:
+        // show the system error applet with the whole text in its dialog and no details page. The
+        // buffer keeps this path free of heap use.
+        char dialog[kMaxAppletText + 1];
+        const size_t length = std::min(text.size(), kMaxAppletText);
+        std::memcpy(dialog, text.data(), length);
+        dialog[length] = '\0';
+        ErrorSystemConfig config{};
+        if (R_SUCCEEDED(errorSystemCreate(&config, dialog, nullptr))) {
+            errorSystemShow(&config);
+        }
+#endif
+#endif
+    } catch (...) {
+        // Reporting a crash must never throw or mask the original failure.
+    }
+}
+
 void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) noexcept {
     if (g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
         return;
@@ -924,31 +962,7 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
             }
         }
         message.append("\n\nSee the WiiCompiled Logs folder for the full diagnostic.");
-#if defined(_WIN32)
-        ::MessageBoxA(nullptr, message.c_str(), "WiiCompiled - Fatal Error",
-                      MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TASKMODAL);
-#else
-        // The console keeps the diagnostic; a Linux desktop also gets a dialog (SDL's, through X11,
-        // or zenity / kdialog on Wayland), since a game started from a file manager has no console.
-        RT_LOGF(RT_TAG_RUNTIME, "fatal dialog: %s\n", message.c_str());
-#if defined(__linux__) && !defined(__ANDROID__)
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "NSMBW - Fatal Error", message.c_str(), nullptr);
-#elif defined(MKW_PLATFORM_SWITCH)
-        // The Switch has no SDL message-box backend, so fatal errors would
-        // otherwise be invisible: show the system error applet instead.
-        {
-            ErrorSystemConfig config{};
-            constexpr size_t kMaxAppletText = 0x7FF;
-            const std::string dialog(category.empty() ? "a fatal error occurred." : category);
-            const std::string fullscreen = message.size() <= kMaxAppletText
-                                               ? message
-                                               : message.substr(0, kMaxAppletText);
-            if (R_SUCCEEDED(errorSystemCreate(&config, dialog.c_str(), fullscreen.c_str()))) {
-                errorSystemShow(&config);
-            }
-        }
-#endif
-#endif
+        ShowFatalText(message);
     } catch (...) {
         // Reporting a crash must never throw or mask the original failure.
     }
@@ -1679,11 +1693,9 @@ bool StartCpuClock() {
 }
 }  // namespace
 
-#if defined(MKW_PLATFORM_SWITCH)
 extern "C" void NsmbwRestoreCpuClock() {
     ApplyCpuClock();
 }
-#endif
 #endif
 
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
@@ -1720,6 +1732,15 @@ extern "C" void LogStartupPhase(const char* phase) {
 int RuntimeMain(int argc, char** argv) {
     LogStartupPhase("runtime main");
 #if defined(MKW_PLATFORM_SWITCH)
+    const AppletType type = appletGetAppletType();
+    if (type != AppletType_Application && type != AppletType_SystemApplication) {
+        ShowFatalText(
+            "Launch this game using hbmenu launched with full memory access. Start any game title on the "
+            "home menu while holding R.\n\nFor easier access, you can also use Sphaira to create a home "
+            "menu forwarder for this game.");
+        return 0;
+    }
+
     LogHorizonPerformanceState();
     // Before the boot splash, config load and Aurora bring-up, so the whole start runs at this clock.
     if (StartCpuClock()) {
@@ -1761,21 +1782,6 @@ int RuntimeMain(int argc, char** argv) {
     std::string currentEntryLabel;
 
     try {
-#if defined(MKW_PLATFORM_SWITCH)
-        // Full-RAM launch grants svcMapProcessCodeMemory and svcSetProcessMemoryPermission,
-        // which the guest memory window needs. The album applet never grants them, so refuse
-        // that launch up front instead of failing part-way through start-up.
-        if (!envIsSyscallHinted(0x77) || !envIsSyscallHinted(0x73)) {
-            ShowRuntimeFatalPopup(
-                "Cannot start in applet mode",
-                "Start WiiCompiled from hbmenu: select a game tile, hold R, then confirm.\n\n"
-                "Launching from the album applet, or without holding R, does not grant the "
-                "memory the game needs.");
-            SetRuntimeExitCodeImpl(1);
-            ShutdownProcessTranscript();
-            return 1;
-        }
-#endif
         if (argc != 1) {
             throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
         }
@@ -1789,7 +1795,19 @@ int RuntimeMain(int argc, char** argv) {
         NsmbwShadowSamplerInit(GetRunLogDirectory());
         // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.
         if (!GameFolder::EnsureConfigured()) {
-            SetRuntimeExitCodeImpl(0);
+            // Switch has no chooser, so nothing found is said now, before the boot and its prewarm,
+            // instead of a minute later when the guest first asks the DVD layer for a file.
+            const std::string& problem = GameFolder::StartupProblem();
+            if (!problem.empty()) {
+                RT_LOGF(RT_TAG_RUNTIME, "ERROR: %s\n", problem.c_str());
+                std::string message = "Unable to start because the game files are missing.\n\n";
+                message += problem;
+                message += "\n\nSee the WiiCompiled Logs folder for the full diagnostic.";
+                ShowFatalText(message);
+                SetRuntimeExitCodeImpl(EXIT_FAILURE);
+            } else {
+                SetRuntimeExitCodeImpl(0);
+            }
             ShutdownProcessTranscript();
             return 0;
         }
@@ -1904,12 +1922,7 @@ int RuntimeMain(int argc, char** argv) {
             RuntimeConfigFile::ForceAspect169Enabled()      ? DisplaySettings::kAspect16x9
             : !RuntimeConfigFile::WidescreenEnabled(true) ? DisplaySettings::kAspect4x3
                                                           : DisplaySettings::kAspectFill);
-#if defined(__SWITCH__)
-        // The Switch output is the console's own screen; always render at its resolution.
-        displaySettings.renderScale = 0.0f;
-#else
         displaySettings.renderScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
-#endif
         DisplaySettings::Initialize(displaySettings);
         const bool configWidescreen = DisplaySettings::GameWidescreen();
         auroraConfig.windowWidth = configWidescreen ? 854 : 640;

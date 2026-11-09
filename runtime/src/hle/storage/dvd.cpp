@@ -406,18 +406,29 @@ static bool IsDvdDataRoot(const fs::path& path) {
     if (!path.empty()) {
         std::fprintf(stderr, ": %s", HostPathText(path).c_str());
     }
+    // Where the program is and where its Config.toml lives are both resolved at run time
+    // (host_platform.cpp); on Switch they are the NRO's folder, found with getcwd().
+    const fs::path program = RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});
+    const std::string configPath = RuntimeConfigFile::PathToUtf8(RuntimeConfigFile::ResolveConfigPath());
     std::fprintf(stderr,
-                 "\n[dvd] Set [paths] dvd_root in Config.toml to your New Super Mario Bros. Wii "
-                 "(a disc image such as .iso, .wbfs, .ciso, .wia or .rvz, or the folder Dolphin's "
-                 "Extract Entire Disc made).\n");
+                 "\n[dvd] Put your copy of New Super Mario Bros. Wii next to the program, or set "
+                 "[paths] dvd_root in %s.\n",
+                 configPath.c_str());
     std::string details = source ? source : "The configured DVD root could not be opened.";
     if (!path.empty()) {
         details += "\n\nPath: ";
         details += HostPathText(path);
     }
-    details += "\n\nSet [paths] dvd_root in Config.toml to your New Super Mario Bros. Wii "
-               "(SMNE01 revision 1): the disc image itself (.iso, .wbfs, .ciso, .wia, .rvz), or the "
-               "folder Dolphin's Extract Entire Disc made.";
+    details += "\n\nPut your own copy of New Super Mario Bros. Wii next to the program";
+    if (!program.empty()) {
+        details += " (";
+        details += RuntimeConfigFile::PathToUtf8(program);
+        details += ")";
+    }
+    details += ": a disc image (.iso, .wbfs, .ciso, .wia or .rvz), or the extracted game folder, "
+               "named \"game\".\n\nOr set [paths] dvd_root in ";
+    details += configPath;
+    details += " to one of those.";
     FailDvd("dvd_root", "DVD data is unavailable", details);
 }
 

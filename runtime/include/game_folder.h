@@ -39,8 +39,13 @@ std::optional<Offer> For(std::string_view id, int revision);
 // saved to Config.toml. A "game" folder next to the program ("game-newer" for Newer) is picked up by
 // itself, and so is one disc image next to it. Files left out are also said in a message box.
 // Switch has no chooser: the beside-program folder, then one beside-program image.
-// Returns false when the player gave up (the program then quits).
+// Returns false when the player gave up (the program then quits), or when Switch found nothing at
+// all, in which case StartupProblem() says what to do and main.cpp shows it before the boot.
 bool EnsureConfigured();
+
+// Why Switch found no game, in words for the player (the detected folder, what goes there, where
+// Config.toml is); empty on every other platform and whenever EnsureConfigured() succeeded.
+const std::string& StartupProblem();
 
 // Whether the game being played is the original, unchanged: a retail disc ID (SMNE01, SMNP01,
 // SMNJ01) and the main.dol that disc came with. A modded disc (Newer and the like) isn't. Worked out
