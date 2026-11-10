@@ -277,24 +277,37 @@ inline bool SeedMissingBootstrapFiles(const std::filesystem::path& root) {
 inline void CopyTreeMissing(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code ec;
     if (!std::filesystem::is_directory(from, ec)) {
+        RT_LOGF(RT_TAG_NAND, "no saves to copy: %s isn't a folder\n", RuntimeConfigFile::PathToUtf8(from).c_str());
         return;
     }
+    // lexically_relative() only compares the path text; std::filesystem::relative() canonicalises,
+    // which fails on Horizon and silently skipped every file of the seed.
+    size_t copied = 0, seen = 0;
     for (std::filesystem::recursive_directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code fileError;
         if (!it->is_regular_file(fileError)) {
             continue;
         }
-        const std::filesystem::path relative = std::filesystem::relative(it->path(), from, fileError);
-        if (fileError) {
+        const std::filesystem::path relative = it->path().lexically_relative(from);
+        if (relative.empty()) {
             continue;
         }
+        ++seen;
         std::error_code copyError;
         CopyBootstrapFile(from, to, relative, copyError);
         if (copyError) {
             RT_LOGF(RT_TAG_NAND, "could not copy %s: %s\n",
                     RuntimeConfigFile::PathToUtf8(to / relative).c_str(), copyError.message().c_str());
+        } else {
+            ++copied;
         }
     }
+    if (ec) {
+        RT_LOGF(RT_TAG_NAND, "stopped listing %s: %s\n", RuntimeConfigFile::PathToUtf8(from).c_str(),
+                ec.message().c_str());
+    }
+    RT_LOGF(RT_TAG_NAND, "copied %zu of %zu save file(s) from %s\n", copied, seen,
+            RuntimeConfigFile::PathToUtf8(from).c_str());
 }
 
 inline std::filesystem::path CreateManagedNandRoot() {
@@ -314,8 +327,6 @@ inline std::filesystem::path CreateManagedNandRoot() {
         if (!std::filesystem::exists(root / "title", titleError) &&
             std::filesystem::is_directory(shared / "title", titleError)) {
             CopyTreeMissing(shared / "title", root / "title");
-            RT_LOGF(RT_TAG_NAND, "seeded this game's saves from %s\n",
-                    RuntimeConfigFile::PathToUtf8(shared).c_str());
         }
     }
 
