@@ -5,7 +5,6 @@
 
 #include "isa/big_endian.h"
 #include "hle/storage/riivolution.h"
-#include "disc_files.h"
 #include "runtime_log.h"
 #include "bt_passthrough.h"
 
@@ -419,12 +418,7 @@ static constexpr char kFaceLibResourceName[] = "RFL_Res.dat";
 
 bool SeedFaceLibResource(const std::filesystem::path& hostPath) {
     std::vector<uint8_t> payload;
-    if (DiscFiles::ImageMode()) {
-        std::vector<uint8_t> archive;
-        if (DiscFiles::ReadWhole("contents/RFLRes01.arc", archive)) {
-            ExtractFromU8Image(std::move(archive), kFaceLibResourceName, payload);
-        }
-    } else if (const auto dvdRoot = RuntimeConfigFile::ResolvedDvdRoot(); !dvdRoot.empty()) {
+    if (const auto dvdRoot = RuntimeConfigFile::ResolvedDvdRoot(); !dvdRoot.empty()) {
         const auto arcPath = dvdRoot / "files" / "contents" / "RFLRes01.arc";
         std::error_code ec;
         if (std::filesystem::exists(arcPath, ec)) {

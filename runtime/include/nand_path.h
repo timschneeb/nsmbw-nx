@@ -67,8 +67,7 @@ inline std::string GameSaveKey() {
         return {};
     }
     std::vector<std::pair<std::string, uint64_t>> files;
-    // A disc image has no fingerprint of its own: it uses the shared NAND, so switching from an
-    // extracted folder to an image of the same disc keeps the saves.
+    // No folder yet (nothing configured): the shared NAND is the only root there is.
     if (!std::filesystem::is_directory(root, ec) || ec) {
         return {};
     }

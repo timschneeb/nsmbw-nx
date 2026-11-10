@@ -1,7 +1,6 @@
 #include "netplay/game_layout.h"
 
 #include "display_settings.h"
-#include "disc_files.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
 
@@ -122,13 +121,6 @@ bool ReadDiscFile(const std::string& dvdPath, std::vector<uint8_t>& out) {
                 return true;
             }
         }
-    }
-    if (DiscFiles::ImageMode()) {
-        if (!DiscFiles::ReadWhole(relative, out) || out.empty()) {
-            RT_LOGF(RT_TAG_RUNTIME, "netplay ui: %s is not in the disc image\n", dvdPath.c_str());
-            return false;
-        }
-        return true;
     }
     std::ifstream in(root / "files" / std::filesystem::u8path(relative), std::ios::binary);
     if (!in) {

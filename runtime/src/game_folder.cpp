@@ -516,8 +516,8 @@ fs::path ExtractionTargetFor(const fs::path& folder) {
 StartupPlan PlanStartup() {
     StartupPlan plan;
     const fs::path program = ProgramDirectory();
-    if (program.empty() || std::getenv("NSMBW_READ_IMAGE") != nullptr) {
-        return plan;  // EnsureConfigured() decides; the image is read in place in development
+    if (program.empty()) {
+        return plan;  // EnsureConfigured() decides
     }
     CleanStaleImports();
     // The image to extract from: beside the program first, then one named in [paths] dvd_root.
@@ -998,19 +998,10 @@ bool EnsureConfigured() {
         }
         std::string imageProblem;
         fs::path rejectedImage;
-        const fs::path image = FirstUsableImage(program, &imageProblem, &rejectedImage);
-        // Reading the image in place is development-only now: otherwise an image is the source for the
-        // extraction, and a folder that is there but can't be used is reported rather than silently
-        // skipped in favour of the image (which is how a modded folder would lose to the vanilla image).
-        if (!image.empty() && std::getenv("NSMBW_READ_IMAGE") != nullptr) {
-            if (RuntimeConfigFile::DvdRoot().empty()) {
-                RuntimeConfigFile::SetDvdRoot(image);
-            } else {
-                RuntimeConfigFile::UseDvdRootForThisRun(image);
-            }
-            RT_LOGF(RT_TAG_RUNTIME, "disc image: %s\n", RuntimeConfigFile::PathToUtf8(image).c_str());
-            return true;
-        }
+        // An image is only a source for the extraction (game_folder.cpp's PlanStartup), never read in
+        // place, so here it only has a message: a folder that is there but can't be used is reported
+        // rather than silently skipped in favour of the vanilla image.
+        FirstUsableImage(program, &imageProblem, &rejectedImage);
         std::string configuredProblem;
         const fs::path configuredPath = Find(RuntimeConfigFile::ResolvedDvdRoot());
         if (configuredPath.empty()) {

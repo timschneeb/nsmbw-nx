@@ -68,8 +68,7 @@ struct StartupPlan {
 
 // Decides what has to happen before EnsureConfigured() runs. A folder that is merely modded or from
 // another disc is never deleted; only one that is empty, incomplete or has no usable sys/boot.bin,
-// and only when an image can rebuild it. On other platforms, and with NSMBW_READ_IMAGE set, this is
-// always Ready (the image is then read in place, as before).
+// and only when an image can rebuild it. On other platforms this is always Ready.
 StartupPlan PlanStartup();
 
 // Removes the folder a Repair plan named. False with `problem` set when it can't.
