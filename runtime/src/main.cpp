@@ -1811,6 +1811,7 @@ int RuntimeMain(int argc, char** argv) {
                 message += ".";
                 RT_LOGF(RT_TAG_RUNTIME, "game folder repair: %s\n", message.c_str());
                 ShowAppletText(message);
+                NsmbwBootSplashSetStatus("Replacing the game folder...");
                 std::string deleteProblem;
                 if (!GameFolder::DeleteStartupFolder(plan.folder, deleteProblem)) {
                     std::string fatal = "Unable to start because the game folder couldn't be replaced.\n\n";
@@ -1847,7 +1848,8 @@ int RuntimeMain(int argc, char** argv) {
             const std::string& problem = GameFolder::StartupProblem();
             if (!problem.empty()) {
                 RT_LOGF(RT_TAG_RUNTIME, "ERROR: %s\n", problem.c_str());
-                std::string message = "Unable to start because the game files are missing.\n\n";
+                std::string message = GameFolder::StartupProblemTitle();
+                message += "\n\n";
                 message += problem;
                 message += "\n\nSee the WiiCompiled Logs folder for the full diagnostic.";
                 ShowFatalText(message);

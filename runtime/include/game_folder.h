@@ -48,6 +48,10 @@ bool EnsureConfigured();
 // Config.toml is); empty on every other platform and whenever EnsureConfigured() succeeded.
 const std::string& StartupProblem();
 
+// The first line of the applet for StartupProblem(): "missing" when nothing was found at all, "can't
+// be used" when a folder or image is there and was rejected.
+const char* StartupProblemTitle();
+
 // Switch start-up, before the boot: the game is played from an extracted folder, so an image beside
 // the program is extracted into one, and a folder that can no longer be used is replaced by a fresh
 // extraction. The plan changes nothing; main.cpp shows what it says and carries it out.

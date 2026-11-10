@@ -32,6 +32,8 @@ bool IsExtractedDisc(const fs::path& path) {
 // Why Switch found no game, for the report main.cpp shows before the boot; empty elsewhere and
 // whenever one was found.
 std::string g_startupProblem;
+// True when the message above is the "nothing there" one rather than "something is there and unusable".
+bool g_nothingFound = true;
 
 // The game this build was translated from (runtime_product.h: the original, or a mod such as Newer).
 std::string GameName() {
@@ -178,7 +180,38 @@ std::string SentenceOf(std::string text) {
 bool RemoveTree(const fs::path& path) {
     for (int attempt = 0; attempt < 3; ++attempt) {
         std::error_code ec;
+#if defined(MKW_PLATFORM_SWITCH)
+        // remove_all() gives up on a tree this size on Horizon (a 1,189-file folder was left in place
+        // with only an error code), so every entry is removed by name, contents before their folder.
+        std::vector<fs::path> entries;
+        for (fs::recursive_directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec)) {
+            entries.push_back(it->path());
+        }
+        if (ec) {
+            RT_LOGF(RT_TAG_RUNTIME, "couldn't list %s: %s\n", RuntimeConfigFile::PathToUtf8(path).c_str(),
+                    ec.message().c_str());
+        }
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            std::error_code removeError;
+            fs::remove(*it, removeError);
+            if (removeError) {
+                RT_LOGF(RT_TAG_RUNTIME, "couldn't remove %s: %s\n", RuntimeConfigFile::PathToUtf8(*it).c_str(),
+                        removeError.message().c_str());
+            }
+        }
+        std::error_code rootError;
+        fs::remove(path, rootError);
+        if (rootError) {
+            RT_LOGF(RT_TAG_RUNTIME, "couldn't remove %s: %s\n", RuntimeConfigFile::PathToUtf8(path).c_str(),
+                    rootError.message().c_str());
+        }
+#else
         fs::remove_all(path, ec);
+        if (ec) {
+            RT_LOGF(RT_TAG_RUNTIME, "couldn't remove %s: %s\n", RuntimeConfigFile::PathToUtf8(path).c_str(),
+                    ec.message().c_str());
+        }
+#endif
         if (!fs::exists(fs::symlink_status(path, ec))) {
             return true;
         }
@@ -758,6 +791,11 @@ const std::string& StartupProblem() {
     return g_startupProblem;
 }
 
+const char* StartupProblemTitle() {
+    return g_nothingFound ? "Unable to start because the game files are missing."
+                          : "Unable to start because the game files can't be used.";
+}
+
 std::string Problem(const fs::path& root) {
     std::error_code ec;
     if (!IsExtractedDisc(root) && fs::is_regular_file(root, ec) && !ec) {
@@ -942,7 +980,9 @@ bool EnsureConfigured() {
     {
         const fs::path program = ProgramDirectory();
         std::string folderProblem;
+        fs::path besideFolder;
         if (const fs::path beside = Find(program / "game"); !beside.empty()) {
+            besideFolder = beside;
             folderProblem = Problem(beside);
             if (folderProblem.empty()) {
                 if (RuntimeConfigFile::DvdRoot().empty()) {
@@ -958,7 +998,11 @@ bool EnsureConfigured() {
         }
         std::string imageProblem;
         fs::path rejectedImage;
-        if (const fs::path image = FirstUsableImage(program, &imageProblem, &rejectedImage); !image.empty()) {
+        const fs::path image = FirstUsableImage(program, &imageProblem, &rejectedImage);
+        // Reading the image in place is development-only now: otherwise an image is the source for the
+        // extraction, and a folder that is there but can't be used is reported rather than silently
+        // skipped in favour of the image (which is how a modded folder would lose to the vanilla image).
+        if (!image.empty() && std::getenv("NSMBW_READ_IMAGE") != nullptr) {
             if (RuntimeConfigFile::DvdRoot().empty()) {
                 RuntimeConfigFile::SetDvdRoot(image);
             } else {
@@ -977,12 +1021,16 @@ bool EnsureConfigured() {
                                         ? Problem(saved)
                                         : "it isn't there any more (" + RuntimeConfigFile::PathToUtf8(saved) + ")";
             }
+        } else if (!besideFolder.empty() &&
+                   configuredPath.lexically_normal() == besideFolder.lexically_normal()) {
+            // The configured path is the folder checked above; its problem is already in the message.
         } else if (Problem(configuredPath).empty()) {
             return true;  // this is what ResolvedDvdRoot() already answers with
         } else {
             configuredProblem = Problem(configuredPath);
         }
         g_startupProblem = NoGameProblem(program, rejectedImage, imageProblem, folderProblem, configuredProblem);
+        g_nothingFound = folderProblem.empty() && imageProblem.empty() && configuredProblem.empty();
         RT_LOGF(RT_TAG_RUNTIME, "ERROR: %s\n", g_startupProblem.c_str());
         return false;
     }
