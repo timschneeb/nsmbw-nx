@@ -35,6 +35,17 @@ std::string g_startupProblem;
 // True when the message above is the "nothing there" one rather than "something is there and unusable".
 bool g_nothingFound = true;
 
+// PlanStartup() checks the folder, then EnsureConfigured() checks the same folder a moment later.
+// The scan stats all 1,189 files (~1.8 s), so the second call reuses the first result. Cleared after
+// that use, and whenever the folder is about to change.
+struct StartupCheck {
+    std::filesystem::path root;
+    std::string problem;
+    bool incomplete = false;
+    bool valid = false;
+};
+StartupCheck g_startupCheck;
+
 // The game this build was translated from (runtime_product.h: the original, or a mod such as Newer).
 std::string GameName() {
     return std::string(RuntimeProduct::Active().displayName);
@@ -270,7 +281,8 @@ std::string Megabytes(uint64_t bytes) {
 // asked for, or why it failed. The picker drives it with its progress window, the Switch with its
 // boot splash.
 using ExtractStep = std::function<std::string(WiiDisc::Disc& disc, const std::filesystem::path& staging,
-                                              const std::atomic<bool>* cancel)>;
+                                              const std::atomic<bool>* cancel, int& files,
+                                              WiiDisc::Disc::ExtractStats* stats)>;
 
 // Opens `image`, checks it, and writes it into the first free folder among `targets`: "<target>.importing"
 // with a marker, the free-space check, `extract`, the same folder check every extracted game gets, then
@@ -340,11 +352,13 @@ bool ExtractImageTo(const fs::path& image, const std::vector<fs::path>& targets,
         return false;
     }
 
-    RT_LOGF(RT_TAG_RUNTIME, "disc image: extracting %s (%s revision %d) to %s\n",
+    RT_LOGF(RT_TAG_RUNTIME, "disc image: extracting %s (%s revision %d, aes %s) to %s\n",
             RuntimeConfigFile::PathToUtf8(image).c_str(), disc->Id().c_str(), disc->Revision(),
-            RuntimeConfigFile::PathToUtf8(staging).c_str());
+            disc->AesBackend(), RuntimeConfigFile::PathToUtf8(staging).c_str());
     const auto start = std::chrono::steady_clock::now();
-    const std::string result = extract(*disc, staging, nullptr);
+    int files = 0;
+    WiiDisc::Disc::ExtractStats stats;
+    const std::string result = extract(*disc, staging, nullptr, files, &stats);
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     if (result == "cancelled") {
         RT_LOGF(RT_TAG_RUNTIME, "disc image: cancelled after %.1f s\n", seconds);
@@ -373,9 +387,12 @@ bool ExtractImageTo(const fs::path& image, const std::vector<fs::path>& targets,
                   " (" + ec.message() + "). Nothing was changed.";
         return false;
     }
-    RT_LOGF(RT_TAG_RUNTIME, "disc image: %s -> %s (%llu bytes, %.1f s)\n",
+    RT_LOGF(RT_TAG_RUNTIME, "disc image: %s -> %s (%llu bytes, %d files, %.1f s: read %.1f s, write %.1f s, "
+                            "file system %.1f s, progress %.1f s)\n",
             RuntimeConfigFile::PathToUtf8(image).c_str(), RuntimeConfigFile::PathToUtf8(target).c_str(),
-            static_cast<unsigned long long>(size), seconds);
+            static_cast<unsigned long long>(size), files, seconds, stats.readNanos / 1e9, stats.writeNanos / 1e9,
+            stats.fsNanos / 1e9, stats.progressNanos / 1e9);
+    g_startupCheck.valid = false;
 
     if (target.parent_path() == RuntimeConfigFile::ResolveConfigPath().parent_path()) {
         // Beside Config.toml (the data folder): saved as relative, so a portable install can move.
@@ -429,7 +446,8 @@ bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomple
     int files = 0;
     return ExtractImageTo(
         image, ExtractTargets(),
-        [&](WiiDisc::Disc& disc, const fs::path& staging, const std::atomic<bool>*) {
+        [&](WiiDisc::Disc& disc, const fs::path& staging, const std::atomic<bool>*, int& files,
+            WiiDisc::Disc::ExtractStats*) {
             return GamePicker::RunWithProgress(
                 PickerText(), "Extracting the disc image",
                 [&](const GamePicker::Progress& progress, const std::atomic<bool>& cancel) {
@@ -489,6 +507,7 @@ bool StructurallyBroken(const fs::path& root, std::string& problem) {
     }
     bool incomplete = false;
     problem = Check(root, &incomplete);
+    g_startupCheck = {root, problem, incomplete, true};
     if (incomplete) {
         return true;
     }
@@ -538,6 +557,7 @@ StartupPlan PlanStartup() {
     std::error_code dirError;
     if (!fs::is_directory(root, dirError)) {
         if (const fs::path image = startupImage(); !image.empty()) {
+            g_startupCheck.valid = false;
             plan.kind = StartupPlan::Kind::Extract;
             plan.image = image;
         }
@@ -557,6 +577,7 @@ StartupPlan PlanStartup() {
     if (fs::is_symlink(fs::symlink_status(beside, ec))) {
         return plan;  // not this program's folder
     }
+    g_startupCheck.valid = false;
     plan.kind = StartupPlan::Kind::Repair;
     plan.folder = ExtractionTargetFor(beside);
     plan.image = image;
@@ -590,20 +611,24 @@ bool ExtractStartupImage(const fs::path& image, const std::function<void(float, 
     if (progress) {
         progress(0.0f, "Extracting the disc image");
     }
-    const auto step = [&](WiiDisc::Disc& disc, const fs::path& staging, const std::atomic<bool>*) {
-        int files = 0;
+    const auto step = [&](WiiDisc::Disc& disc, const fs::path& staging, const std::atomic<bool>*, int& files,
+                          WiiDisc::Disc::ExtractStats* stats) {
         std::atomic<bool> never{false};
+        // The splash redraw is not free, so the bar advances in whole percents, not per chunk.
+        float shown = -1.0f;
         const auto bytes = [&](uint64_t done, uint64_t total) {
             const float fraction =
                 total != 0 ? static_cast<float>(static_cast<double>(done) / static_cast<double>(total)) : 0.0f;
+            if (progress == nullptr || (fraction < 1.0f && fraction * 100.0f < shown + 1.0f)) {
+                return;
+            }
+            shown = fraction * 100.0f;
             char status[96];
             std::snprintf(status, sizeof(status), "Extracting the disc image, %d%%",
-                          static_cast<int>(fraction * 100.0f));
-            if (progress) {
-                progress(fraction, status);
-            }
+                          static_cast<int>(shown));
+            progress(fraction, status);
         };
-        return disc.Extract(staging, bytes, never, files);
+        return disc.Extract(staging, bytes, never, files, stats);
     };
     return ExtractImageTo(image, ExtractTargets(), step, problem, nullptr);
 }
@@ -706,6 +731,13 @@ std::string CheckVersionFile(const std::string& id, const std::string& disc, con
 }
 
 std::string Check(const fs::path& root, bool* incomplete) {
+    if (g_startupCheck.valid && g_startupCheck.root == root) {
+        g_startupCheck.valid = false;
+        if (incomplete != nullptr) {
+            *incomplete = g_startupCheck.incomplete;
+        }
+        return g_startupCheck.problem;
+    }
     // Files left out: kIncomplete (in the player's language) and which ones, for the chooser's red line.
     const auto leftOut = [&](const std::string& which) {
         if (incomplete != nullptr) {

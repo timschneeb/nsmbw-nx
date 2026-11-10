@@ -70,11 +70,20 @@ public:
 
     using Progress = std::function<void(uint64_t done, uint64_t total)>;
 
+    // Where Extract() spent its time, for the startup log: reading and decrypting the image, writing
+    // the files, and the file system work around them (dirents, create, open, close).
+    struct ExtractStats {
+        uint64_t readNanos = 0;
+        uint64_t writeNanos = 0;
+        uint64_t fsNanos = 0;
+        uint64_t progressNanos = 0;
+    };
+
     // Writes sys/ and files/ into `root`, and sets `files` to how many files it wrote. Returns "" when
     // done, or why it stopped ("cancelled" once `cancel` is set). Whatever was written stays: the
     // caller extracts into a folder of its own and removes that folder on failure.
     std::string Extract(const std::filesystem::path& root, const Progress& progress,
-                        const std::atomic<bool>& cancel, int& files);
+                        const std::atomic<bool>& cancel, int& files, ExtractStats* stats = nullptr);
 
     struct State;
 

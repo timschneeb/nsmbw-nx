@@ -38,7 +38,7 @@ constexpr uint32_t kGameCubeMagic = 0xC2339F3D;
 constexpr uint64_t kCluster = 0x8000;      // on the disc: 0x400 of hashes, then the data
 constexpr uint64_t kClusterData = 0x7C00;
 constexpr uint64_t kBatch = 64;            // clusters read and decrypted at a time (2 MiB)
-constexpr size_t kChunk = 1 << 20;         // bytes written at a time
+constexpr size_t kChunk = 4 << 20;         // bytes written at a time
 
 // The Wii's common keys, as WiiDisc.java and Dolphin hold them: a partition's title key is encrypted
 // with one of these, as on the console.
@@ -1123,25 +1123,45 @@ struct Disc::State {
         return "";
     }
 
+    // Extract()'s time split, for the startup log (see ExtractStats).
+    uint64_t extractReadNanos = 0, extractWriteNanos = 0, extractFsNanos = 0, extractProgressNanos = 0;
+
+    static uint64_t NanosSince(const std::chrono::steady_clock::time_point& start) {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - start)
+                                         .count());
+    }
+
     std::string Write(const fs::path& target, uint64_t offset, uint64_t size, uint64_t& done,
                       const Progress& progress, const std::atomic<bool>& cancel) {
-        std::error_code ec;
-        fs::create_directories(target.parent_path(), ec);
         if (offset + size > dataSize / kCluster * kClusterData) return "the disc image is cut short";
-        std::ofstream out(target, std::ios::binary | std::ios::trunc);
-        if (!out) return "couldn't create " + Utf8(target);
+        auto start = std::chrono::steady_clock::now();
         std::vector<uint8_t> chunk(size_t(std::min<uint64_t>(kChunk, std::max<uint64_t>(size, 1))));
+        std::ofstream out(target, std::ios::binary | std::ios::trunc);
+        extractFsNanos += NanosSince(start);
+        if (!out) return "couldn't create " + Utf8(target);
         for (uint64_t at = 0; at < size;) {
             if (cancel.load(std::memory_order_relaxed)) return "cancelled";
             const size_t n = size_t(std::min<uint64_t>(chunk.size(), size - at));
-            if (!ReadPartition(offset + at, chunk.data(), n)) return "the disc image is cut short";
+            start = std::chrono::steady_clock::now();
+            const bool read = ReadPartition(offset + at, chunk.data(), n);
+            extractReadNanos += NanosSince(start);
+            if (!read) return "the disc image is cut short";
+            start = std::chrono::steady_clock::now();
             out.write(reinterpret_cast<const char*>(chunk.data()), std::streamsize(n));
+            extractWriteNanos += NanosSince(start);
             if (!out) return "couldn't write " + Utf8(target) + " (is the drive full?)";
             at += n;
             done += n;
-            if (progress) progress(done, totalSize);
+            if (progress) {
+                const auto progressStart = std::chrono::steady_clock::now();
+                progress(done, totalSize);
+                extractProgressNanos += NanosSince(progressStart);
+            }
         }
+        start = std::chrono::steady_clock::now();
         out.close();
+        extractFsNanos += NanosSince(start);
         if (!out) return "couldn't write " + Utf8(target) + " (is the drive full?)";
         return "";
     }
@@ -1370,11 +1390,15 @@ uint64_t Disc::ExtractedSize() const {
 }
 
 std::string Disc::Extract(const fs::path& root, const Progress& progress, const std::atomic<bool>& cancel,
-                          int& files) {
+                          int& files, ExtractStats* stats) {
     State& s = *m_state;
     files = 0;
+    s.extractReadNanos = s.extractWriteNanos = s.extractFsNanos = s.extractProgressNanos = 0;
     uint64_t done = 0;
     const fs::path sys = root / "sys";
+    std::error_code sysError;
+    fs::create_directories(sys, sysError);
+    if (!fs::is_directory(sys, sysError)) return "couldn't create " + Utf8(sys);
     struct SysFile {
         const char* name;
         uint64_t offset, size;
@@ -1424,6 +1448,12 @@ std::string Disc::Extract(const fs::path& root, const Progress& progress, const 
             if (!error.empty()) return error;
             ++files;
         }
+    }
+    if (stats != nullptr) {
+        stats->readNanos = s.extractReadNanos;
+        stats->writeNanos = s.extractWriteNanos;
+        stats->fsNanos = s.extractFsNanos;
+        stats->progressNanos = s.extractProgressNanos;
     }
     return "";
 }
