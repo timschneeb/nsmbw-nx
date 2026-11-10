@@ -905,9 +905,9 @@ void MarkFatalErrorReported() {
 
 // Puts `text` in front of the player: a message box on Windows, a dialog on a Linux desktop, and the
 // system error applet on the Switch. Callers compose the whole text; the applet's details page is
-// never used, so nothing is hidden behind a button. Takes a view, so a caller with no heap to spare
-// (the applet-mode refusal runs before the runtime has allocated anything) can pass a literal.
-static void ShowFatalText(std::string_view text) noexcept {
+// never used, so nothing is hidden behind a button. On Switch this returns once the player closes
+// the applet, so a caller can act on that (the folder repair does).
+static void ShowAppletText(std::string_view text) noexcept {
     try {
         constexpr size_t kMaxAppletText = 0x7FF;
 #if defined(_WIN32)
@@ -915,10 +915,6 @@ static void ShowFatalText(std::string_view text) noexcept {
         ::MessageBoxA(nullptr, message.c_str(), "WiiCompiled - Fatal Error",
                       MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TASKMODAL);
 #else
-        // The console keeps the diagnostic; a Linux desktop also gets a dialog (SDL's, through X11,
-        // or zenity / kdialog on Wayland), since a game started from a file manager has no console.
-        RT_LOGF(RT_TAG_RUNTIME, "fatal dialog: %.*s\n",
-                static_cast<int>(std::min<size_t>(text.size(), kMaxAppletText)), text.data());
 #if defined(__linux__) && !defined(__ANDROID__)
         const std::string message(text);
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "NSMBW - Fatal Error", message.c_str(), nullptr);
@@ -939,6 +935,12 @@ static void ShowFatalText(std::string_view text) noexcept {
     } catch (...) {
         // Reporting a crash must never throw or mask the original failure.
     }
+}
+
+static void ShowFatalText(std::string_view text) noexcept {
+    RT_LOGF(RT_TAG_RUNTIME, "fatal dialog: %.*s\n",
+            static_cast<int>(std::min<size_t>(text.size(), 0x7FF)), text.data());
+    ShowAppletText(text);
 }
 
 void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) noexcept {
@@ -1702,6 +1704,7 @@ extern "C" void NsmbwRestoreCpuClock() {
 #if defined(MKW_PLATFORM_SWITCH)
 extern "C" void NsmbwBootSplashShow();
 extern "C" void NsmbwBootSplashSetStatus(const char* status);
+extern "C" void NsmbwBootSplashSetProgress(float fraction, const char* status);
 
 namespace {
 const char* BootSplashStatusForPhase(const char* phase) {
@@ -1793,6 +1796,50 @@ int RuntimeMain(int argc, char** argv) {
         MkwStartPgoDumpTimer();
 #endif
         NsmbwShadowSamplerInit(GetRunLogDirectory());
+#if defined(MKW_PLATFORM_SWITCH)
+        // The game is played from an extracted folder, so an image beside the program is extracted
+        // into one, and a folder that can no longer be used is replaced by a fresh extraction. The
+        // applet returns once the player closes it, and the repair happens then.
+        {
+            const GameFolder::StartupPlan plan = GameFolder::PlanStartup();
+            if (plan.kind == GameFolder::StartupPlan::Kind::Repair) {
+                std::string message = "The game folder can't be used.\n\n";
+                message += plan.problem;
+                message += "\n\nIt will be deleted when you close this message, and the game will be extracted "
+                           "again from ";
+                message += RuntimeConfigFile::PathToUtf8(plan.image.filename());
+                message += ".";
+                RT_LOGF(RT_TAG_RUNTIME, "game folder repair: %s\n", message.c_str());
+                ShowAppletText(message);
+                std::string deleteProblem;
+                if (!GameFolder::DeleteStartupFolder(plan.folder, deleteProblem)) {
+                    std::string fatal = "Unable to start because the game folder couldn't be replaced.\n\n";
+                    fatal += deleteProblem;
+                    fatal += "\n\nSee the WiiCompiled Logs folder for the full diagnostic.";
+                    ShowFatalText(fatal);
+                    SetRuntimeExitCodeImpl(EXIT_FAILURE);
+                    ShutdownProcessTranscript();
+                    return 0;
+                }
+            }
+            if (plan.kind != GameFolder::StartupPlan::Kind::Ready && !plan.image.empty()) {
+                NsmbwBootSplashSetStatus("Extracting the disc image");
+                const auto progress = [](float fraction, const char* status) {
+                    NsmbwBootSplashSetProgress(fraction, status);
+                };
+                std::string extractProblem;
+                if (!GameFolder::ExtractStartupImage(plan.image, progress, extractProblem)) {
+                    std::string fatal = "Unable to start because the game data couldn't be extracted.\n\n";
+                    fatal += extractProblem.empty() ? std::string("The extraction was stopped.") : extractProblem;
+                    fatal += "\n\nSee the WiiCompiled Logs folder for the full diagnostic.";
+                    ShowFatalText(fatal);
+                    SetRuntimeExitCodeImpl(EXIT_FAILURE);
+                    ShutdownProcessTranscript();
+                    return 0;
+                }
+            }
+        }
+#endif
         // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.
         if (!GameFolder::EnsureConfigured()) {
             // Switch has no chooser, so nothing found is said now, before the boot and its prewarm,

@@ -162,6 +162,19 @@ if(NOT MKW_NATIVE_PREBUILT_DIR)
     target_compile_definitions(mkw_cryptopp PUBLIC ${MKW_CRYPTOPP_INTERFACE_DEFINITIONS})
     target_compile_options(mkw_cryptopp PRIVATE -w)
     set_target_properties(mkw_cryptopp PROPERTIES UNITY_BUILD OFF)
+    if(MKW_PLATFORM_SWITCH)
+        # The disc reader decrypts every 2 MiB window with AES-CBC, and the table-based block
+        # function is the slowest part of a load. The Switch toolchain already compiles with
+        # armv8-a+crypto, so only the SIMD unit that CRYPTOPP_DISABLE_ASM keeps out is missing;
+        # adding it makes the ARMv8 AES block functions available to the same dispatcher.
+        target_sources(mkw_cryptopp PRIVATE
+            "${CMAKE_CURRENT_LIST_DIR}/third_party/cryptopp/rijndael_simd.cpp")
+        target_compile_definitions(mkw_cryptopp PUBLIC CRYPTOPP_ARM_AES_AVAILABLE=1)
+        # adv_simd.h's NEON helpers are gated on the ISA macros the disable keeps off, so they are
+        # turned on for this unit only (the rest of the library stays C++-only).
+        set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/third_party/cryptopp/rijndael_simd.cpp"
+            PROPERTIES COMPILE_DEFINITIONS "CRYPTOPP_ARM_NEON_AVAILABLE=1;CRYPTOPP_ARM_NEON_HEADER=1")
+    endif()
     if(MKW_PLATFORM_ANDROID)
         # On Android Crypto++ asks the NDK's cpufeatures helper which ARM extensions exist.
         set(MKW_NDK_CPUFEATURES_DIR "${ANDROID_NDK}/sources/android/cpufeatures")

@@ -113,6 +113,11 @@ std::vector<std::string> MissingFiles(const fs::path& root, size_t limit) {
 // in a message box too). Below.
 std::string Check(const fs::path& root, bool* incomplete);
 
+// The first disc image beside the program that passes CheckImage, or empty.
+fs::path FirstUsableImage(const fs::path& program, std::string* problem, fs::path* failed);
+
+std::string CheckImage(const fs::path& image, bool* incomplete);
+
 // Why a disc with this ID and revision can't be used ("" when it can).
 std::string IdProblem(const std::string& id, int revision) {
     const Disc kind = Identify(id, revision);
@@ -144,7 +149,6 @@ std::string IdProblem(const std::string& id, int revision) {
            " (Dolphin shows the revision under Properties > Info).";
 }
 
-#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
 // A disc image is extracted into "<target>.importing" first, with this marker inside, and renamed to
 // its target once complete. A folder that still has the marker was left by an import that never
 // finished (a crash, or the program killed), so it can go.
@@ -160,39 +164,8 @@ std::string GameFolderName() {
     return std::string(RuntimeProduct::Active().programGameFolder);
 }
 
-// What to extract, and how: the chooser's Help.
-std::string Steps(const char* openDolphin) {
-    return "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
-           ", from a disc you own. Choose one of these:\n\n"
-           "Open Disc Image: the image you dumped from your disc. .iso, .wbfs, .ciso, .wia and .rvz all "
-           "work, and the game reads the image itself, so nothing is extracted and nothing is copied.\n\n"
-           "Open Extracted Disc Folder: a folder Dolphin extracted the disc to.\n"
-           "1. " + openDolphin + " and find " + GameName() + " in the game list.\n"
-           "2. Right-click it, choose Properties, then the Filesystem tab.\n"
-           "3. Right-click the disc at the top and choose Extract Entire Disc, then pick an empty folder.\n"
-           "4. Choose that folder here. Keep it: the game reads it every time.\n\n"
-           "(Dolphin shows the revision under Properties > Info. Or put the extracted folder next to this "
-           "program and name it \"" + GameFolderName() + "\", or put one disc image next to it.)";
-}
-
-GamePicker::Text PickerText() {
-    GamePicker::Text text;
-    text.title = GameName();
-    text.body = "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
-                ". Open your disc image, or the folder Dolphin's Extract Entire Disc made from it.";
-#if defined(_WIN32)
-    text.help = Steps("Open Dolphin on this computer");
-#else
-    text.help = Steps("Open Dolphin");
-#endif
-    text.isoTitle = "Choose your disc image of " + GameName();
-    text.folderTitle = "Choose the folder Dolphin extracted " + GameName() + " to";
-    text.mods = RuntimeProduct::Active().gameId == "SMNE01";  // the original game's build only
-    return text;
-}
-
 // "that isn't a Wii disc image" -> "That isn't a Wii disc image."
-std::string Sentence(std::string text) {
+std::string SentenceOf(std::string text) {
     if (!text.empty()) {
         text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
         text += '.';
@@ -260,13 +233,22 @@ std::string Megabytes(uint64_t bytes) {
     return std::to_string((bytes + (1u << 20) - 1) >> 20);
 }
 
-// Extracts the disc image at `image` and makes it the game folder. False when it can't: `problem`
-// then says why, or is empty when the player cancelled; `incomplete` as Check() sets it.
-bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomplete) {
+// What writes the disc's files into the staging folder: "" when done, "cancelled" when that was
+// asked for, or why it failed. The picker drives it with its progress window, the Switch with its
+// boot splash.
+using ExtractStep = std::function<std::string(WiiDisc::Disc& disc, const std::filesystem::path& staging,
+                                              const std::atomic<bool>* cancel)>;
+
+// Opens `image`, checks it, and writes it into the first free folder among `targets`: "<target>.importing"
+// with a marker, the free-space check, `extract`, the same folder check every extracted game gets, then
+// the rename into place. False when it can't be done: `problem` then says why, or is empty when the
+// extraction was cancelled; `incomplete` as Check() sets it.
+bool ExtractImageTo(const fs::path& image, const std::vector<fs::path>& targets, const ExtractStep& extract,
+                    std::string& problem, bool* incomplete, fs::path* extractedTo = nullptr) {
     std::string error;
     const std::unique_ptr<WiiDisc::Disc> disc = WiiDisc::Disc::Open(image, error);
     if (!disc) {
-        problem = Sentence(error);
+        problem = SentenceOf(error);
         return false;
     }
     // The ID and revision first, before anything is written.
@@ -276,7 +258,7 @@ bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomple
     }
 
     fs::path target, staging, taken;
-    for (const fs::path& candidate : ExtractTargets()) {
+    for (const fs::path& candidate : targets) {
         const fs::path folder = Staging(candidate);
         std::error_code ec;
         // Never write over a folder this program didn't make: a "game" next to the program may be a
@@ -329,12 +311,7 @@ bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomple
             RuntimeConfigFile::PathToUtf8(image).c_str(), disc->Id().c_str(), disc->Revision(),
             RuntimeConfigFile::PathToUtf8(staging).c_str());
     const auto start = std::chrono::steady_clock::now();
-    int files = 0;
-    const std::string result = GamePicker::RunWithProgress(
-        PickerText(), "Extracting the disc image",
-        [&](const GamePicker::Progress& progress, const std::atomic<bool>& cancel) {
-            return disc->Extract(staging, progress, cancel, files);
-        });
+    const std::string result = extract(*disc, staging, nullptr);
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     if (result == "cancelled") {
         RT_LOGF(RT_TAG_RUNTIME, "disc image: cancelled after %.1f s\n", seconds);
@@ -349,7 +326,8 @@ bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomple
         return false;
     }
     // What a folder is checked for: every file there, the code modules, and a mod's version.
-    problem = Check(staging, &incomplete);
+    bool incompleteFlag = false;
+    problem = Check(staging, incomplete != nullptr ? incomplete : &incompleteFlag);
     if (!problem.empty()) {
         RemoveTree(staging);
         return false;
@@ -362,9 +340,9 @@ bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomple
                   " (" + ec.message() + "). Nothing was changed.";
         return false;
     }
-    RT_LOGF(RT_TAG_RUNTIME, "disc image: %s -> %s (%llu bytes, %d files, %.1f s)\n",
+    RT_LOGF(RT_TAG_RUNTIME, "disc image: %s -> %s (%llu bytes, %.1f s)\n",
             RuntimeConfigFile::PathToUtf8(image).c_str(), RuntimeConfigFile::PathToUtf8(target).c_str(),
-            static_cast<unsigned long long>(size), files, seconds);
+            static_cast<unsigned long long>(size), seconds);
 
     if (target.parent_path() == RuntimeConfigFile::ResolveConfigPath().parent_path()) {
         // Beside Config.toml (the data folder): saved as relative, so a portable install can move.
@@ -374,17 +352,64 @@ bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomple
     } else {
         RuntimeConfigFile::UseDvdRootForThisRun(target);  // next to the program: found there every start
     }
+    if (extractedTo != nullptr) {
+        *extractedTo = target;
+    }
     return true;
+}
+
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+// What to extract, and how: the chooser's Help.
+std::string Steps(const char* openDolphin) {
+    return "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
+           ", from a disc you own. Choose one of these:\n\n"
+           "Open Disc Image: the image you dumped from your disc. .iso, .wbfs, .ciso, .wia and .rvz all "
+           "work, and the game reads the image itself, so nothing is extracted and nothing is copied.\n\n"
+           "Open Extracted Disc Folder: a folder Dolphin extracted the disc to.\n"
+           "1. " + openDolphin + " and find " + GameName() + " in the game list.\n"
+           "2. Right-click it, choose Properties, then the Filesystem tab.\n"
+           "3. Right-click the disc at the top and choose Extract Entire Disc, then pick an empty folder.\n"
+           "4. Choose that folder here. Keep it: the game reads it every time.\n\n"
+           "(Dolphin shows the revision under Properties > Info. Or put the extracted folder next to this "
+           "program and name it \"" + GameFolderName() + "\", or put one disc image next to it.)";
+}
+
+GamePicker::Text PickerText() {
+    GamePicker::Text text;
+    text.title = GameName();
+    text.body = "This port runs your own copy of " + std::string(RuntimeProduct::Active().discName) +
+                ". Open your disc image, or the folder Dolphin's Extract Entire Disc made from it.";
+#if defined(_WIN32)
+    text.help = Steps("Open Dolphin on this computer");
+#else
+    text.help = Steps("Open Dolphin");
+#endif
+    text.isoTitle = "Choose your disc image of " + GameName();
+    text.folderTitle = "Choose the folder Dolphin extracted " + GameName() + " to";
+    text.mods = RuntimeProduct::Active().gameId == "SMNE01";  // the original game's build only
+    return text;
+}
+
+// Extracts the disc image at `image` and makes it the game folder. False when it can't: `problem`
+// then says why, or is empty when the player cancelled; `incomplete` as Check() sets it.
+bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomplete) {
+    int files = 0;
+    return ExtractImageTo(
+        image, ExtractTargets(),
+        [&](WiiDisc::Disc& disc, const fs::path& staging, const std::atomic<bool>*) {
+            return GamePicker::RunWithProgress(
+                PickerText(), "Extracting the disc image",
+                [&](const GamePicker::Progress& progress, const std::atomic<bool>& cancel) {
+                    return disc.Extract(staging, progress, cancel, files);
+                });
+        },
+        problem, &incomplete);
 }
 #endif
 
 #if defined(MKW_PLATFORM_SWITCH)
 // No folder picker on Switch: the beside-program game folder, or one disc image beside it.
 namespace {
-fs::path ProgramDirectory() {
-    return RuntimeConfigFile::ExecutableDirectory().value_or(fs::path{});
-}
-
 // What a player is told when nothing usable was found. The NRO's folder is whatever getcwd() said
 // (host_platform.cpp); nothing here is a fixed path.
 std::string NoGameProblem(const fs::path& program, const fs::path& image, const std::string& imageProblem,
@@ -406,13 +431,150 @@ std::string NoGameProblem(const fs::path& program, const fs::path& image, const 
     }
     const std::string guidance =
         "Put your own copy of " + std::string(RuntimeProduct::Active().discName) + " next to WiiCompiled.nro (" +
-        where + "): a disc image (.iso, .wbfs, .ciso, .wia or .rvz), or the extracted game folder, named \"game\".";
+        where + "): the extracted game folder named \"game\", or a disc image (.iso, .wbfs, .ciso, .wia or "
+        ".rvz), which is extracted into that folder on the next start.";
     return reasons.empty() ? "No game was found. " + guidance : reasons + guidance;
 }
+// Whether the folder is unusable in a way an extraction repairs: not an extracted disc at all,
+// no readable sys/boot.bin, or files its sys/fst.bin lists that are missing. A changed module or
+// another disc's folder is not one of these: that may be the player's own mod, so it is left alone.
+bool StructurallyBroken(const fs::path& root, std::string& problem) {
+    if (!IsExtractedDisc(root)) {
+        problem = Check(root, nullptr);
+        return true;
+    }
+    std::error_code ec;
+    if (!fs::is_regular_file(root / "sys" / "boot.bin", ec)) {
+        problem = Check(root, nullptr);
+        return true;
+    }
+    std::ifstream boot(root / "sys" / "boot.bin", std::ios::binary);
+    char header[8] = {};
+    if (!boot.read(header, sizeof(header))) {
+        problem = Check(root, nullptr);
+        return true;
+    }
+    bool incomplete = false;
+    problem = Check(root, &incomplete);
+    if (incomplete) {
+        return true;
+    }
+    problem.clear();
+    return false;
+}
+
+// The place an image is extracted to that holds `folder` (the folder itself, or its parent for the
+// disc's DATA subtree), so deleting it also clears the way for the extraction.
+fs::path ExtractionTargetFor(const fs::path& folder) {
+    for (const fs::path& target : ExtractTargets()) {
+        if (target == folder || target == folder.parent_path()) {
+            return target;
+        }
+    }
+    return ExtractTargets().front();
+}
 } // namespace
+
 #endif
 
 } // namespace
+
+#if defined(MKW_PLATFORM_SWITCH)
+StartupPlan PlanStartup() {
+    StartupPlan plan;
+    const fs::path program = ProgramDirectory();
+    if (program.empty() || std::getenv("NSMBW_READ_IMAGE") != nullptr) {
+        return plan;  // EnsureConfigured() decides; the image is read in place in development
+    }
+    CleanStaleImports();
+    // The image to extract from: beside the program first, then one named in [paths] dvd_root.
+    const auto startupImage = [&] {
+        if (const fs::path image = FirstUsableImage(program, nullptr, nullptr); !image.empty()) {
+            return image;
+        }
+        const fs::path configured = RuntimeConfigFile::ResolvedDvdRoot();
+        std::error_code ec;
+        if (!configured.empty() && fs::is_regular_file(configured, ec) && CheckImage(configured, nullptr).empty()) {
+            return configured;
+        }
+        return fs::path{};
+    };
+    // Anything at the game folder's own path counts, including an empty or half-deleted folder that
+    // Find() doesn't recognize: that is exactly what a repair replaces.
+    const fs::path root = program / fs::u8path(GameFolderName());
+    std::error_code dirError;
+    if (!fs::is_directory(root, dirError)) {
+        if (const fs::path image = startupImage(); !image.empty()) {
+            plan.kind = StartupPlan::Kind::Extract;
+            plan.image = image;
+        }
+        return plan;
+    }
+    const fs::path found = Find(root);
+    const fs::path beside = found.empty() ? root : found;
+    std::string structural;
+    if (!StructurallyBroken(beside, structural)) {
+        return plan;  // usable, or a problem that deleting the folder would not fix
+    }
+    const fs::path image = startupImage();
+    if (image.empty()) {
+        return plan;  // nothing to rebuild it from: the folder stays, EnsureConfigured explains
+    }
+    std::error_code ec;
+    if (fs::is_symlink(fs::symlink_status(beside, ec))) {
+        return plan;  // not this program's folder
+    }
+    plan.kind = StartupPlan::Kind::Repair;
+    plan.folder = ExtractionTargetFor(beside);
+    plan.image = image;
+    plan.problem = structural;
+    RT_LOGF(RT_TAG_RUNTIME, "game folder: %s can't be used: %s\n", RuntimeConfigFile::PathToUtf8(beside).c_str(),
+            structural.c_str());
+    return plan;
+}
+
+bool DeleteStartupFolder(const fs::path& folder, std::string& problem) {
+    bool allowed = false;
+    for (const fs::path& target : ExtractTargets()) {
+        if (target == folder) {
+            allowed = true;
+        }
+    }
+    if (!allowed) {
+        problem = "That folder isn't one this program extracts to: " + RuntimeConfigFile::PathToUtf8(folder) + ".";
+        return false;
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "game folder: deleting %s\n", RuntimeConfigFile::PathToUtf8(folder).c_str());
+    if (!RemoveTree(folder)) {
+        problem = "Couldn't delete " + RuntimeConfigFile::PathToUtf8(folder) + ".";
+        return false;
+    }
+    return true;
+}
+
+bool ExtractStartupImage(const fs::path& image, const std::function<void(float, const char*)>& progress,
+                         std::string& problem) {
+    if (progress) {
+        progress(0.0f, "Extracting the disc image");
+    }
+    const auto step = [&](WiiDisc::Disc& disc, const fs::path& staging, const std::atomic<bool>*) {
+        int files = 0;
+        std::atomic<bool> never{false};
+        const auto bytes = [&](uint64_t done, uint64_t total) {
+            const float fraction =
+                total != 0 ? static_cast<float>(static_cast<double>(done) / static_cast<double>(total)) : 0.0f;
+            char status[96];
+            std::snprintf(status, sizeof(status), "Extracting the disc image, %d%%",
+                          static_cast<int>(fraction * 100.0f));
+            if (progress) {
+                progress(fraction, status);
+            }
+        };
+        return disc.Extract(staging, bytes, never, files);
+    };
+    return ExtractImageTo(image, ExtractTargets(), step, problem, nullptr);
+}
+#endif
 
 fs::path Find(const fs::path& path) {
     if (path.empty()) {
@@ -563,15 +725,6 @@ std::string Check(const fs::path& root, bool* incomplete) {
 } // namespace
 
 namespace {
-// "that isn't a Wii disc image" -> "That isn't a Wii disc image."
-std::string SentenceOf(std::string text) {
-    if (!text.empty()) {
-        text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
-        text += '.';
-    }
-    return text;
-}
-
 // A disc image is checked by opening it and asking the same questions a folder is asked: the disc ID
 // and revision, the code modules the translated build needs, and a mod's version file.
 std::string CheckImage(const fs::path& image, bool* incomplete) {

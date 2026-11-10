@@ -31,9 +31,9 @@ void OpenOnce() {
     const fs::path path = RuntimeConfigFile::ResolvedDvdRoot();
     g_disc = WiiDisc::Disc::Open(path, g_error);
     if (g_disc) {
-        RT_LOGF(RT_TAG_RUNTIME, "disc image: %s (%s revision %d, %zu file(s))\n",
+        RT_LOGF(RT_TAG_RUNTIME, "disc image: %s (%s revision %d, %zu file(s), aes %s)\n",
                 RuntimeConfigFile::PathToUtf8(path).c_str(), g_disc->Id().c_str(), g_disc->Revision(),
-                g_disc->Files().size());
+                g_disc->Files().size(), WiiDisc::Disc::AesBackend());
     }
 }
 

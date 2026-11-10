@@ -39,6 +39,10 @@ public:
     // answer before the image is opened; Open() still has the final word.
     static bool LooksLikeImage(const std::filesystem::path& path);
 
+    // Which AES block implementation the opens use: "armv8" when the ARMv8 instructions were
+    // verified against the table path on the first open, "table" otherwise. For the startup log.
+    static const char* AesBackend();
+
     ~Disc();
 
     // The disc header's game ID (6 characters, such as SMNE01) and revision.

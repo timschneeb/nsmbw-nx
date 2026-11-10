@@ -272,12 +272,51 @@ inline bool SeedMissingBootstrapFiles(const std::filesystem::path& root) {
     return true;
 }
 
+// Copies files that are missing under `to` from `from`, creating directories. Used to give a game's
+// own NAND the saves an earlier disc-image run left in the shared one.
+inline void CopyTreeMissing(const std::filesystem::path& from, const std::filesystem::path& to) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(from, ec)) {
+        return;
+    }
+    for (std::filesystem::recursive_directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code fileError;
+        if (!it->is_regular_file(fileError)) {
+            continue;
+        }
+        const std::filesystem::path relative = std::filesystem::relative(it->path(), from, fileError);
+        if (fileError) {
+            continue;
+        }
+        std::error_code copyError;
+        CopyBootstrapFile(from, to, relative, copyError);
+        if (copyError) {
+            RT_LOGF(RT_TAG_NAND, "could not copy %s: %s\n",
+                    RuntimeConfigFile::PathToUtf8(to / relative).c_str(), copyError.message().c_str());
+        }
+    }
+}
+
 inline std::filesystem::path CreateManagedNandRoot() {
     const std::filesystem::path root = ManagedNandRootPath();
     std::error_code ec;
     std::filesystem::create_directories(root, ec);
     if (ec || !std::filesystem::is_directory(root, ec)) {
         FailNandRoot("Unable to create managed NAND root", root);
+    }
+
+    // A game that gets a NAND of its own (an extracted folder after the saves were made from a disc
+    // image, which uses the shared NAND) starts with what the shared NAND holds: the player's progress
+    // carries over instead of the folder looking like a fresh install.
+    const std::filesystem::path shared = RuntimeConfigFile::ApplicationDataDirectory() / "NAND";
+    if (root != shared) {
+        std::error_code titleError;
+        if (!std::filesystem::exists(root / "title", titleError) &&
+            std::filesystem::is_directory(shared / "title", titleError)) {
+            CopyTreeMissing(shared / "title", root / "title");
+            RT_LOGF(RT_TAG_NAND, "seeded this game's saves from %s\n",
+                    RuntimeConfigFile::PathToUtf8(shared).c_str());
+        }
     }
 
     if (!SeedMissingBootstrapFiles(root)) {

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -46,6 +47,35 @@ bool EnsureConfigured();
 // Why Switch found no game, in words for the player (the detected folder, what goes there, where
 // Config.toml is); empty on every other platform and whenever EnsureConfigured() succeeded.
 const std::string& StartupProblem();
+
+// Switch start-up, before the boot: the game is played from an extracted folder, so an image beside
+// the program is extracted into one, and a folder that can no longer be used is replaced by a fresh
+// extraction. The plan changes nothing; main.cpp shows what it says and carries it out.
+struct StartupPlan {
+    enum class Kind { Ready, Repair, Extract } kind = Kind::Ready;
+    // Repair: the folder to delete (always the place this program extracts to).
+    std::filesystem::path folder;
+    // Repair and Extract: the image to extract. Empty when there is nothing to extract from, in which
+    // case a repair does not happen and the folder is left as it is.
+    std::filesystem::path image;
+    // Repair: why the folder can't be used, in words for the player.
+    std::string problem;
+};
+
+// Decides what has to happen before EnsureConfigured() runs. A folder that is merely modded or from
+// another disc is never deleted; only one that is empty, incomplete or has no usable sys/boot.bin,
+// and only when an image can rebuild it. On other platforms, and with NSMBW_READ_IMAGE set, this is
+// always Ready (the image is then read in place, as before).
+StartupPlan PlanStartup();
+
+// Removes the folder a Repair plan named. False with `problem` set when it can't.
+bool DeleteStartupFolder(const std::filesystem::path& folder, std::string& problem);
+
+// Extracts `image` into the game folder next to the program. `progress` receives 0..1 and a status
+// line for the boot splash. False with `problem` set when it can't.
+bool ExtractStartupImage(const std::filesystem::path& image,
+                         const std::function<void(float fraction, const char* status)>& progress,
+                         std::string& problem);
 
 // Whether the game being played is the original, unchanged: a retail disc ID (SMNE01, SMNP01,
 // SMNJ01) and the main.dol that disc came with. A modded disc (Newer and the like) isn't. Worked out

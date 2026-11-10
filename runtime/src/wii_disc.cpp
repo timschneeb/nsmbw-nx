@@ -1,6 +1,7 @@
 #include "wii_disc.h"
 
 #include <cryptopp/aes.h>
+#include <cryptopp/cpu.h>
 #include <cryptopp/modes.h>
 
 #include <algorithm>
@@ -1146,7 +1147,61 @@ struct Disc::State {
     }
 };
 
+namespace {
+#if defined(CRYPTOPP_ARM_AES_AVAILABLE) && defined(MKW_PLATFORM_SWITCH)
+// Crypto++ is compiled here with CRYPTOPP_DISABLE_ASM, which also compiles out its ARM feature
+// probe, so HasAES() would stay false even though the ARMv8 AES block functions are built in (see
+// runtime/CMakeLists.txt). The A57 always has the instructions, but the flag is only set after one
+// block has been decrypted through both paths and compared: it decides the round-key byte order, so
+// enabling it wrongly corrupts every read rather than being a little slower.
+bool g_armAes = false;
+
+void SetArmAes(bool on) {
+    CryptoPP::g_ArmDetectionDone = true;
+    CryptoPP::g_hasAES = on;
+}
+
+bool ArmAesMatchesTable() {
+    uint8_t key[16], iv[16], data[32];
+    for (size_t i = 0; i < sizeof(key); ++i) key[i] = uint8_t(i * 7 + 1);
+    for (size_t i = 0; i < sizeof(iv); ++i) iv[i] = uint8_t(i * 5 + 3);
+    for (size_t i = 0; i < sizeof(data); ++i) data[i] = uint8_t(i * 11 + 7);
+    auto decrypt = [&](bool arm, uint8_t* out) {
+        SetArmAes(arm);
+        CryptoPP::CBC_Mode<CryptoPP::AES>::Decryption cipher;
+        cipher.SetKeyWithIV(key, sizeof(key), iv, sizeof(iv));
+        cipher.ProcessData(out, data, sizeof(data));
+    };
+    uint8_t arm[sizeof(data)], table[sizeof(data)];
+    decrypt(true, arm);
+    decrypt(false, table);
+    return std::memcmp(arm, table, sizeof(data)) == 0;
+}
+
+// Runs before the first SetKey of the process.
+void EnableArmAes() {
+    static const bool once = [] {
+        g_armAes = ArmAesMatchesTable();
+        SetArmAes(g_armAes);
+        return true;
+    }();
+    (void)once;
+}
+#else
+void EnableArmAes() {}
+#endif
+} // namespace
+
+const char* Disc::AesBackend() {
+#if defined(CRYPTOPP_ARM_AES_AVAILABLE) && defined(MKW_PLATFORM_SWITCH)
+    return g_armAes ? "armv8" : "table";
+#else
+    return "table";
+#endif
+}
+
 std::unique_ptr<Disc> Disc::Open(const fs::path& path, std::string& error) {
+    EnableArmAes();
     Parts parts;
     if (!parts.Open(path)) {
         error = "couldn't open " + Utf8(path);
