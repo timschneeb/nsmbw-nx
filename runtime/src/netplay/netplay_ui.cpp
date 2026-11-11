@@ -1571,14 +1571,14 @@ int SettingsTabs() {
 // Keybinds: 0 tabs, 1-12
 // the controls (two columns of six), 13 Reset Defaults, 14 OK.
 // V-Sync is a Windows and Android row (both can lock the game's clock to the display; on Android the
-// app keeps the choice through TakeSettingsChange). Fullscreen is a desktop row: a phone is always
-// fullscreen.
+// app keeps the choice through TakeSettingsChange). Fullscreen is a desktop row: a phone and a Switch
+// are always fullscreen, so the display mode has nothing to switch between there.
 #if defined(_WIN32) || defined(__ANDROID__)
 constexpr bool kVSyncRow = true;
 #else
 constexpr bool kVSyncRow = false;
 #endif
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__SWITCH__)
 constexpr bool kFullscreenRow = false;
 #else
 constexpr bool kFullscreenRow = true;
