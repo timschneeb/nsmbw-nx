@@ -462,7 +462,7 @@ if(MKW_PLATFORM_SWITCH)
         message(FATAL_ERROR "nacptool and elf2nro are required for the Switch NRO (devkitPro tools)")
     endif()
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/switch")
-    set(MKW_SWITCH_NACP "${CMAKE_BINARY_DIR}/switch/WiiCompiled.nacp")
+    set(MKW_SWITCH_NACP "${CMAKE_BINARY_DIR}/switch/NSMBW.nacp")
     execute_process(
         COMMAND "${MKW_NACPTOOL}" --create "New Super Mario Bros. Wii" "Aurora Recomp" "1.0.0"
             "${MKW_SWITCH_NACP}"
@@ -472,11 +472,11 @@ if(MKW_PLATFORM_SWITCH)
     endif()
     add_custom_command(TARGET WiiCompiled POST_BUILD
         COMMAND "${MKW_ELF2NRO}" "$<TARGET_FILE:WiiCompiled>"
-            "${CMAKE_BINARY_DIR}/WiiCompiled.nro"
+            "${CMAKE_BINARY_DIR}/NSMBW.nro"
             "--nacp=${MKW_SWITCH_NACP}"
             "--icon=${MKW_RUNTIME_SOURCE_DIR}/assets/icon/switch.jpg"
             "--romfsdir=${CMAKE_BINARY_DIR}/romfs/WiiCompiled"
-        COMMENT "Packing WiiCompiled.nro"
+        COMMENT "Packing NSMBW.nro"
         VERBATIM)
 endif()
 if(MKW_PLATFORM_WINDOWS)

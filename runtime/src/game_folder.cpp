@@ -465,7 +465,7 @@ namespace {
 // (host_platform.cpp); nothing here is a fixed path.
 std::string NoGameProblem(const fs::path& program, const fs::path& image, const std::string& imageProblem,
                           const std::string& folderProblem, const std::string& configuredProblem) {
-    const std::string where = program.empty() ? std::string("next to WiiCompiled.nro")
+    const std::string where = program.empty() ? std::string("next to NSMBW.nro")
                                               : RuntimeConfigFile::PathToUtf8(program);
     // What to do comes last, after whatever was found and rejected: leading with "No game was found"
     // while naming a folder that is plainly there reads as a contradiction.
@@ -481,7 +481,7 @@ std::string NoGameProblem(const fs::path& program, const fs::path& image, const 
         reasons += "The [paths] dvd_root entry can't be used: " + configuredProblem + "\n\n";
     }
     const std::string guidance =
-        "Put your own copy of " + std::string(RuntimeProduct::Active().discName) + " next to WiiCompiled.nro (" +
+        "Put your own copy of " + std::string(RuntimeProduct::Active().discName) + " next to NSMBW.nro (" +
         where + "): the extracted game folder named \"game\", or a disc image (.iso, .wbfs, .ciso, .wia or "
         ".rvz), which is extracted into that folder on the next start.";
     return reasons.empty() ? "No game was found. " + guidance : reasons + guidance;

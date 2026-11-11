@@ -156,7 +156,12 @@ inline std::filesystem::path PathFromUtf8(std::string_view text) {
 }
 
 inline constexpr const char* kConfigFileName = "Config.toml";
+#if defined(MKW_PLATFORM_SWITCH)
+// The folder beside the NRO that holds Config.toml, Saves, Logs and the NAND.
+inline constexpr const char* kApplicationDirectoryName = "data";
+#else
 inline constexpr const char* kApplicationDirectoryName = "WiiCompiled";
+#endif
 
 // Portable layout. A directory holding kPortableMarkerFileName is a portable root; every piece of
 // runtime user state (Config.toml, NAND, Cache, Logs) lives in <root>/UserData instead of
@@ -506,7 +511,7 @@ inline void EnsureConfigFile() {
     }
 
     const std::string text =
-              "# WiiCompiled user configuration\n"
+              "# NSMBW user configuration\n"
               "# paths.dvd_root is your New Super Mario Bros. Wii (SMNE01 rev 1), extracted with\n"
               "# Dolphin's Extract Entire Disc. The game asks for it at first start.\n\n"
               "[video]\n"

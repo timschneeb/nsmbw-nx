@@ -523,7 +523,7 @@ void InitializeProcessTranscript(int argc, char** argv) {
 
     {
         std::lock_guard<std::mutex> lock(state.fileMutex);
-        state.file << "[runtime] WiiCompiled "
+        state.file << "[runtime] NSMBW "
                    << (setupVersion.empty() ? "version unknown" : setupVersion) << "\n";
         state.file << "[runtime] process transcript started\n";
         state.file << "[runtime] pid=" << pid << "\n";
@@ -936,7 +936,7 @@ static void ShowAppletText(std::string_view text) noexcept {
         constexpr size_t kMaxAppletText = 0x7FF;
 #if defined(_WIN32)
         const std::string message(text);
-        ::MessageBoxA(nullptr, message.c_str(), "WiiCompiled - Fatal Error",
+        ::MessageBoxA(nullptr, message.c_str(), "NSMBW - Fatal Error",
                       MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TASKMODAL);
 #else
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -992,7 +992,7 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
                 message.append("\n\n[Additional details were written to the crash log.]");
             }
         }
-        message.append("\n\nSee the WiiCompiled Logs folder for the full diagnostic.");
+        message.append("\n\nSee the Logs folder for the full diagnostic.");
         ShowFatalText(message);
     } catch (...) {
         // Reporting a crash must never throw or mask the original failure.
@@ -1549,19 +1549,19 @@ static void TerminateHandler() {
 #if defined(MKW_PLATFORM_SWITCH)
     // The detailed report below allocates strings and can itself fail on memory exhaustion.
     // Log the exception without allocating, then show the system error applet directly.
-    char message[256] = "WiiCompiled stopped: unhandled C++ exception";
+    char message[256] = "NSMBW stopped: unhandled C++ exception";
     if (auto ex = std::current_exception()) {
         try {
             std::rethrow_exception(ex);
         } catch (const std::exception& e) {
-            std::snprintf(message, sizeof(message), "WiiCompiled stopped: %s", e.what());
+            std::snprintf(message, sizeof(message), "NSMBW stopped: %s", e.what());
             std::fprintf(stderr, "[runtime] unhandled C++ exception: %s\n", e.what());
         } catch (...) {
-            std::snprintf(message, sizeof(message), "WiiCompiled stopped: unknown C++ exception");
+            std::snprintf(message, sizeof(message), "NSMBW stopped: unknown C++ exception");
             std::fputs("[runtime] unhandled non-std C++ exception\n", stderr);
         }
     } else {
-        std::snprintf(message, sizeof(message), "WiiCompiled stopped: std::terminate()");
+        std::snprintf(message, sizeof(message), "NSMBW stopped: std::terminate()");
         std::fputs("[runtime] std::terminate() without current exception\n", stderr);
     }
     std::fflush(stderr);
@@ -1861,7 +1861,7 @@ int RuntimeMain(int argc, char** argv) {
                 if (!GameFolder::DeleteStartupFolder(plan.folder, deleteProblem)) {
                     std::string fatal = "Unable to start because the game folder couldn't be replaced.\n\n";
                     fatal += deleteProblem;
-                    fatal += "\n\nSee the WiiCompiled Logs folder for the full diagnostic.";
+                    fatal += "\n\nSee the Logs folder for the full diagnostic.";
                     ShowFatalText(fatal);
                     SetRuntimeExitCodeImpl(EXIT_FAILURE);
                     ShutdownProcessTranscript();
@@ -1877,7 +1877,7 @@ int RuntimeMain(int argc, char** argv) {
                 if (!GameFolder::ExtractStartupImage(plan.image, progress, extractProblem)) {
                     std::string fatal = "Unable to start because the game data couldn't be extracted.\n\n";
                     fatal += extractProblem.empty() ? std::string("The extraction was stopped.") : extractProblem;
-                    fatal += "\n\nSee the WiiCompiled Logs folder for the full diagnostic.";
+                    fatal += "\n\nSee the Logs folder for the full diagnostic.";
                     ShowFatalText(fatal);
                     SetRuntimeExitCodeImpl(EXIT_FAILURE);
                     ShutdownProcessTranscript();
@@ -1896,7 +1896,7 @@ int RuntimeMain(int argc, char** argv) {
                 std::string message = GameFolder::StartupProblemTitle();
                 message += "\n\n";
                 message += problem;
-                message += "\n\nSee the WiiCompiled Logs folder for the full diagnostic.";
+                message += "\n\nSee the Logs folder for the full diagnostic.";
                 ShowFatalText(message);
                 SetRuntimeExitCodeImpl(EXIT_FAILURE);
             } else {
