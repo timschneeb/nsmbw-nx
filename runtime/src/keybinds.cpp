@@ -463,7 +463,13 @@ void SetSmartSpin(bool on) {
 bool ReverseTilt() {
     int on = g_reverseTilt.load(std::memory_order_relaxed);
     if (on < 0) {
-        on = RuntimeConfigFile::KeyboardBinding("reverse_tilt") == "true" ? 1 : 0;
+        const std::string value = RuntimeConfigFile::KeyboardBinding("reverse_tilt");
+#if defined(__SWITCH__)
+        // The Joy-Con gyro reports the turn the other way, so an unset key starts reversed.
+        on = value.empty() ? 1 : (value == "true" ? 1 : 0);
+#else
+        on = value == "true" ? 1 : 0;
+#endif
         g_reverseTilt.store(on, std::memory_order_relaxed);
     }
     return on != 0;

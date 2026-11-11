@@ -101,12 +101,7 @@ bool g_topBarVisible = false;
 bool g_exitPromptOpen = false;
 bool g_rumbleEnabled = RuntimeConfigFile::RumbleEnabled(true);
 int g_controllerPort = 0;
-#if defined(__SWITCH__)
-// The Switch output is the console's own screen, so the internal resolution always matches it.
-float g_resolutionScale = 0.0f;
-#else
 float g_resolutionScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
-#endif
 int g_audioVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::AudioVolume(1.0f) * 100.0f));
 int g_musicVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::MusicVolume(1.0f) * 100.0f));
 int g_soundEffectsVolumePercent =
@@ -325,6 +320,18 @@ void ApplyConfiguredMappings() {
         for (size_t i = 0; i < kControllerButtons.size(); ++i) {
             const auto& configured = RuntimeConfigFile::ControllerButton(i);
             if (!configured) {
+#if defined(__SWITCH__)
+                // A Switch pad has the remote's own - button. The runtime turns L into -, so bind
+                // the pad's Back button there unless the config says otherwise. GameCube pads keep
+                // their own layout, where Back is Z.
+                if (kControllerButtons[i].padButton == PAD_TRIGGER_L) {
+                    SDL_Gamepad* pad = PADGetSDLGamepadForIndex(static_cast<u32>(controllerIndex));
+                    const char* name = pad != nullptr ? aurora::sdl::GetGamepadName(pad) : nullptr;
+                    if (name == nullptr || std::string(name).find("GameCube") == std::string::npos) {
+                        PADSetButtonMapping(port, PADButtonMapping{SDL_GAMEPAD_BUTTON_BACK, PAD_TRIGGER_L});
+                    }
+                }
+#endif
                 continue;
             }
             const ControllerBindingPair binding = SplitControllerBinding(*configured);

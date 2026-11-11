@@ -532,6 +532,11 @@ std::vector<CellContent> Contents(PromptStyle::Style style) {
         }
     } else if (style == PromptStyle::Style::Controller) {
         for (int i = 0; i < 5; ++i) cells[i].glyphs = PadGlyphs(actions[i]);
+#if defined(__SWITCH__)
+        // A Switch controller has the remote's own + and - buttons: keep the game's icons.
+        cells[3].glyphs.clear();
+        cells[4].glyphs.clear();
+#endif
         // The D-pad stays the game's own cross: a controller's D-pad (and stick) moves as it shows.
     }
     return cells;

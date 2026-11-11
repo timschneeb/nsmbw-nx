@@ -183,26 +183,14 @@ std::string HttpGet(const std::string& url, const fs::path& out) {
     return file ? std::string() : "couldn't write " + RuntimeConfigFile::PathToUtf8(out);
 }
 #elif defined(MKW_PLATFORM_SWITCH)
-// Horizon has neither curl nor wget on the PATH, so switch-curl does the transfer in-process.
-// libnx's socket service has to be up before the first connection; the ssl service comes with
-// libcurl's libnx backend.
+// Horizon has neither curl nor wget on the PATH, so switch-curl does the transfer in-process. The
+// socket service itself comes up at boot (main.cpp); the ssl service comes with libcurl's libnx
+// backend.
 std::once_flag g_networkInit;
 bool g_networkReady = false;
 
 bool EnsureNetwork() {
     std::call_once(g_networkInit, [] {
-        // libnx's default receive window (64 KiB, growing to 256 KiB) caps a download well below
-        // what the console's Wi-Fi can do. A wider window costs a few MB of transfer memory.
-        SocketInitConfig config = *socketGetDefaultInitConfig();
-        config.tcp_tx_buf_size = 0x10000;
-        config.tcp_tx_buf_max_size = 0x40000;
-        config.tcp_rx_buf_size = 0x40000;
-        config.tcp_rx_buf_max_size = 0x100000;
-        config.sb_efficiency = 8;
-        config.num_bsd_sessions = 4;
-        if (R_FAILED(socketInitialize(&config)) && R_FAILED(socketInitializeDefault())) {
-            return;
-        }
         g_networkReady = curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
     });
     return g_networkReady;

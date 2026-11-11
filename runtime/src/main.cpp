@@ -1779,6 +1779,22 @@ int RuntimeMain(int argc, char** argv) {
     static const char* romfsStatus = "";
     romfsStatus = R_SUCCEEDED(romfsInit()) ? "romfs mounted"
                                            : "romfs mount failed; using the files beside the NRO";
+    // LAN play and the texture pack downloader both use libnx's bsd service; bring it up once for the
+    // whole run. A wider receive window than libnx's default keeps downloads near the console's Wi-Fi
+    // speed and costs a few MB of transfer memory.
+    static const char* socketStatus = "";
+    {
+        SocketInitConfig config = *socketGetDefaultInitConfig();
+        config.tcp_tx_buf_size = 0x10000;
+        config.tcp_tx_buf_max_size = 0x40000;
+        config.tcp_rx_buf_size = 0x40000;
+        config.tcp_rx_buf_max_size = 0x100000;
+        config.sb_efficiency = 8;
+        config.num_bsd_sessions = 4;
+        socketStatus = R_SUCCEEDED(socketInitialize(&config))
+                           ? "socket service up"
+                           : "socket service failed to start; network play is unavailable";
+    }
     const AppletType type = appletGetAppletType();
     if (type != AppletType_Application && type != AppletType_SystemApplication) {
         ShowFatalText(
@@ -1814,6 +1830,7 @@ int RuntimeMain(int argc, char** argv) {
     InitializeProcessTranscript(argc, argv);
 #if defined(MKW_PLATFORM_SWITCH)
     RT_LOG(RT_TAG_RUNTIME) << romfsStatus << std::endl;
+    RT_LOG(RT_TAG_RUNTIME) << socketStatus << std::endl;
     if (g_cpuClockReady) {
         std::lock_guard lock(g_cpuClockMutex);
         u32 hz = 0;

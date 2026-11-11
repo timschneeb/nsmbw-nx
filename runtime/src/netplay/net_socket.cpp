@@ -31,6 +31,10 @@
 #include <unistd.h>
 #endif
 
+#ifdef MKW_PLATFORM_SWITCH
+#include <switch.h>
+#endif
+
 namespace Netplay {
 namespace {
 
@@ -50,7 +54,10 @@ bool EnsureWinsock() {
 using NativeSocket = int;
 constexpr NativeSocket kInvalid = -1;
 void CloseNative(NativeSocket s) { ::close(s); }
-bool EnsureWinsock() { return true; }
+bool EnsureWinsock() {
+    // On Switch socketInitialize() runs once at boot (main.cpp), before the game starts.
+    return true;
+}
 #endif
 
 NativeSocket Native(intptr_t value) { return static_cast<NativeSocket>(value); }
@@ -168,6 +175,14 @@ bool UdpSocket::Open(uint16_t port) {
     }
     const NativeSocket s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == kInvalid) {
+#ifdef _WIN32
+        RT_LOGF(RT_TAG_NET, "udp: socket() failed (error %d)\n", WSAGetLastError());
+#elif defined(MKW_PLATFORM_SWITCH)
+        RT_LOGF(RT_TAG_NET, "udp: socket() failed, errno %d, bsd 0x%x\n", errno,
+                static_cast<unsigned>(socketGetLastResult()));
+#else
+        RT_LOGF(RT_TAG_NET, "udp: socket() failed (error %d)\n", errno);
+#endif
         return false;
     }
     const int one = 1;
@@ -198,6 +213,15 @@ bool UdpSocket::Open(uint16_t port) {
     local.sin_addr.s_addr = htonl(INADDR_ANY);
     local.sin_port = htons(port);
     if (::bind(s, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0) {
+#ifdef _WIN32
+        RT_LOGF(RT_TAG_NET, "udp: bind to port %u failed (error %d)\n", static_cast<unsigned>(port),
+                WSAGetLastError());
+#elif defined(MKW_PLATFORM_SWITCH)
+        RT_LOGF(RT_TAG_NET, "udp: bind to port %u failed, errno %d, bsd 0x%x\n", static_cast<unsigned>(port), errno,
+                static_cast<unsigned>(socketGetLastResult()));
+#else
+        RT_LOGF(RT_TAG_NET, "udp: bind to port %u failed (error %d)\n", static_cast<unsigned>(port), errno);
+#endif
         CloseNative(s);
         return false;
     }
@@ -301,9 +325,22 @@ int UdpSocket::ReceiveFrom(Address& from, void* buffer, size_t capacity, int tim
 std::vector<LocalInterface> LocalInterfaces() {
     std::vector<LocalInterface> result;
 #ifdef MKW_PLATFORM_SWITCH
-    // Horizon has no interface enumeration (no getifaddrs). Direct-IP LAN
-    // play is unaffected; only broadcast discovery loses its local list.
-    return result;
+    // Horizon has no getifaddrs; nifm knows the console's IPv4 address and subnet mask.
+    if (R_FAILED(nifmInitialize(NifmServiceType_User))) {
+        return result;
+    }
+    u32 address = 0, mask = 0, gateway = 0, primaryDns = 0, secondaryDns = 0;
+    if (R_SUCCEEDED(nifmGetCurrentIpConfigInfo(&address, &mask, &gateway, &primaryDns, &secondaryDns)) &&
+        address != 0) {
+        LocalInterface entry;
+        entry.ip = ntohl(address);
+        const uint32_t hostMask = ntohl(mask);
+        if (hostMask != 0 && !IsTailscaleIp(entry.ip)) {
+            entry.broadcast = (entry.ip & hostMask) | ~hostMask;
+        }
+        result.push_back(entry);
+    }
+    nifmExit();
 #elif defined(_WIN32)
     if (!EnsureWinsock()) {
         return result;
