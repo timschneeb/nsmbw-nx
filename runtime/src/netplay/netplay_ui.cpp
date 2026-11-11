@@ -18,6 +18,7 @@
 #include "hd_texture_pack.h"
 #include "key_caps.h"
 #include "prompt_style.h"
+#include "software_keyboard.h"
 #include "test_pad.h"
 #include "keybinds.h"
 #include "settings_overlay.h"
@@ -138,12 +139,21 @@ void AddHitEvent(float x, float y, float w, float h, int cursor, uint32_t event)
     g_hits.push_back(Hit{x, y, w, h, cursor, event});
 }
 
-// Join's Direct Connection address box (desktop; Android asks with a dialog of its own).
+// Join's Direct Connection address box (desktop; Android asks with a dialog of its own, Switch with
+// the software keyboard).
 struct AddressEntry {
     bool open = false;
     std::string text;
 };
 AddressEntry g_entry;
+
+void CloseAddressEntry() {
+    g_entry.open = false;
+    g_entry.text.clear();
+    if (SDL_Window* window = SDL_GetKeyboardFocus()) {
+        SDL_StopTextInput(window);
+    }
+}
 std::mutex g_enteredMutex;
 std::string g_entered;          // Android: the dialog's address, for the next frame
 std::atomic<bool> g_hasEntered{false};
@@ -3364,7 +3374,11 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
         break;
     case Screen::Rooms: {
         if (g_entry.open) {
-            break;  // the address box takes the keyboard (HandleSdlEvent)
+            // The address box takes the keyboard (HandleSdlEvent); a controller's Back still leaves it.
+            if (back) {
+                CloseAddressEntry();
+            }
+            break;
         }
         if (g_hasEntered.exchange(false)) {
             std::string address;
@@ -3391,7 +3405,15 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
             Show(Screen::Lan);
         }
         if (confirm && g_ui.cursor == count) {
-#if defined(__ANDROID__)
+#if defined(__SWITCH__)
+            // No hardware keyboard: the console's own software keyboard asks for the address.
+            const std::string address =
+                HostAskText(UiText::Tr("Direct Connection"),
+                            UiText::Tr("The host's IP:Port, shown at the top of its room."), g_entry.text);
+            if (!address.empty()) {
+                DirectAddressEntered(address);
+            }
+#elif defined(__ANDROID__)
             AndroidBridge::AskDirectAddress(UiText::Tr("Direct Connection"),
                                             UiText::Tr("The host's IP:Port, shown at the top of its room."));
 #else
@@ -3863,14 +3885,6 @@ bool TapScreenUp() {
 
 bool Playing() {
     return g_playing.load(std::memory_order_acquire);
-}
-
-static void CloseAddressEntry() {
-    g_entry.open = false;
-    g_entry.text.clear();
-    if (SDL_Window* window = SDL_GetKeyboardFocus()) {
-        SDL_StopTextInput(window);
-    }
 }
 
 bool HandleSdlEvent(const SDL_Event& event) {
