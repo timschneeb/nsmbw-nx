@@ -903,6 +903,30 @@ void MarkFatalErrorReported() {
     g_fatalErrorReported.store(true, std::memory_order_release);
 }
 
+#if defined(MKW_PLATFORM_SWITCH)
+// Launching the error applet needs a few tens of KiB of this process's heap for the applet holder
+// and its transfer storage, which is exactly what an out-of-memory crash cannot spare. One block is
+// held from startup and handed back the first time a fatal path has to report something; after that
+// it is gone, and the release is idempotent because terminate can run on any thread.
+constexpr size_t kFatalReserveBytes = 1u << 20;
+void* g_fatalReserve = nullptr;
+std::atomic<bool> g_fatalReserveReleased{false};
+
+void ReserveFatalMemory() noexcept {
+    if (g_fatalReserve == nullptr) {
+        g_fatalReserve = std::malloc(kFatalReserveBytes);
+    }
+}
+
+void ReleaseFatalReserve() noexcept {
+    if (g_fatalReserveReleased.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    std::free(g_fatalReserve);
+    g_fatalReserve = nullptr;
+}
+#endif
+
 // Puts `text` in front of the player: a message box on Windows, a dialog on a Linux desktop, and the
 // system error applet on the Switch. Callers compose the whole text; the applet's details page is
 // never used, so nothing is hidden behind a button. On Switch this returns once the player closes
@@ -947,6 +971,11 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
     if (g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
+#if defined(MKW_PLATFORM_SWITCH)
+    // The message string below and the applet both need heap; a fatal error is often the moment
+    // there is none left.
+    ReleaseFatalReserve();
+#endif
 
     try {
         std::string message;
@@ -1537,10 +1566,18 @@ static void TerminateHandler() {
     }
     std::fflush(stderr);
     {
+        ReleaseFatalReserve();
         ErrorSystemConfig config{};
-        if (R_SUCCEEDED(errorSystemCreate(&config, message, ""))) {
-            errorSystemShow(&config);
+        const Result created = errorSystemCreate(&config, message, "");
+        if (R_SUCCEEDED(created)) {
+            const Result shown = errorSystemShow(&config);
+            std::fprintf(stderr, "[runtime] error applet: create 0x%08x, show 0x%08x\n",
+                     static_cast<unsigned>(created), static_cast<unsigned>(shown));
+        } else {
+            std::fprintf(stderr, "[runtime] error applet: create failed 0x%08x\n",
+                     static_cast<unsigned>(created));
         }
+        std::fflush(stderr);
     }
     std::_Exit(EXIT_FAILURE);
 #endif
@@ -1735,6 +1772,7 @@ extern "C" void LogStartupPhase(const char* phase) {
 int RuntimeMain(int argc, char** argv) {
     LogStartupPhase("runtime main");
 #if defined(MKW_PLATFORM_SWITCH)
+    ReserveFatalMemory();
     const AppletType type = appletGetAppletType();
     if (type != AppletType_Application && type != AppletType_SystemApplication) {
         ShowFatalText(
