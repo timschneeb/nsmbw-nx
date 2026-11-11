@@ -949,14 +949,9 @@ void VI_HLE_WaitForNextRetracePoll() {
 
 namespace {
 
-// Retrace count consumed by the most recent paced present. This is a slot memo
-// against the VI timeline, not a second clock: it only answers "did a retrace
-// already elapse while this frame was being produced?". Producer-thread only.
-uint32_t s_lastPacedRetraceCount = ~0u;
-
-// Last presentation anchor handed to Aurora, in nanoseconds on the VI retrace
-// grid. Guarantees consecutive sealed frames never share an anchor (see the
-// comment at the stamping site). Producer-thread only, like the memo above.
+// Last presentation anchor handed to Aurora, in nanoseconds on the wall-clock grid. Guarantees
+// consecutive sealed frames never share an anchor (see the comment at the stamping site).
+// Producer-thread only.
 uint64_t s_lastPresentAnchorNanos = 0;
 
 // Sleeps to the same VI retrace boundary VIWaitForRetrace targets, servicing alarms every 1 ms so audio
@@ -984,7 +979,51 @@ void PaceToRetraceBoundary(Clock::time_point deadline) {
     VI_HLE_ProcessRetracesDeferred(1);
 }
 
+// Wall-clock slot schedule for the guest's frame loop. The game does not wait on VIWaitForRetrace
+// per frame (on hardware its loop was paced by GPU cost), and the VI retrace count advances once per
+// present, so it falls behind wall time when frames run late. A deadline on that count would then be
+// in the past forever and the game would free-run. This schedule stays on steady_clock.
+struct GuestFrameSchedule {
+    Clock::time_point next{};
+};
+GuestFrameSchedule g_guestFrameSchedule;  // producer thread only
+
+// The boundary this frame belongs to; `now` when it already missed its slot, so a slow scene keeps
+// free-running and the schedule restarts from now instead of piling up a backlog.
+Clock::time_point NextGuestFrameSlot(std::chrono::nanoseconds interval, bool& late) {
+    const auto now = Clock::now();
+    if (g_guestFrameSchedule.next == Clock::time_point{} ||
+        now >= g_guestFrameSchedule.next + interval) {
+        g_guestFrameSchedule.next = now + interval;
+        late = true;
+        return now;
+    }
+    late = false;
+    const auto slot = g_guestFrameSchedule.next;
+    g_guestFrameSchedule.next = slot + interval;
+    return slot;
+}
+
 } // namespace
+
+// Battery Saver leaves out the display copy of every other frame; that frame still takes its slot so
+// the game keeps its 60 steps a second (display_settings.cpp).
+void VI_HLE_PaceSkippedFrame() {
+    std::chrono::nanoseconds interval{16666us};
+    {
+        std::lock_guard<std::mutex> lock(g_viMutex);
+        EnsureInitializedLocked();
+        interval = ActiveIntervalLocked();
+    }
+    if (interval.count() <= 0) {
+        return;
+    }
+    bool late = false;
+    const Clock::time_point slot = NextGuestFrameSlot(interval, late);
+    if (!late) {
+        PaceToRetraceBoundary(slot);
+    }
+}
 
 // Single owner of the Aurora frame presentation sequence: seals the active frame, optionally paces the
 // producer to the VI retrace boundary, and pre-warms the next frame. Paced from GXCopyDisp; unpaced for
@@ -1153,46 +1192,34 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         paceToRetrace = false;
     }
     if (paceToRetrace) {
-        uint64_t baseNanos = 0;
-        uint64_t intervalNanos = 0;
-        uint32_t retraceCount = 0;
+        std::chrono::nanoseconds interval{16666us};
         {
             std::lock_guard<std::mutex> lock(g_viMutex);
             EnsureInitializedLocked();
-            paceDeadline = g_vi.lastRetrace + ActiveIntervalLocked();
-            retraceCount = g_vi.retraceCount;
-            baseNanos = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    g_vi.lastRetrace.time_since_epoch())
-                    .count());
-            intervalNanos = static_cast<uint64_t>(
-                ActiveIntervalLocked().count());
+            interval = ActiveIntervalLocked();
         }
-        // Hold the frame to its boundary only when no retrace elapsed during
-        // its production. A frame that missed its boundary presents
-        // immediately: hardware would quantize down to the next vblank here,
-        // but free-running late frames matches the previous pacer and keeps a
-        // heavy scene at e.g. 50 fps instead of hard 30.
-        const uint32_t retracesElapsed = retraceCount - s_lastPacedRetraceCount;
-        paceThisFrame = retracesElapsed == 0;
-        s_lastPacedRetraceCount = retraceCount;
+        bool late = false;
+        const Clock::time_point slot = NextGuestFrameSlot(interval, late);
+        const uint64_t baseNanos = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(slot.time_since_epoch()).count());
+        const uint64_t intervalNanos = static_cast<uint64_t>(interval.count());
+        paceDeadline = slot;
+        // A frame that missed its slot presents at once: free-running late frames keeps a heavy
+        // scene at e.g. 50 fps instead of a hard 30.
+        paceThisFrame = !late;
         // NSMBW: Battery Saver draws every other frame, so each picture healthily spans two retraces,
         // and its interpolated slots (if any) spread over both.
         settings_overlay::SyncFrameInterpolation();
         const bool thirty = settings_overlay::BatterySaverActive();
         const uint32_t retracesPerPicture = thirty ? 2u : 1u;
-        // aurora_report_producer_paced needs a different signal than the pace-wait above: the guest
-        // self-paces via VIWaitForRetrace, so one retrace per produced frame is the healthy locked-60
-        // cadence, and zero only happens when production outruns VI. "Kept up" means <=1 retrace
-        // elapsed; 2+ means a boundary was missed, so Aurora seals that frame without its interpolated
-        // slots (a windowed backstop lowers the slot target only under sustained overload).
-        aurora_report_producer_paced(retracesElapsed <= retracesPerPicture);
+        // aurora_report_producer_paced: whether this frame kept to the display's cadence.
+        aurora_report_producer_paced(!late);
         // Stamp the sealed frame's presentation schedule so Aurora paces interpolated slots against
-        // this same VI timeline. Anchor to the NEXT retrace boundary, not the period just produced,
+        // this same wall-clock grid. Anchor to the next boundary, not the period just produced,
         // since slots anchored to the current period would already be expired by seal time. Encoding
         // overruns are corrected by sliding the whole slot group forward onto a later boundary of this
         // same grid, so this stays the single cadence authority. Anchors must also be strictly
-        // monotonic: two frames sealed before lastRetrace advances would collide on one boundary and
+        // monotonic: two frames sealed before the grid advances would collide on one boundary and
         // burst-present, so a colliding anchor steps onto the next grid point instead of repeating it.
         uint64_t anchorNanos = baseNanos + intervalNanos;
         if (s_lastPresentAnchorNanos != 0 && anchorNanos <= s_lastPresentAnchorNanos) {
@@ -1217,8 +1244,6 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     const Clock::time_point paceStart = Clock::now();
     if (paceThisFrame) {
         PaceToRetraceBoundary(paceDeadline);
-        std::lock_guard<std::mutex> lock(g_viMutex);
-        s_lastPacedRetraceCount = g_vi.retraceCount;
     }
     if (PerfStats::Enabled()) {
         PerfStats::Publish(PerfStats::RoleGuest);

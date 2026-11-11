@@ -1,6 +1,7 @@
 // gx_copy.cpp - Framebuffer Copy Operations
 #include "gx_internal.h"
 
+#include "hle_stubs.h"
 #include "settings_overlay.h"
 
 #include <dolphin/gx/GXAurora.h>
@@ -170,6 +171,8 @@ extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     // Battery Saver: the frame before drew nothing (display_settings.cpp), so there is no picture to
     // copy. No copy and no present: the VI keeps showing the last one (this XFB never reads as ready).
     if (settings_overlay::TakeUndrawnFrame()) {
+        // The game still runs its frame; hold it to the same 60 Hz slot as a drawn one.
+        VI_HLE_PaceSkippedFrame();
         return;
     }
     EnsureAuroraFrameActive();

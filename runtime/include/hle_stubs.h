@@ -12,6 +12,8 @@
 void VI_HLE_ForceRetrace(CpuContext* ctx);
 void VI_HLE_PollRetrace(CpuContext* ctx);
 void VI_HLE_ProcessRetracesDeferred(int maxToProcess);
+// Battery Saver: the display copy of an undrawn frame still takes its 60 Hz slot.
+void VI_HLE_PaceSkippedFrame();
 void VI_HLE_WaitForNextRetracePoll();
 // NSMBW_LOG_FPS: the scheduler had no guest thread to run for this long (the fps log reports it;
 // this includes the audio DMA callbacks its idle loop runs).
