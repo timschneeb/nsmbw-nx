@@ -610,6 +610,12 @@ static int MbedtlsRecv(void* context, unsigned char* data, size_t size) {
 // depending on platform and how the binary was launched (next to the desktop executable, the
 // Android app's own data directory, or a source-tree checkout during development).
 static std::optional<std::filesystem::path> FindCaCertificateBundle() {
+#if defined(MKW_PLATFORM_SWITCH)
+    // The NRO embeds the bundle in its RomFS; the SD copy is only a fallback for older layouts.
+    if (const auto embedded = RuntimeConfigFile::RomfsAsset("cacert.pem")) {
+        return embedded;
+    }
+#endif
     if (const auto executableDirectory = RuntimeConfigFile::ExecutableDirectory()) {
         const auto adjacent = *executableDirectory / "cacert.pem";
         if (std::filesystem::is_regular_file(adjacent)) {

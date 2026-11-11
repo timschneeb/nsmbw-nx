@@ -372,8 +372,11 @@ function(mkw_configure_product target)
     if(NOT EXISTS "${MKW_WII_BOOTSTRAP_SOURCE_DIR}/shared2/wc24")
         message(FATAL_ERROR "Missing Wii first-run bootstrap payload: ${MKW_WII_BOOTSTRAP_SOURCE_DIR}")
     endif()
-    add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${MKW_WII_BOOTSTRAP_SOURCE_DIR}" "$<TARGET_FILE_DIR:${target}>/wii_bootstrap")
+    # On Switch the payload goes into the NRO's RomFS instead of a folder beside it.
+    if(NOT MKW_PLATFORM_SWITCH)
+        add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${MKW_WII_BOOTSTRAP_SOURCE_DIR}" "$<TARGET_FILE_DIR:${target}>/wii_bootstrap")
+    endif()
 
     set(MKW_DSP_COEFFICIENT_ROM "${MKW_RUNTIME_SOURCE_DIR}/assets/dsp/dsp_coef.bin")
     if(NOT EXISTS "${MKW_DSP_COEFFICIENT_ROM}")
@@ -384,9 +387,11 @@ function(mkw_configure_product target)
        "d7741279c2e8ec5c5fb318f8fbdd6de6bf583520d288e836a5383233a4238179")
         message(FATAL_ERROR "Wii DSP coefficient ROM hash mismatch: ${MKW_DSP_COEFFICIENT_ROM_SHA256}")
     endif()
-    add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${MKW_DSP_COEFFICIENT_ROM}" "$<TARGET_FILE_DIR:${target}>/dsp_coef.bin")
-
+    # On Switch the ROM goes into the NRO's RomFS instead of a file beside it.
+    if(NOT MKW_PLATFORM_SWITCH)
+        add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MKW_DSP_COEFFICIENT_ROM}" "$<TARGET_FILE_DIR:${target}>/dsp_coef.bin")
+    endif()
     # Aurora imports this portable recipe database into each user's writable
     # pipeline cache. Keep the upstream filename so its default resourcesPath
     # lookup works without application-specific configuration.
@@ -395,9 +400,11 @@ function(mkw_configure_product target)
     if(NOT EXISTS "${MKW_INITIAL_PIPELINE_CACHE}")
         message(FATAL_ERROR "Missing transferable Aurora pipeline cache: ${MKW_INITIAL_PIPELINE_CACHE}")
     endif()
-    add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${MKW_INITIAL_PIPELINE_CACHE}"
-        "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db")
+    if(NOT MKW_PLATFORM_SWITCH)
+        add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MKW_INITIAL_PIPELINE_CACHE}"
+            "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db")
+    endif()
 
     # Non-Windows TLS (runtime/src/hle/net/network_ssl.cpp's mbed TLS path) needs a trusted root
     # CA bundle to verify server certificates against - Windows gets this for free from the OS via
@@ -410,8 +417,30 @@ function(mkw_configure_product target)
         if(NOT EXISTS "${MKW_CA_CERTIFICATE_BUNDLE}")
             message(FATAL_ERROR "Missing TLS root CA bundle: ${MKW_CA_CERTIFICATE_BUNDLE}")
         endif()
-        add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${MKW_CA_CERTIFICATE_BUNDLE}" "$<TARGET_FILE_DIR:${target}>/cacert.pem")
+        if(NOT MKW_PLATFORM_SWITCH)
+            add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MKW_CA_CERTIFICATE_BUNDLE}" "$<TARGET_FILE_DIR:${target}>/cacert.pem")
+        endif()
+    endif()
+
+    if(MKW_PLATFORM_SWITCH)
+        # Read-only assets the NRO embeds as its RomFS section; libnx reads them out of the NRO file
+        # on the SD card on demand, so this costs no memory. One tree per product so parallel builds
+        # never rewrite each other's.
+        set(MKW_SWITCH_ROMFS_DIR "${CMAKE_BINARY_DIR}/romfs/${target}")
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${MKW_SWITCH_ROMFS_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${MKW_SWITCH_ROMFS_DIR}/wii_bootstrap"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${MKW_WII_BOOTSTRAP_SOURCE_DIR}" "${MKW_SWITCH_ROMFS_DIR}/wii_bootstrap"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MKW_CA_CERTIFICATE_BUNDLE}" "${MKW_SWITCH_ROMFS_DIR}/cacert.pem"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MKW_DSP_COEFFICIENT_ROM}" "${MKW_SWITCH_ROMFS_DIR}/dsp_coef.bin"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MKW_INITIAL_PIPELINE_CACHE}" "${MKW_SWITCH_ROMFS_DIR}/initial_pipeline_cache.db"
+            COMMENT "Staging the NRO RomFS"
+            VERBATIM)
     endif()
 endfunction()
 
@@ -423,6 +452,33 @@ endif()
 mkw_configure_product(WiiCompiled)
 target_precompile_headers(WiiCompiled PRIVATE
     "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
+if(MKW_PLATFORM_SWITCH)
+    # Pack the NRO as part of the link: elf2nro must get the NACP and icon as ASET assets or the
+    # forwarder's loader aborts before the runtime starts, and the RomFS has to be embedded for the
+    # bundled assets to resolve.
+    find_program(MKW_NACPTOOL nacptool HINTS "$ENV{DEVKITPRO}/tools/bin")
+    find_program(MKW_ELF2NRO elf2nro HINTS "$ENV{DEVKITPRO}/tools/bin")
+    if(NOT MKW_NACPTOOL OR NOT MKW_ELF2NRO)
+        message(FATAL_ERROR "nacptool and elf2nro are required for the Switch NRO (devkitPro tools)")
+    endif()
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/switch")
+    set(MKW_SWITCH_NACP "${CMAKE_BINARY_DIR}/switch/WiiCompiled.nacp")
+    execute_process(
+        COMMAND "${MKW_NACPTOOL}" --create "New Super Mario Bros. Wii" "Aurora Recomp" "1.0.0"
+            "${MKW_SWITCH_NACP}"
+        RESULT_VARIABLE MKW_NACP_RESULT)
+    if(NOT MKW_NACP_RESULT EQUAL 0)
+        message(FATAL_ERROR "nacptool failed to write ${MKW_SWITCH_NACP}")
+    endif()
+    add_custom_command(TARGET WiiCompiled POST_BUILD
+        COMMAND "${MKW_ELF2NRO}" "$<TARGET_FILE:WiiCompiled>"
+            "${CMAKE_BINARY_DIR}/WiiCompiled.nro"
+            "--nacp=${MKW_SWITCH_NACP}"
+            "--icon=${MKW_RUNTIME_SOURCE_DIR}/assets/icon/switch.jpg"
+            "--romfsdir=${CMAKE_BINARY_DIR}/romfs/WiiCompiled"
+        COMMENT "Packing WiiCompiled.nro"
+        VERBATIM)
+endif()
 if(MKW_PLATFORM_WINDOWS)
     # The app icon (projects/nsmbw/tools/make_icons.ps1): Explorer, the taskbar and, through SDL's
     # default of the executable's first icon, the game window. The manifest (1 24) gives the

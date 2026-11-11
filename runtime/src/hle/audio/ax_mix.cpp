@@ -47,6 +47,12 @@ std::atomic<uint32_t> g_mixes{0};
 std::atomic<int> g_mixCpu{-1};
 
 std::filesystem::path FindDspCoefficientRom() {
+#if defined(MKW_PLATFORM_SWITCH)
+    // The NRO embeds the ROM in its RomFS; the SD copy is only a fallback for older layouts.
+    if (const auto embedded = RuntimeConfigFile::RomfsAsset("dsp_coef.bin")) {
+        return *embedded;
+    }
+#endif
     if (const auto executableDirectory = RuntimeConfigFile::ExecutableDirectory()) {
         const auto adjacent = *executableDirectory / "dsp_coef.bin";
         if (std::filesystem::is_regular_file(adjacent)) {
@@ -783,6 +789,7 @@ private:
         m_triedLoadCoeffs = true;
 
         const auto path = FindDspCoefficientRom();
+        RT_LOGF(RT_TAG_AUDIO, "DSP coefficient ROM: %s\n", RuntimeConfigFile::PathToUtf8(path).c_str());
         std::ifstream stream(path, std::ios::binary | std::ios::ate);
         if (!stream || stream.tellg() != static_cast<std::streamoff>(m_coeffs.size() * 2)) {
             throw std::runtime_error("Bundled Wii DSP coefficient ROM has an invalid size: " +

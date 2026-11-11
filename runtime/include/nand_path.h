@@ -134,6 +134,12 @@ inline std::filesystem::path ManagedNandRootPath() {
 }
 
 inline std::optional<std::filesystem::path> BootstrapPayloadPath() {
+#if defined(MKW_PLATFORM_SWITCH)
+    // The NRO embeds the payload in its RomFS; the SD copy is only a fallback for older layouts.
+    if (const auto embedded = RuntimeConfigFile::RomfsAsset("wii_bootstrap/shared2/wc24", true)) {
+        return embedded->parent_path().parent_path();
+    }
+#endif
     if (auto executableDirectory = RuntimeConfigFile::ExecutableDirectory()) {
         const auto adjacent = *executableDirectory / "wii_bootstrap";
         if (ExistingDirectory(adjacent / "shared2" / "wc24")) {

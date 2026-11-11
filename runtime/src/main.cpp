@@ -1773,6 +1773,12 @@ int RuntimeMain(int argc, char** argv) {
     LogStartupPhase("runtime main");
 #if defined(MKW_PLATFORM_SWITCH)
     ReserveFatalMemory();
+    // Read-only assets (TLS bundle, WC24 seed, pipeline cache) live in the NRO's RomFS. If the mount
+    // fails the devoptab is absent and the files beside the NRO still resolve, so startup degrades
+    // instead of breaking. The result is logged below, once the transcript is capturing stderr.
+    static const char* romfsStatus = "";
+    romfsStatus = R_SUCCEEDED(romfsInit()) ? "romfs mounted"
+                                           : "romfs mount failed; using the files beside the NRO";
     const AppletType type = appletGetAppletType();
     if (type != AppletType_Application && type != AppletType_SystemApplication) {
         ShowFatalText(
@@ -1807,6 +1813,7 @@ int RuntimeMain(int argc, char** argv) {
 #endif
     InitializeProcessTranscript(argc, argv);
 #if defined(MKW_PLATFORM_SWITCH)
+    RT_LOG(RT_TAG_RUNTIME) << romfsStatus << std::endl;
     if (g_cpuClockReady) {
         std::lock_guard lock(g_cpuClockMutex);
         u32 hz = 0;
@@ -1994,10 +2001,20 @@ int RuntimeMain(int argc, char** argv) {
         auroraConfig.userPath = auroraUserPath.c_str();
         auroraConfig.cachePath = auroraCachePath.c_str();
         // initial_pipeline_cache.db (NSMBW's pipelines, merged into the user's cache at startup)
-        // sits beside the executable, or in the app's unpacked runtime folder on Android.
-        const auto runtimeDirectory = RuntimeConfigFile::ExecutableDirectory();
-        const std::string auroraResourcesPath =
-            runtimeDirectory ? RuntimeConfigFile::PathToUtf8(*runtimeDirectory) : std::string();
+        // travels in the Switch NRO's RomFS, sits beside the executable elsewhere, or in the app's
+        // unpacked runtime folder on Android.
+        std::string auroraResourcesPath;
+#if defined(MKW_PLATFORM_SWITCH)
+        if (RuntimeConfigFile::RomfsAsset("initial_pipeline_cache.db")) {
+            auroraResourcesPath = "romfs:/";
+        }
+#endif
+        if (auroraResourcesPath.empty()) {
+            const auto runtimeDirectory = RuntimeConfigFile::ExecutableDirectory();
+            if (runtimeDirectory) {
+                auroraResourcesPath = RuntimeConfigFile::PathToUtf8(*runtimeDirectory);
+            }
+        }
         if (!auroraResourcesPath.empty()) {
             auroraConfig.resourcesPath = auroraResourcesPath.c_str();
         }

@@ -289,6 +289,23 @@ inline std::optional<std::filesystem::path> ExecutableDirectory() {
 #endif
 }
 
+#if defined(MKW_PLATFORM_SWITCH)
+// The Switch NRO carries its read-only data in a RomFS section (elf2nro --romfsdir), mounted as
+// "romfs:" by romfsInit. libnx reads it out of the NRO file on the SD card on demand, so the data
+// costs no resident memory and cannot drift from the binary.
+inline std::optional<std::filesystem::path> RomfsAsset(std::string_view relative, bool directory = false) {
+    std::error_code ec;
+    const std::filesystem::path path =
+        std::filesystem::path("romfs:") / std::filesystem::path(relative);
+    const bool found = directory ? std::filesystem::is_directory(path, ec)
+                                 : std::filesystem::is_regular_file(path, ec);
+    if (found) {
+        return path;
+    }
+    return std::nullopt;
+}
+#endif
+
 // NSMBW: the Windows downloads up to 0.0.7 shipped this marker; such a folder is an old release,
 // whose UserData moves to Documents\MarioWiiSaveData (AdoptEarlierUserData), not a portable root.
 inline bool IsReleasedNsmbwMarker(const std::filesystem::path& marker) {
