@@ -238,22 +238,25 @@ void AddGxFifoPart(int part, uint64_t nanos) {
 namespace {
 std::atomic<uint32_t> g_fastmemMmioLoads{0};
 std::atomic<uint32_t> g_fastmemMmioStores{0};
+std::atomic<uint64_t> g_fastmemMmioNanos{0};
 }
 
 void AddFastmemMmioLoad(uint32_t count) noexcept {
     g_fastmemMmioLoads.fetch_add(count, std::memory_order_relaxed);
 }
 
-uint32_t TakeFastmemMmioLoads() noexcept {
-    return g_fastmemMmioLoads.exchange(0, std::memory_order_relaxed);
-}
-
 void AddFastmemMmioStore(uint32_t count) noexcept {
     g_fastmemMmioStores.fetch_add(count, std::memory_order_relaxed);
 }
 
-uint32_t TakeFastmemMmioStores() noexcept {
-    return g_fastmemMmioStores.exchange(0, std::memory_order_relaxed);
+void AddFastmemMmioNanos(uint64_t nanos) noexcept {
+    g_fastmemMmioNanos.fetch_add(nanos, std::memory_order_relaxed);
+}
+
+FastmemMmio TakeFastmemMmio() noexcept {
+    return FastmemMmio{g_fastmemMmioLoads.exchange(0, std::memory_order_relaxed),
+                       g_fastmemMmioStores.exchange(0, std::memory_order_relaxed),
+                       g_fastmemMmioNanos.exchange(0, std::memory_order_relaxed)};
 }
 
 void AddGxFifoSubmit(uint64_t nanos) {

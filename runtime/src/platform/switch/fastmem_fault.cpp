@@ -371,6 +371,7 @@ extern "C" uintptr_t NsmbwFastmemFault(uint64_t far, uint64_t esr, uint64_t pc, 
 
     auto* slot = reinterpret_cast<FastmemSlot*>(reinterpret_cast<uint8_t*>(gprs) -
                                                 offsetof(FastmemSlot, x));
+    const uint64_t startTick = armGetSystemTick();
     try {
         if (isWrite) {
             if (!EmitStore(*slot, spec.rt, spec.vector, spec.width, guest)) {
@@ -405,6 +406,7 @@ extern "C" uintptr_t NsmbwFastmemFault(uint64_t far, uint64_t esr, uint64_t pc, 
     } else {
         PerfStats::AddFastmemMmioLoad();
     }
+    PerfStats::AddFastmemMmioNanos(armTicksToNs(armGetSystemTick() - startTick));
     return static_cast<uintptr_t>(pc + 4);
 }
 

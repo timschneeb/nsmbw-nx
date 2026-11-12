@@ -73,11 +73,17 @@ void AddGxFifoSubmit(uint64_t nanos);
 uint64_t TakeGxFifoSubmitNanos();
 GxFifoBreakdown TakeGxFifoBreakdown();
 
-// Guest MMIO accesses the Switch fastmem handler emulated since the last take. Zero on PC, where
+// Guest MMIO accesses the Switch fastmem handler emulated since the last take, and the time the
+// handler spent on them (the exception entry and restore are outside this). Zero on PC, where
 // those accesses take the inline policy test instead of faulting.
+struct FastmemMmio {
+    uint32_t loads = 0;
+    uint32_t stores = 0;
+    uint64_t nanos = 0;
+};
 void AddFastmemMmioLoad(uint32_t count = 1) noexcept;
-uint32_t TakeFastmemMmioLoads() noexcept;
 void AddFastmemMmioStore(uint32_t count = 1) noexcept;
-uint32_t TakeFastmemMmioStores() noexcept;
+void AddFastmemMmioNanos(uint64_t nanos) noexcept;
+FastmemMmio TakeFastmemMmio() noexcept;
 
 }  // namespace PerfStats
