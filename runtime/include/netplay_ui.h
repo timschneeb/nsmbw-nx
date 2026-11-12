@@ -18,6 +18,10 @@ namespace NetplayUi {
 // Once per presented frame, inside the ImGui frame (settings_overlay::Draw).
 void Draw();
 
+// Reads the menus' own layouts and fonts ahead of their first use (the save select's buttons): their
+// first use otherwise holds the game for a second while they are decoded and uploaded.
+void Prewarm();
+
 // Every Wii Remote sample the game reads in normal play passes through here: while a menu is up
 // the game sees the remote at rest (and the menu takes the buttons), and in a room's player-count
 // step the confirm press is taken from the game.

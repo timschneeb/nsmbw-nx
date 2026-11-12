@@ -1285,7 +1285,8 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                 s_windowStart = now;
                 s_logged = 0;
             }
-            if (frame > slowFrameMs && frame < 2000.0 && s_logged++ < 30) {
+            // A frame of half a second or more is worth reporting however many slow frames this minute has.
+            if (frame > slowFrameMs && frame < 10000.0 && (frame > 500.0 || s_logged++ < 30)) {
                 uint32_t sceneWord = 0;
                 Memory::TryRead32(0x80428730u, sceneWord);
                 FrameStats::Log(

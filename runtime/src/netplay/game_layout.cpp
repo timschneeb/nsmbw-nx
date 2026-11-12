@@ -42,12 +42,18 @@ public:
     std::vector<Glyph> glyphs;     // by glyph index
     std::unordered_map<uint16_t, uint16_t> map;  // code -> glyph index
     // The other languages' copies of this font: each language folder's font carries the letters its
-    // own text needs (the English one has no n with tilde, for one). Asked for letters this one lacks.
-    std::vector<std::shared_ptr<Font>> fallbacks;
+    // own text needs (the English one has no n with tilde, for one). Asked for letters this one lacks,
+    // and loaded then: each copy is a second of decoding and texture upload on the guest thread.
+    mutable std::vector<std::string> fallbackPaths;
+    mutable std::vector<std::shared_ptr<Font>> fallbacks;
     // Mods redraw some characters as icons for their own messages (Newer's message font: parentheses
     // as mushrooms, + and - as the remote's buttons); the runtime's own text takes those from this
     // font instead (the Mario font, which they keep).
     std::shared_ptr<Font> plain;
+
+    // The fallback copies, read and decoded now (the first character this font lacks).
+    void LoadFallbacks() const;
+    static std::shared_ptr<Font> LoadFile(const std::string& path);
 
     // The glyph for a character, and in `owner` the font whose sheets hold it. `plainText`: a letter,
     // never one of the font's icons.
@@ -64,6 +70,10 @@ public:
             }
         }
         if (it == map.end()) {
+            // Only now are the other languages' copies worth their second of decoding.
+            if (!fallbackPaths.empty()) {
+                LoadFallbacks();
+            }
             for (const auto& other : fallbacks) {
                 const auto found = other->map.find(static_cast<uint16_t>(code));
                 if (found != other->map.end() && found->second < other->glyphs.size()) {
@@ -572,6 +582,19 @@ std::shared_ptr<Font> LoadFontFile(const std::string& path) {
 
 } // namespace
 
+std::shared_ptr<Font> Font::LoadFile(const std::string& path) {
+    return LoadFontFile(path);
+}
+
+void Font::LoadFallbacks() const {
+    for (const std::string& path : fallbackPaths) {
+        if (auto other = LoadFile(path); other != nullptr && other->ok) {
+            fallbacks.push_back(std::move(other));
+        }
+    }
+    fallbackPaths.clear();
+}
+
 // The font from the language folder the game runs in ([game] language, as SCGetLanguage reported it
 // at boot), with the other two languages' copies behind it for letters it lacks.
 std::shared_ptr<Font> LoadFont(const std::string& name) {
@@ -590,10 +613,7 @@ std::shared_ptr<Font> LoadFont(const std::string& name) {
     }
     std::shared_ptr<Font> font = LoadFontFile(std::string("/US/") + folders[0] + "/Font/" + name);
     for (int i = 1; i < 3 && font->ok; ++i) {
-        auto other = LoadFontFile(std::string("/US/") + folders[i] + "/Font/" + name);
-        if (other->ok) {
-            font->fallbacks.push_back(std::move(other));
-        }
+        font->fallbackPaths.push_back(std::string("/US/") + folders[i] + "/Font/" + name);
     }
     if (!font->ok) {
         RT_LOGF(RT_TAG_RUNTIME, "netplay ui: could not load the game font %s\n", name.c_str());

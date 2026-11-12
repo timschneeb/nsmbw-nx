@@ -3877,6 +3877,10 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
 
 } // namespace
 
+void Prewarm() {
+    GetAssets();
+}
+
 void Tap(float x, float y) {
 #if defined(__ANDROID__)
     PromptStyle::NoteTouch();  // a finger on the screen: the on-screen remote's prompts
@@ -4223,7 +4227,20 @@ void ScriptedTaps() {
     }
 }
 
+// The overlay is drawn on the game's own thread, so a slow draw here is a visible freeze: report it.
+struct DrawTimer {
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ~DrawTimer() {
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        if (ms > 100.0) {
+            RT_LOGF(RT_TAG_RUNTIME, "netplay ui: draw took %.0f ms on %s\n", ms, ScreenName(g_ui.screen));
+        }
+    }
+};
+
 void Draw() {
+    DrawTimer timer;
     // The game's button prompts as the input last used shows them (key_caps.h); every screen, LAN too.
     KeyCaps::Update();
     TestPad::Update();

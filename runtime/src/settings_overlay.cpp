@@ -2461,6 +2461,15 @@ void Draw() noexcept {
     static std::once_flag firstOverlayFrame;
     std::call_once(firstOverlayFrame, [] { LogStartupPhase("first overlay frame"); });
 #if defined(__SWITCH__)
+    // The menus' own fonts and layouts take about a second to read, decode and upload on first use,
+    // and they are first used at the save select. Load them here instead, once the startup cover is
+    // up: the save select then draws them without holding the game.
+    {
+        static int frame = -1;
+        if (++frame == 2) {
+            NetplayUi::Prewarm();
+        }
+    }
     // Fallback for HOME/sleep: a suspended app comes back with a large gap before its next
     // presented frame. The applet pump normally handles this; this also covers the boot path.
     static Clock::time_point lastPresent = Clock::now();
