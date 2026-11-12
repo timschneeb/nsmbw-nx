@@ -1,11 +1,12 @@
-// Fault-driven guest MMIO loads (Switch).
+// Fault-driven guest MMIO accesses (Switch).
 //
-// Translated code reaches guest memory as `[x28 + addr]`, so an MMIO load
+// Translated code reaches guest memory as `[x28 + addr]`, so an MMIO access
 // (0xCC000000-0xCDFFFFFF) hits an uncommitted page of the flat window once
-// FlatReadNeedsPolicy is compiled out. fastmem_entry.S catches that data abort,
-// saves the whole faulting context and calls NsmbwFastmemFault here, which
-// decodes the load and fetches the value through Memory::Read*, so the GX/DSP
-// MMIO policy stays in one place.
+// FlatReadNeedsPolicy/FlatWriteNeedsPolicy are compiled out. fastmem_entry.S catches that
+// data abort, saves the whole faulting context and calls NsmbwFastmemFault here, which
+// decodes the load or store and runs the value through Memory::Read*/Write*, so the GX/DSP
+// MMIO policy stays in one place. A store's value is still in the faulting register, and the
+// translator's raw store bytes are converted back to guest order here.
 //
 // Nothing here may allocate or lock: this runs on the exception path.
 
@@ -52,22 +53,21 @@ constexpr uint64_t kMmioBegin = 0xCC000000ull;
 constexpr uint64_t kMmioEnd = 0xCE000000ull;
 
 // ESR_EL1: EC[31:26] = 0x24 for a data abort from a lower exception level and
-// ISS[6] (WnR) = 0 for a read.
+// ISS[6] (WnR) = 1 for a write.
 constexpr uint64_t kEsrEcMask = 0x3Full << 26;
 constexpr uint64_t kEsrEcDataAbortLowerEl = 0x24ull << 26;
 constexpr uint64_t kEsrWnR = 1ull << 6;
 
-// AArch64 load/store register family: bits 29-27 are 111 for the scalar and
-// SIMD&FP loads this handles.
-constexpr uint32_t kLoadStoreRegisterMask = 0x38000000u;
-
 enum class Writeback { None, Post, Pre };
 
-struct LoadSpec {
+struct AccessSpec {
     uint32_t rt = 0;
+    uint32_t rt2 = 0;
     uint32_t rn = 0;
     uint32_t width = 0;
     bool vector = false;
+    bool store = false;
+    bool pair = false;
     bool signExtend = false;
     bool wide = false;
     Writeback writeback = Writeback::None;
@@ -87,27 +87,16 @@ bool TryGuestAddress(uint64_t far, uint32_t& guest) {
     return true;
 }
 
-bool DecodeLoad(uint32_t insn, LoadSpec& spec) {
-    if ((insn & kLoadStoreRegisterMask) != kLoadStoreRegisterMask) {
-        return false;
-    }
-    const uint32_t size = insn >> 30;
-    const uint32_t vector = (insn >> 26) & 1u;
+// Addressing shared by every form: the faulting address itself is `far`, so only the writeback
+// and the post-index amount matter here. Rm-based forms carry no writeback.
+bool DecodeAddressing(uint32_t insn, AccessSpec& spec) {
     const uint32_t mode = (insn >> 24) & 3u;
-    const uint32_t opc = (insn >> 22) & 3u;
-
-    spec.rt = insn & 0x1Fu;
     spec.rn = (insn >> 5) & 0x1Fu;
-    spec.vector = vector != 0;
-
     switch (mode) {
     case 0:  // unscaled, post-index, unprivileged or pre-index
         if ((insn >> 21) & 1u) {
             // Register offset: Rm/option/shift in bits 20-10.
-            if (((insn >> 10) & 3u) != 2u) {
-                return false;
-            }
-            break;
+            return ((insn >> 10) & 3u) == 2u;
         }
         {
             const uint32_t kind = (insn >> 10) & 3u;
@@ -120,24 +109,40 @@ bool DecodeLoad(uint32_t insn, LoadSpec& spec) {
                 spec.offset = static_cast<int64_t>(static_cast<int32_t>(imm9 << 23) >> 23);
             }
         }
-        break;
+        return true;
     case 1:  // unsigned immediate
-        break;
+        return true;
     case 2:  // register offset
-        if (((insn >> 10) & 3u) != 2u) {
-            return false;
-        }
-        break;
+        return ((insn >> 10) & 3u) == 2u;
     default:
+        return false;
+    }
+}
+
+bool DecodeSingle(uint32_t insn, AccessSpec& spec) {
+    const uint32_t size = insn >> 30;
+    const uint32_t vector = (insn >> 26) & 1u;
+    const uint32_t opc = (insn >> 22) & 3u;
+
+    spec.rt = insn & 0x1Fu;
+    spec.vector = vector != 0;
+    if (!DecodeAddressing(insn, spec)) {
         return false;
     }
 
     if (spec.vector) {
         if (opc == 0u) {
-            return false;  // store
+            spec.store = true;
+            spec.width = 1u << size;  // B, H, S or D
+            return true;
         }
         if (opc == 1u) {
-            spec.width = 1u << size;  // B, H, S or D
+            spec.width = 1u << size;
+            return true;
+        }
+        if (opc == 2u && size == 0u) {
+            spec.store = true;
+            spec.width = 16;  // Q
             return true;
         }
         if (opc == 3u && size == 0u) {
@@ -148,7 +153,9 @@ bool DecodeLoad(uint32_t insn, LoadSpec& spec) {
     }
 
     if (opc == 0u) {
-        return false;  // store
+        spec.store = true;
+        spec.width = 1u << size;
+        return true;
     }
     spec.width = 1u << size;
     if (opc == 1u) {
@@ -171,6 +178,71 @@ bool DecodeLoad(uint32_t insn, LoadSpec& spec) {
     return true;
 }
 
+bool DecodePair(uint32_t insn, AccessSpec& spec) {
+    const uint32_t size = insn >> 30;
+    const uint32_t vector = (insn >> 26) & 1u;
+    const uint32_t kind = (insn >> 23) & 3u;
+    const uint32_t load = (insn >> 22) & 1u;
+
+    spec.rt = insn & 0x1Fu;
+    spec.rn = (insn >> 5) & 0x1Fu;
+    spec.rt2 = (insn >> 10) & 0x1Fu;
+    spec.vector = vector != 0;
+    spec.pair = true;
+    spec.store = load == 0;
+
+    if (spec.vector) {
+        switch (size) {
+        case 0: spec.width = 4; break;   // S
+        case 1: spec.width = 8; break;   // D
+        case 2: spec.width = 16; break;  // Q
+        default: return false;
+        }
+    } else {
+        switch (size) {
+        case 0: spec.width = 4; break;   // W
+        case 2: spec.width = 8; break;   // X
+        default: return false;
+        }
+    }
+
+    if (kind == 1u) {
+        spec.writeback = Writeback::Post;
+    } else if (kind == 3u) {
+        spec.writeback = Writeback::Pre;
+    }
+    const uint32_t imm7 = (insn >> 15) & 0x7Fu;
+    spec.offset = static_cast<int64_t>(static_cast<int32_t>(imm7 << 25) >> 25) *
+                  static_cast<int64_t>(spec.width);
+    return true;
+}
+
+bool DecodeAccess(uint32_t insn, AccessSpec& spec) {
+    const uint32_t family = (insn >> 27) & 0x7u;
+    if (family == 0x7u) {
+        return DecodeSingle(insn, spec);
+    }
+    if (family == 0x5u) {
+        return DecodePair(insn, spec);
+    }
+    return false;
+}
+
+// The translator's flat stores write raw little-endian bytes (MaybeByteSwap of the guest value),
+// so a store fault hands back the byte-swapped value. Undo it before the Memory::Write* policy.
+uint64_t GuestOrderStore(uint64_t raw, uint32_t width) {
+    switch (width) {
+    case 1:
+        return raw & 0xFFu;
+    case 2:
+        return __builtin_bswap16(static_cast<uint16_t>(raw));
+    case 4:
+        return __builtin_bswap32(static_cast<uint32_t>(raw));
+    default:
+        return __builtin_bswap64(raw);
+    }
+}
+
 // The translator's flat loads read raw little-endian bytes and swap afterwards
 // (MaybeByteSwap for FlatLoad<T>, vrev64_u8 for the paired-PSQ path), so the
 // emulated load must deliver those raw bytes, not the guest-order value.
@@ -187,7 +259,7 @@ uint64_t ReadRaw(uint32_t guest, uint32_t width) {
     }
 }
 
-uint64_t Extend(uint64_t raw, const LoadSpec& spec) {
+uint64_t Extend(uint64_t raw, const AccessSpec& spec) {
     if (!spec.signExtend) {
         return raw;
     }
@@ -211,6 +283,27 @@ uint64_t Extend(uint64_t raw, const LoadSpec& spec) {
     }
 }
 
+bool EmitLoad(FastmemSlot& slot, const AccessSpec& spec, uint32_t reg, uint32_t guest) {
+    if (spec.width == 16) {
+        if (!spec.vector) {
+            return false;
+        }
+        slot.q[reg * 2] = ReadRaw(guest, 8);
+        slot.q[reg * 2 + 1] = ReadRaw(guest + 8, 8);
+        return true;
+    }
+    const uint64_t raw = ReadRaw(guest, spec.width);
+    if (spec.vector) {
+        slot.q[reg * 2] = raw;
+        slot.q[reg * 2 + 1] = 0;
+        return true;
+    }
+    if (reg != 31) {
+        slot.x[reg] = Extend(raw, spec);
+    }
+    return true;
+}
+
 char g_faultLine[160];
 
 size_t AppendText(size_t pos, const char* text) {
@@ -228,42 +321,76 @@ size_t AppendHex(size_t pos, uint64_t value, unsigned digits) {
     return pos;
 }
 
+// One register's bytes, as the store would have put them, through the same Memory::Write* policy
+// the inline test used to call. GPR 31 is XZR, which stores zero; vector 31 is a real register.
+bool EmitStore(const FastmemSlot& slot, uint32_t reg, bool vector, uint32_t width, uint32_t guest) {
+    if (width == 16) {
+        if (!vector) {
+            return false;
+        }
+        Memory::Write64(guest, GuestOrderStore(slot.q[reg * 2], 8));
+        Memory::Write64(guest + 8, GuestOrderStore(slot.q[reg * 2 + 1], 8));
+        return true;
+    }
+    const uint64_t raw = vector ? slot.q[reg * 2] : (reg == 31 ? 0 : slot.x[reg]);
+    switch (width) {
+    case 1:
+        Memory::Write8(guest, static_cast<uint8_t>(raw));
+        return true;
+    case 2:
+        Memory::Write16(guest, static_cast<uint16_t>(GuestOrderStore(raw, 2)));
+        return true;
+    case 4:
+        Memory::Write32(guest, static_cast<uint32_t>(GuestOrderStore(raw, 4)));
+        return true;
+    case 8:
+        Memory::Write64(guest, GuestOrderStore(raw, 8));
+        return true;
+    default:
+        return false;
+    }
+}
+
 }  // namespace
 
 extern "C" uintptr_t NsmbwFastmemFault(uint64_t far, uint64_t esr, uint64_t pc, uint64_t* gprs) {
-    if ((esr & kEsrEcMask) != kEsrEcDataAbortLowerEl || (esr & kEsrWnR) != 0) {
+    if ((esr & kEsrEcMask) != kEsrEcDataAbortLowerEl) {
         return 0;
     }
+    const bool isWrite = (esr & kEsrWnR) != 0;
     uint32_t guest = 0;
     if (!TryGuestAddress(far, guest) || guest < kMmioBegin || guest >= kMmioEnd) {
         return 0;
     }
 
-    LoadSpec spec;
-    if (!DecodeLoad(*reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(pc)), spec)) {
+    AccessSpec spec;
+    if (!DecodeAccess(*reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(pc)), spec) ||
+        spec.store != isWrite) {
         return 0;
     }
 
     auto* slot = reinterpret_cast<FastmemSlot*>(reinterpret_cast<uint8_t*>(gprs) -
                                                 offsetof(FastmemSlot, x));
     try {
-        if (spec.vector) {
-            if (spec.width == 16) {
-                slot->q[spec.rt * 2] = ReadRaw(guest, 8);
-                slot->q[spec.rt * 2 + 1] = ReadRaw(guest + 8, 8);
-            } else {
-                slot->q[spec.rt * 2] = ReadRaw(guest, spec.width);
-                slot->q[spec.rt * 2 + 1] = 0;
+        if (isWrite) {
+            if (!EmitStore(*slot, spec.rt, spec.vector, spec.width, guest)) {
+                return 0;
+            }
+            if (spec.pair &&
+                !EmitStore(*slot, spec.rt2, spec.vector, spec.width, guest + spec.width)) {
+                return 0;
             }
         } else {
-            const uint64_t raw = ReadRaw(guest, spec.width);
-            if (spec.rt != 31) {
-                slot->x[spec.rt] = Extend(raw, spec);
+            if (!EmitLoad(*slot, spec, spec.rt, guest)) {
+                return 0;
+            }
+            if (spec.pair && !EmitLoad(*slot, spec, spec.rt2, guest + spec.width)) {
+                return 0;
             }
         }
     } catch (...) {
-        // Memory::Read* reports MMIO reads that need HLE by throwing; the caller
-        // prints far/pc/esr and exits instead of resuming with a stale register.
+        // Memory::Read*/Write* report MMIO accesses that need HLE by throwing; the
+        // caller prints far/pc/esr and exits instead of resuming with a stale state.
         return 0;
     }
 
@@ -273,13 +400,18 @@ extern "C" uintptr_t NsmbwFastmemFault(uint64_t far, uint64_t esr, uint64_t pc, 
         }
         slot->x[spec.rn] = spec.writeback == Writeback::Post ? far + spec.offset : far;
     }
-    PerfStats::AddFastmemMmioLoad();
+    if (isWrite) {
+        PerfStats::AddFastmemMmioStore();
+    } else {
+        PerfStats::AddFastmemMmioLoad();
+    }
     return static_cast<uintptr_t>(pc + 4);
 }
 
 extern "C" [[noreturn]] void NsmbwFastmemUnhandled(uint64_t far, uint64_t esr, uint64_t pc) {
     uint32_t guest = 0;
     const uint64_t shown = TryGuestAddress(far, guest) ? guest : far;
+    const uint32_t insn = *reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(pc));
 
     size_t pos = AppendText(0, "[fastmem] unhandled fault far=0x");
     pos = AppendHex(pos, shown, 16);
@@ -287,6 +419,8 @@ extern "C" [[noreturn]] void NsmbwFastmemUnhandled(uint64_t far, uint64_t esr, u
     pos = AppendHex(pos, pc, 16);
     pos = AppendText(pos, " esr=0x");
     pos = AppendHex(pos, esr & 0xFFFFFFFFull, 8);
+    pos = AppendText(pos, " insn=0x");
+    pos = AppendHex(pos, insn, 8);
     g_faultLine[pos++] = '\n';
 
     svcOutputDebugString(g_faultLine, pos);

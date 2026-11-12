@@ -121,22 +121,24 @@ MKW_MEMORY_FORCE_INLINE void CanonicalizeMirror(uint32_t& address) {
 }
 #endif
 
-MKW_MEMORY_FORCE_INLINE bool FlatWriteNeedsPolicy(uint32_t address) {
-    // An MMIO write must reach GX HLE with its value or be reported.
-    return (address & 0xFE000000u) == 0xCC000000u;
-}
-
-// The hardware window has no store behind it, so reads go through the checked path, which
-// returns what its policy defines instead of aborting on an unmapped page.
 #if defined(MKW_SWITCH_FASTMEM_MMIO)
-// Switch: an MMIO load faults instead. __libnx_exception_entry (fastmem_entry.S) decodes
-// the faulting instruction and runs the same Memory::Read* policy, so the inline test is
-// gone from every translated load.
+// Switch: an MMIO access faults instead. __libnx_exception_entry (fastmem_entry.S) decodes
+// the faulting instruction and runs the same Memory::Read*/Write* policy, so the inline test
+// is gone from every translated load and store.
 MKW_MEMORY_FORCE_INLINE bool FlatReadNeedsPolicy(uint32_t) {
     return false;
 }
+MKW_MEMORY_FORCE_INLINE bool FlatWriteNeedsPolicy(uint32_t) {
+    return false;
+}
 #else
+// The hardware window has no store behind it, so accesses go through the checked path, which
+// returns what its policy defines instead of aborting on an unmapped page.
 MKW_MEMORY_FORCE_INLINE bool FlatReadNeedsPolicy(uint32_t address) {
+    return (address & 0xFE000000u) == 0xCC000000u;
+}
+MKW_MEMORY_FORCE_INLINE bool FlatWriteNeedsPolicy(uint32_t address) {
+    // An MMIO write must reach GX HLE with its value or be reported.
     return (address & 0xFE000000u) == 0xCC000000u;
 }
 #endif
@@ -578,8 +580,8 @@ MKW_MEMORY_FORCE_INLINE void WriteResolvedFloat64(uint8_t* r, uint32_t o, uint32
 
 // Flat guest memory (audit item T-MEM): the 4 GiB reservation makes a guest access a byte swap
 // around `*(T*)(base + addr)`, no page-table load or limit check (interception model documented
-// in guest_flat_memory.h). The one exception kept inline is the MMIO write policy, since the
-// written value can't be recovered from a fault record.
+// in guest_flat_memory.h). The one exception kept inline is the 64-bit float store, whose
+// instruction cannot say it was a float store (see FlatWriteFloat64).
 //
 // When a host VM page is larger than a 4 KiB Wii page, guest-view protections
 // cannot distinguish adjacent special Wii pages. The general FlatRead*/
@@ -673,9 +675,12 @@ MKW_MEMORY_FORCE_INLINE void FlatWriteFloat32(uint32_t address, double value) {
 MKW_MEMORY_FORCE_INLINE void FlatWriteFloat64(uint32_t address, double value) {
     if (GuestFlat::RequiresCheckedAccess()) { Memory::WriteFloat64(address, value); return; }
     CanonicalizeMirror(address);
+    // A 64-bit store instruction does not carry the float tag the guest's stfd has, so the
+    // Switch's fault path cannot tell a float store from an integer one (and stfd pushes one
+    // float to the FIFO, while std pushes two words). Keep the test here.
+    if ((address & 0xFE000000u) == 0xCC000000u) [[unlikely]] { WriteFloat64Slow(address, value); return; }
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
-    if (FlatWriteNeedsPolicy(address)) [[unlikely]] { WriteFloat64Slow(address, value); return; }
     FlatStore<uint64_t>(address, bits);
 }
 
