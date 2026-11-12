@@ -88,7 +88,7 @@ struct Ui {
     int cursor = 0;
     bool toggleShown = false;    // the LAN / Couch toggle is on the file select right now
     bool toggleFocus = false;    // the cursor is on the top bar (moved up from the files): the remote is ours
-    int topItem = 0;             // which of the top bar: 0 the Couch / LAN toggle, 1 the settings gear
+    int topItem = 0;             // which of the top bar: 0 the Couch / LAN toggle (desktop only), 1 the settings gear
     uint32_t prevHold = 0;       // channel 1's buttons at the last read
     uint32_t events = 0;         // menu events since the last frame
     bool swallowConfirm = false; // keep a confirm press from the game until it is released
@@ -899,6 +899,14 @@ std::string PlayerLine(uint8_t slot, const std::string& name, bool you) {
 constexpr float kToggleX = 214.0f, kToggleY = 192.0f, kToggleW = 166.0f;
 constexpr float kGearY = kToggleY;
 
+// The Switch build plays couch multiplayer: the file select's top bar shows the settings gear only,
+// not the LAN / Couch switch.
+#if defined(MKW_PLATFORM_SWITCH)
+constexpr bool kLanToggle = false;
+#else
+constexpr bool kLanToggle = true;
+#endif
+
 constexpr float kGearX = kToggleX + kToggleW / 2 + 46.0f, kGearW = 62.0f;
 // The Update button, in the middle of the title bar when a newer release is out (updater.h).
 constexpr float kUpdateX = -15.0f, kUpdateW = 140.0f;
@@ -1528,12 +1536,14 @@ void PressUpdate() {
 
 void DrawToggle(const Canvas& c) {
     DrawUpdate(c);
-    // Under a message that returns to Couch (a failed update), the toggle still says Couch.
-    const bool lan = g_ui.screen != Screen::None && g_ui.screen != Screen::Settings &&
-                     !(g_ui.screen == Screen::Message && g_ui.afterMessage == Screen::None);
-    Text(c, "Play:", kToggleX - kToggleW / 2 - 12, kToggleY, 24, 2, 0xFFFFFFFFu);
-    Button(c, lan ? "LAN" : "Couch", kToggleX, kToggleY, kToggleW, g_ui.toggleFocus && g_ui.topItem == 0, true,
-           g_ui.frame);
+    if (kLanToggle) {
+        // Under a message that returns to Couch (a failed update), the toggle still says Couch.
+        const bool lan = g_ui.screen != Screen::None && g_ui.screen != Screen::Settings &&
+                         !(g_ui.screen == Screen::Message && g_ui.afterMessage == Screen::None);
+        Text(c, "Play:", kToggleX - kToggleW / 2 - 12, kToggleY, 24, 2, 0xFFFFFFFFu);
+        Button(c, lan ? "LAN" : "Couch", kToggleX, kToggleY, kToggleW, g_ui.toggleFocus && g_ui.topItem == 0, true,
+               g_ui.frame);
+    }
     // Settings: the pause window's own button (as in the pause window and the world map's menu), with a cog.
     PauseButton(c, 900, "", kGearX, kGearY, kGearW, 50, g_ui.toggleFocus && g_ui.topItem == 1, true);
     Gear(c, kGearX, kGearY, 13.0f);
@@ -3346,7 +3356,7 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
             // Back to Couch, with the cursor still on the toggle.
             Show(Screen::None);
             g_ui.toggleFocus = true;
-            g_ui.topItem = 0;
+            g_ui.topItem = kLanToggle ? 0 : 1;
         }
         if (confirm) {
             if (g_ui.cursor == 0) {
@@ -3466,6 +3476,9 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
 
 // The Couch / LAN button pressed (by the remote or a tap).
 void PressToggle() {
+    if (!kLanToggle) {
+        return;
+    }
     if (g_ui.screen == Screen::None) {
         g_ui.toggleFocus = false;
         Show(Screen::Lan);  // Couch -> LAN: Join or Create Room
@@ -3704,7 +3717,7 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         }
         return;
     }
-    if (g_ui.toggleShown && in(kToggleX, kToggleY, kToggleW + 16, 66)) {
+    if (kLanToggle && g_ui.toggleShown && in(kToggleX, kToggleY, kToggleW + 16, 66)) {
         PressToggle();
         return;
     }
@@ -4282,13 +4295,19 @@ void Draw() {
             g_ui.heldFromMenu = g_ui.prevHold;
         } else if (ev & kEvRight) {
             const int before = g_ui.topItem;
-            g_ui.topItem = g_ui.topItem == 2 ? 0 : 1;  // Update -> Couch -> gear
+            g_ui.topItem = g_ui.topItem == 2 ? (kLanToggle ? 0 : 1) : 1;  // Update -> Couch -> gear
             if (g_ui.topItem != before) settings_overlay::PlayGameSound(settings_overlay::kGameSoundCursor);
         } else if (ev & kEvLeft) {
             const int before = g_ui.topItem;
-            g_ui.topItem = g_ui.topItem == 1 || !UpdateShown() ? 0 : 2;
+            if (g_ui.topItem == 1) {
+                g_ui.topItem = kLanToggle ? 0 : UpdateShown() ? 2 : 1;
+            } else if (g_ui.topItem == 2) {
+                g_ui.topItem = kLanToggle ? 0 : 1;
+            } else {
+                g_ui.topItem = UpdateShown() ? 2 : (kLanToggle ? 0 : 1);
+            }
             if (g_ui.topItem != before) settings_overlay::PlayGameSound(settings_overlay::kGameSoundCursor);
-        } else if ((ev & kEvConfirm) && g_ui.topItem == 1) {
+        } else if ((ev & kEvConfirm) && (g_ui.topItem == 1 || !kLanToggle)) {
             g_ui.toggleFocus = false;
             HitButton(900);
             settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
@@ -4660,7 +4679,7 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         if (g_ui.toggleShown && !g_ui.toggleFocus && !Modal() && (pressed & screenUp) != 0 && fileCursor >= 0 &&
             fileCursor <= (FilesStacked() ? 0 : 2)) {
             g_ui.toggleFocus = true;
-            g_ui.topItem = 0;
+            g_ui.topItem = kLanToggle ? 0 : 1;
             settings_overlay::PlayGameSound(settings_overlay::kGameSoundCursor);
             g_ui.events &= ~kEvUp;
             g_ui.heldFromMenu |= screenUp;
