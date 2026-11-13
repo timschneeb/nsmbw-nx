@@ -1,33 +1,27 @@
-**This is irrelevant to the recompilation, but I'm currently trying to find testers that're willing to test my new Android app out, it's multi-use and turns your phone into a PC once connected to a Monitor, or an Android TV when connected to a TV. If you're willing to test it, friend me at "WitherBlltz" on Discord. This is a Google Play Store Exclusive and doesn't work on IOS (yet)! you may need to pay 5 cents on the Play Store to download the app as a heads up! That was the minimum Google would let me put it as.**
 
-# NSMB Wii Multiplayer Recompilation
+# New Super Mario Bros. Wii for Nintendo Switch (Recomp)
 
-<p align="center">
-  <a href="https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest"><img alt="Android 9+, arm64" src="https://img.shields.io/badge/Android-9%2B%20%C2%B7%20arm64-3DDC84?logo=android&amp;logoColor=white"></a>
-  <a href="https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest"><img alt="Windows 10 / 11, x64" src="https://img.shields.io/badge/Windows-10%20%2F%2011%20%C2%B7%20x64-0078D4"></a>
-  <a href="https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest"><img alt="Linux, x86-64" src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&amp;logoColor=black"></a>
-</p>
 <p align="center">
   <a href="#building-from-source"><img alt="PowerPC static recompilation" src="https://img.shields.io/badge/PowerPC-static%20recompilation-FF9F0A"></a>
   <a href="https://github.com/patchzyy/Wiicompiled"><img alt="Built on WiiCompiled" src="https://img.shields.io/badge/built%20on-WiiCompiled-8B5CF6"></a>
   <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2EA44F?logo=gnu&amp;logoColor=white"></a>
 </p>
 
-A native port of New Super Mario Bros. Wii for Android phones and Windows and Linux PCs, made with
-static recompilation. Newer Super Mario Bros. Wii runs on it too.
+A native port of New Super Mario Bros. Wii for the Nintendo Switch made with
+static recompilation. 
+This version has been specifically optimized for the Nintendo Switch and runs well at stock CPU clock speed, though a moderate overclock is recommended for stable 60fps in heavier levels.
 
-There's no emulator in the loop, no interpreter, no JIT, no PowerPC anywhere at runtime.
+<!-- Newer Super Mario Bros. Wii runs on it too. -->
 
-**Port made by [WitherBlitz](https://github.com/WitherBlitz) with the help of
-[WiiCompiled](https://github.com/patchzyy/Wiicompiled)'s code, and was entirely coded by
-Claude Opus 5.5.**
+> [!NOTE]
+> **This port is directly based on [WitherBlitz](https://github.com/WitherBlitz)'s NSMBW recomp for PC and Android: https://github.com/WitherBlitz/NSMB-Wii-Recompilation**
+>
+> Consider checking out the upstream repository for more information and give it a star!
 
 > [!IMPORTANT]
 > There are no game files in this project or its releases: no disc image, no levels, music,
 > graphics or sounds. You need your own copy of **New Super Mario Bros. Wii (USA, `SMNE01`,
-> revision 1)** and [Dolphin](https://dolphin-emu.org/) on a computer to extract it. The downloads do
-> contain the game's code, translated to native code, the way KartPad's do. See
-> [What the downloads contain](#what-the-downloads-contain).
+> revision 1)** (`.iso`, `.ciso`, `.wbfs`, `.wia`, `.rvz`) and put it alongside the `NSMBW.nro` file.
 
 **[I just want to play](#quick-start)**
 
@@ -41,17 +35,10 @@ Claude Opus 5.5.**
 ## Contents
 
 - [Features](#features)
-- [Tested devices](#tested-devices)
 - [Requirements](#requirements)
-- [Getting the game files](#getting-the-game-files)
 - [Quick start](#quick-start)
-- [Installing](#installing)
-- [Controls](#controls)
-- [LAN and Tailscale multiplayer](#lan-and-tailscale-multiplayer)
-- [Real Wii Remotes over Bluetooth (experimental)](#real-wii-remotes-over-bluetooth-experimental)
+- [Performance and overclocking](#performance-and-overclocking)
 - [Building from source](#building-from-source)
-- [What the downloads contain](#what-the-downloads-contain)
-- [FAQ](#faq)
 - [AI usage](#ai-usage)
 - [Credits and thanks](#credits-and-thanks)
 - [License](#license)
@@ -60,8 +47,26 @@ Claude Opus 5.5.**
 
 ## Features
 
-Everything the port does, grouped. Items marked *untested* or *experimental* are listed again under
-[Not tested yet](#not-tested-yet).
+Quick summary:
+
+* HD texture pack support (can be downloaded in-game)
+* Custom render resolutions: 0.5x to 4x the Wii's 480 lines (240p to 1920p)
+* Touch screen support in menus and on the world map
+* Battery saver: render at 30fps instead of 60fps
+* Frame interpolation: Off, 60, 120, and more FPS; can be combined with battery saver
+* Performance monitor: FPS counter and a frametime graph
+* Gameplay changes/options:
+  * Allows picking your character in single player
+  * Auto-save after every level
+  * 'Exit Course' from the pause menu in courses you haven't cleared yet (not the map's ambush fights)
+  * No Time Limit (also hides the timer)
+  * Infinite Lives cheat
+  * Power-Up cheat
+
+<details>
+<summary>Full feature list from upstream</summary>
+  
+Everything the port does, grouped.
 
 ### 📦 Platforms and downloads
 
@@ -180,7 +185,7 @@ Everything the port does, grouped. Items marked *untested* or *experimental* are
   mouse).
 - The on-screen remote hides on the menus and comes back for the game.
 
-### 👥 Multiplayer and LAN
+<!-- ### 👥 Multiplayer and LAN
 
 - **Couch:** the normal local multiplayer, up to 4 players on one device.
 - **LAN play:** up to 4 players on any mix of phones and PCs. Every device runs the game and only the
@@ -192,7 +197,7 @@ Everything the port does, grouped. Items marked *untested* or *experimental* are
     remember each other. It works, but can be unstable.
   - If a player drops, the others get a message instead of a frozen game, and the host keeps the
     progress.
-- See [LAN and Tailscale multiplayer](#lan-and-tailscale-multiplayer).
+- See [LAN and Tailscale multiplayer](#lan-and-tailscale-multiplayer). -->
 
 ### 🍄 Gameplay options
 
@@ -276,7 +281,7 @@ Everything the port does, grouped. Items marked *untested* or *experimental* are
 - **PC game picker:** at the first start, **Open ISO** (`.iso` or `.wbfs`, extracted once) or **Open
   Extracted Disc Folder**.
 
-### 📱 Android extras
+<!-- ### 📱 Android extras
 
 - **Leaving the app pauses the game,** after writing a Quick Save as a backup, so if Android closes the
   app you continue from that level. Coming back normally removes the backup.
@@ -290,10 +295,11 @@ Everything the port does, grouped. Items marked *untested* or *experimental* are
 - **Settings** on the start menu: display, controls, touch layout and more, kept in step with the game's
   own Settings window.
 - **Help** shows the setup steps again.
+-->
 
----
+</details>
 
-## Tested devices
+<!--## Tested devices
 
 | Device | Chipset | GPU | Android | Result |
 | --- | --- | --- | --- | --- |
@@ -325,100 +331,50 @@ If you can try any of these, an issue with what you saw helps a lot.
   default.
 - **Controller motion sensors** on a real controller.
 - **Intel GPUs on Direct3D 11** other than the HD 4600.
-- **Newer Super Mario Bros. Wii** hasn't been played all the way through.
+- **Newer Super Mario Bros. Wii** hasn't been played all the way through.-->
 
 ## Requirements
 
-- **Android:** an arm64 phone on Android 9 or newer, with Vulkan (OpenGL ES 3.1 where Vulkan can't run
-  the game). About 1 GB free for the app, the game files and the import.
-- **Windows:** Windows 10 or 11, 64-bit, with a Direct3D 12, Vulkan or Direct3D 11 GPU. Processors older than
-  Intel Haswell / AMD Excavator (no AVX2) get the compat build automatically (see Installing).
-- **Linux:** a 64-bit x86 PC with a Vulkan driver and glibc 2.35 or newer: Fedora 36 or newer,
-  Ubuntu 22.04 or newer, Debian 12 or newer, Arch, SteamOS and their relatives. X11 and Wayland both
-  work.
-- Your own **USA `SMNE01` revision 1** copy of New Super Mario Bros. Wii, and Dolphin on a computer
-  to extract it.
-- For Newer: your own **Newer Super Mario Bros. Wii v1.30 (USA, `SMNE03`)**.
+- Your own **USA `SMNE01` revision 1** copy of New Super Mario Bros. Wii.
+<!-- - For Newer: your own **Newer Super Mario Bros. Wii v1.30 (USA, `SMNE03`)**. -->
 
-Only the USA disc, revision 1 works. Other regions and revisions put the game's code at other
-addresses, so the app and the PC version check the disc and refuse anything else.
+Only the USA disc, revision 1 works currently. Other regions and revisions put the game's code at other
+addresses, so the app checks the disc and refuses anything else.
 
 > [!NOTE]
-> Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
+> Dumping your own disc is your responsibility, and links to
 > game files won't be provided or tolerated.
-
-## Getting the game files
-
-You do this once, with Dolphin on a computer:
-
-1. In Dolphin, right-click **New Super Mario Bros. Wii** and choose **Properties**.
-2. Check the **Info** tab: the game ID must be `SMNE01` and the revision **1**.
-3. Open the **Filesystem** tab, right-click the disc at the top and choose **Extract Entire Disc**.
-   Pick an empty folder. You get a folder with `files` and `sys` in it.
-
-**Android:** copy that folder (or a zip of it) to your phone. Open the app and tap
-**Import from Extracted Game Data Folder…** or **Import Game Data Zip…** and choose it. A Wii `.iso`
-can be imported too. The app checks the game, copies it in, and you can delete the copy afterwards.
-Your saves are kept when you import again.
-
-**Windows and Linux:** start `NSMBW.exe` (Linux: `./NSMBW`) and choose **Open Extracted Disc Folder**
-and that folder, or **Open ISO** and your `.iso` or `.wbfs` (it's extracted once, and the game reads
-that copy from then on). Or name the folder `game` and put it next to `NSMBW.exe` (`NSMBW`). Keep the
-folder: the PC version reads it every time.
-
-If any of the disc's files are missing (an extract that stopped partway, say), the game says "The
-folder doesn't include all required files." Extract the disc again.
-
-The app's start screen shows these steps until a game is imported, and **Help** shows them again.
+>
+> To dump your own disc, you need a Wii and the correct NSMBW disc. Then follow these instructions: https://wii.hacks.guide/dump-games
 
 ## Quick start
 
 Get everything from the [Releases](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest)
-page, and [extract your game with Dolphin](#getting-the-game-files) first.
+page.
 
-**Android**
-1. Download `NSMBW-0.5.0-android-arm64.apk` on your phone, open it and allow installing when Android asks.
-2. Open the app and import your extracted game (folder, zip or `.iso`).
-3. Tap **Play**.
+> [!NOTE]
+> Accepted Wii disc image formats: `.iso`, `.ciso`, `.wbfs`, `.wia`, `.rvz`
 
-**Windows**
-1. Download `NSMBW-0.5.0-windows-x64.zip` and extract it anywhere.
-2. Run `NSMBW.exe` and choose your extracted game folder or disc image.
-3. Allow the firewall prompt the first time you host a LAN room.
+1. Download the Switch ZIP from the Releases page.
+2. Copy the ZIP contents onto the SD card of your Switch.
+   * This will place the `NSMBW.nro` into a new folder at `/switch/nsmbw`.
+3. Copy your disc image into the folder at `/switch/nsmbw` on the SD card.
+4. Start the game!
+5. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking).
 
-**Linux**
-1. Download `NSMBW-0.5.0-linux-x86_64.tar.gz` and extract it anywhere.
-2. Run `./NSMBW` and choose your extracted game folder or disc image.
+> [!NOTE]
+> The first boot will take about 10 minutes. It will extract the disc image and compile shaders for the first time.
+> Subsequent boots will preload shaders in the background (~1-2 minutes) while the game is running. This may slightly impact performance during this time.
+>
+> The game crashed or shows something wrong? Open an issue with your device, what you did, and the log from `/switch/nsmbw/data/Logs`.
 
-**Newer Super Mario Bros. Wii**
+<!-- **Newer Super Mario Bros. Wii**
 - **Windows / Linux:** run `NewerSMBW.exe` (`./NewerSMBW`) from the same folder and choose your Newer
   v1.30 disc image or extracted folder.
 - **Android:** open the **Newer Super Mario Bros. Wii** tab on the start menu, download the support
   module there, and import your Newer v1.30.
 
-## Installing
 
-Download from the [Releases](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest)
-page:
-
-- **Android:** `NSMBW-0.5.0-android-arm64.apk`. Open it on your phone and allow installing from that
-  app when Android asks. Updates install over it and keep your saves and game files.
-- **Windows:** `NSMBW-0.5.0-windows-x64.zip`, with `NSMBW.exe`, `NewerSMBW.exe` and a `compat` folder
-  holding `NSMBW-compat.exe` and `NewerSMBW-compat.exe`. Extract it anywhere and run `NSMBW.exe`.
-  Settings (including where your game files are), saves and caches live in `Documents\MarioWiiSaveData`,
-  so a new version, extracted anywhere, carries on where the last one left off. The first start of 0.0.8
-  or later takes over the data of an older version extracted in the same folder (or of the version it
-  replaces). On a processor without AVX2 (older than Intel Haswell or AMD Excavator), `NSMBW.exe`
-  starts `compat\NSMBW-compat.exe` by itself: the same game, with its math done the long way, so it
-  still plays LAN games with everyone else. Keep the `compat` folder next to `NSMBW.exe`.
-- **Linux:** `NSMBW-0.5.0-linux-x86_64.tar.gz`, with the same four programs: `NSMBW`, `NewerSMBW`,
-  `compat/NSMBW-compat` and `compat/NewerSMBW-compat`. Extract it anywhere and run `./NSMBW`. The first
-  start asks for your game (with zenity or kdialog; or put the extracted folder next to `NSMBW`, named
-  `game`). Settings, saves and caches live in `~/.local/share/WiiCompiled` (`$XDG_DATA_HOME/WiiCompiled`
-  if set). Older processors get `compat/NSMBW-compat` automatically, as on Windows. Fedora Workstation,
-  KDE and Ubuntu desktops already have everything else it needs; if the game says it found no Vulkan
-  driver, install it with `sudo dnf install mesa-vulkan-drivers vulkan-loader` (Fedora) or
-  `sudo apt install mesa-vulkan-drivers libvulkan1` (Ubuntu, Debian), or your NVIDIA driver.
 - **Newer Super Mario Bros. Wii:**
   - **Windows and Linux:** run `NewerSMBW.exe` (`./NewerSMBW`) from the same folder. The first start
     asks for your own Newer v1.30 (USA, `SMNE03`), or put its extracted folder next to it named
@@ -432,13 +388,25 @@ page:
 - **Another game, such as a mod:** saves are kept per game. Extract a second copy of the release and
   put that game's extracted folder next to its `NSMBW.exe`, named `game`. That copy plays it with
   saves of its own, and the first copy keeps playing the original.
+-->
 
-> [!CAUTION]
-> Only take builds from this repository's
-> [Releases](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases) page. If someone's
-> sharing an APK or zip anywhere else, don't touch it.
+## Performance and overclocking
 
-## Controls
+> [!NOTE]
+> TL;DR: **CPU overclock of 1581Hz is recommended for guaranteed 60fps** at 1x resolution. Higher resolutions will also run well but may need further CPU/GPU overclocking.
+> 
+> **If you don't want to overclock, you can always enable 'Battery saver' to render at 30fps.** It greatly improves performance and even runs 1.5x resolution (HD) at stable 30fps at stock CPU clock speeds.
+
+At stock CPU clock speed (1020MHz) the game will mostly perform around 60fps at 1x resolution (480p). In more complex levels, such as water/lava levels, the frame rate drops to around 45fps.
+Note that the game logic is fixed at 60Hz internally. If the frame rate drops below 60fps, the game will run slow! You can enable the 'Performance monitor' in the settings to check if the 60fps target is reached or whether the game is running slow.
+
+Because of that, the game will request a moderate CPU overclock of 1581MHz by default. **However, if you have an overclock sysmodule like Horizon-OC installed, it will force the CPU clock speed back down to 1020Mhz stock speed even if you have it configured to not override anything! (this seems to be a bug in Horizon-OC)**
+
+As mentioned above, I recommend overclocking the CPU to 1581MHz, if you want to play the game at stable 60fps at 1x resolution (480p). It also handles 1.5x resolution (HD) at 60fps quite well, though you may need to increase CPU/GPU clock rates if you encounter slow-down.
+
+It is also possible to render the game at 30fps by enabling 'Battery saver' in the settings. This avoids the need over overclocking completely, as the game will run just fine with 1.5 resolution at stock CPU clock speeds! 
+
+<!--## Controls
 
 **Android:** the on-screen remote, tilt and shake, all adjustable under Settings on the start menu,
 and the layout editor for the buttons. A controller works too.
@@ -462,9 +430,9 @@ and the layout editor for the buttons. A controller works too.
 
 Every key can be changed in the Settings window's **Keybinds** tab, mouse buttons and combinations
 included. A game controller works as a sideways Wii Remote too: with one connected, the tab becomes
-**Controller**, and F10's controller setup offers the same and more.
+**Controller**, and F10's controller setup offers the same and more.-->
 
-## LAN and Tailscale multiplayer
+<!--## LAN and Tailscale multiplayer
 
 <p align="center">
   <img src="docs/screenshots/windows-lan-couch-toggle.png" alt="The Couch / LAN button at the top right of the Select a File screen, on Windows" width="640">
@@ -502,9 +470,9 @@ was tested between the Windows PC and the REVVL 7 over Tailscale alone, in both 
 but can be unstable.
 
 Windows asks to let the game through the firewall the first time you host a room; allow it, or
-others can't find your room. **Couch** is the normal local multiplayer on one device.
+others can't find your room. **Couch** is the normal local multiplayer on one device.-->
 
-## Real Wii Remotes over Bluetooth (experimental)
+<!--## Real Wii Remotes over Bluetooth (experimental)
 
 > [!WARNING]
 > New in 0.5.0, **off by default, and not yet tried with a real adapter or a real Wii Remote.** Windows
@@ -530,7 +498,7 @@ Remotes, as on a Wii: buttons, motion, rumble, lights and the speaker.
    seconds forgets every paired remote.
 
 If you try it, please open an issue with the `[bluetooth]` lines from the newest `console.log` in the
-game's `Logs` folder.
+game's `Logs` folder.-->
 
 ## Building from source
 
@@ -546,19 +514,7 @@ Italian language files included, are in [`projects/nsmbw/BUILDING.md`](projects/
 - WiiCompiled's own README, for the translator and the runtime it comes from:
   [`docs/WiiCompiled-README.md`](docs/WiiCompiled-README.md).
 
-## What the downloads contain
-
-The release downloads include the game's code, translated from the disc's PowerPC executable to
-native ARM64 and x86-64 code, but no game files: no disc image, no levels, music, graphics or
-sounds, and no console keys. You supply those from your own disc. This is the same model KartPad
-uses for Mario Kart Wii. WiiCompiled itself does not ship translated code: its setup translates the
-game on your own machine. The HD Texture Pack isn't included either: the game downloads it from the
-pack's own links when you ask.
-
-The source code in this repository is free software under the GPLv3 (see [License](#license)).
-That license covers this project's code only; it gives no rights to Nintendo's game, its code or
-its assets.
-
+<!--
 ## FAQ
 
 **Is this an emulator?**
@@ -583,21 +539,22 @@ No, behaving like the real game is the goal. Only report things where this port 
 original game on a Wii or in Dolphin.
 
 **The game crashed or shows something wrong.**
-Open an issue with your device, what you did, and the log from `Documents\MarioWiiSaveData\Logs`
-(Windows) or `~/.local/share/WiiCompiled/Logs` (Linux). On Android, **Download Logs (For Github
-Reports)** at the bottom of the start screen makes a zip to attach.
-
-**Is it done?**
-No, this is 0.5.0. It boots and plays on the tested devices, but not every level has been checked,
-and rendering, performance and LAN play are still being worked on.
+Open an issue with your device, what you did, and the log from `/switch/nsmbw/data/Logs`.
+-->
 
 ## AI usage
 
-This port was entirely coded by Claude Opus 5.5, Anthropic's AI model, directed and tested by
+Switch port: I have used DeepSeek Flash v4.1 during development. Changes were proofread by me.
+
+The upstream port by WitherBlitz was entirely coded by Claude Opus 5.5, Anthropic's AI model, directed and tested by
 WitherBlitz on the devices above. That includes moving WiiCompiled's runtime from Mario Kart Wii to
 New Super Mario Bros. Wii, the Android app, and LAN play.
 
 ## Credits and thanks
+
+**Upstream developer**
+
+- **[WitherBlitz](https://github.com/WitherBlitz)** - Creator of the recompilation project
 
 **Contributors and helpers**
 
@@ -658,5 +615,3 @@ License for more details.
 
 Not affiliated with, endorsed by, or associated with Nintendo. New Super Mario Bros. Wii is a
 trademark of Nintendo.
-
-**I plan to fully decompile this game in the near future, but for now with the time I have at the moment, this'll have to do. At first, this project was to just see the limits of what I can do with Opus, but now I'd like to see it to the end haha. I'll use this as a base for some of the features and copy them over once I decompile the game. Sorry for the misleading repo name! I changed my mind midway through the creation of this project.**
