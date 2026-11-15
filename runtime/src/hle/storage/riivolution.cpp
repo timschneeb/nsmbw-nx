@@ -150,21 +150,13 @@ std::vector<RuntimeRiivolution::Overlay> RiivoDiscoverRoots() {
                      "canonical Retro Rewind installation");
     }
 
-    // Newer ships as one RomFS image in its data folder. Mounting it gives the
+    // Newer ships as one RomFS image beside its NRO. Mounting it gives the
     // overlay a read-only devoptab root, so the pack never needs unpacking.
     if (RuntimeRiivolution::MountNewerPack()) {
         RiivoAddRoot(overlays, fs::path("pak:/"), "Newer RomFS");
     }
 
     // Loose files remain supported for manual installs. Explicit config roots win.
-    if (RuntimeProduct::Active().gameId == "SMNE03") {
-        std::error_code ec;
-        const auto data = RuntimeConfigFile::ApplicationDataDirectory();
-        if (fs::is_directory(data / "riivolution", ec)) {
-            RiivoAddRoot(overlays, data, "Newer pack");
-        }
-    }
-
     for (const auto& root : RecompMod::DvdOverlayRoots()) {
         RiivoAddRoot(overlays, root, "recomp mod manifest");
     }
@@ -431,7 +423,7 @@ void RiivoInitialize() {
 namespace RuntimeRiivolution {
 
 bool MountNewerPack() {
-    if (RuntimeProduct::Active().gameId != "SMNE03") {
+    if (!RuntimeProduct::IsNewer()) {
         return false;
     }
 

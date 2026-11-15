@@ -41,12 +41,12 @@ runtime:
     - runtime/src/hle/gx
 
 output:
-  # runtime/CMakeLists.txt reads ../generated/build_shards/shards.cmake, so build in-tree.
-  root: generated
+  # Keep Newer's translation apart from the base game's generated/ tree.
+  root: generated-newer
   functions: functions
   runtime_config: RuntimeConfig.h
   data_initializer: data_sections_init.cpp
-  base_manifest: ../build/base/nsmbw_base_manifest.json
+  base_manifest: ../build/base-newer/nsmbw_base_manifest.json
 
 
 

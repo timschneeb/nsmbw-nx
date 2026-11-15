@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -39,46 +38,20 @@ std::optional<Offer> For(std::string_view id, int revision);
 // missing or wrong (Open Disc Image, which is read in place, or Open Extracted Disc Folder), and
 // saved to Config.toml. A "game" folder next to the program ("game-newer" for Newer) is picked up by
 // itself, and so is one disc image next to it. Files left out are also said in a message box.
-// Switch has no chooser: the beside-program folder, then one beside-program image.
+// Switch has no chooser: the shared extracted base game in discs/SMNE01 next to the launcher, then
+// [paths] dvd_root when it names an extracted folder. Images are not read on Switch.
 // Returns false when the player gave up (the program then quits), or when Switch found nothing at
 // all, in which case StartupProblem() says what to do and main.cpp shows it before the boot.
 bool EnsureConfigured();
 
-// Why Switch found no game, in words for the player (the detected folder, what goes there, where
-// Config.toml is); empty on every other platform and whenever EnsureConfigured() succeeded.
+// Why Switch found no game, in words for the player (the launcher folder, discs/SMNE01, and the
+// extracted-folder fallback in [paths] dvd_root); empty on every other platform and whenever
+// EnsureConfigured() succeeded.
 const std::string& StartupProblem();
 
 // The first line of the applet for StartupProblem(): "missing" when nothing was found at all, "can't
 // be used" when a folder or image is there and was rejected.
 const char* StartupProblemTitle();
-
-// Switch start-up, before the boot: the game is played from an extracted folder, so an image beside
-// the program is extracted into one, and a folder that can no longer be used is replaced by a fresh
-// extraction. The plan changes nothing; main.cpp shows what it says and carries it out.
-struct StartupPlan {
-    enum class Kind { Ready, Repair, Extract } kind = Kind::Ready;
-    // Repair: the folder to delete (always the place this program extracts to).
-    std::filesystem::path folder;
-    // Repair and Extract: the image to extract. Empty when there is nothing to extract from, in which
-    // case a repair does not happen and the folder is left as it is.
-    std::filesystem::path image;
-    // Repair: why the folder can't be used, in words for the player.
-    std::string problem;
-};
-
-// Decides what has to happen before EnsureConfigured() runs. A folder that is merely modded or from
-// another disc is never deleted; only one that is empty, incomplete or has no usable sys/boot.bin,
-// and only when an image can rebuild it. On other platforms this is always Ready.
-StartupPlan PlanStartup();
-
-// Removes the folder a Repair plan named. False with `problem` set when it can't.
-bool DeleteStartupFolder(const std::filesystem::path& folder, std::string& problem);
-
-// Extracts `image` into the game folder next to the program. `progress` receives 0..1 and a status
-// line for the boot splash. False with `problem` set when it can't.
-bool ExtractStartupImage(const std::filesystem::path& image,
-                         const std::function<void(float fraction, const char* status)>& progress,
-                         std::string& problem);
 
 // Whether the game being played is the original, unchanged: a retail disc ID (SMNE01, SMNP01,
 // SMNJ01) and the main.dol that disc came with. A modded disc (Newer and the like) isn't. Worked out

@@ -1869,51 +1869,6 @@ int RuntimeMain(int argc, char** argv) {
         MkwStartPgoDumpTimer();
 #endif
         NsmbwShadowSamplerInit(GetRunLogDirectory());
-#if defined(MKW_PLATFORM_SWITCH)
-        // The game is played from an extracted folder, so an image beside the program is extracted
-        // into one, and a folder that can no longer be used is replaced by a fresh extraction. The
-        // applet returns once the player closes it, and the repair happens then.
-        {
-            const GameFolder::StartupPlan plan = GameFolder::PlanStartup();
-            if (plan.kind == GameFolder::StartupPlan::Kind::Repair) {
-                std::string message = "The game folder can't be used.\n\n";
-                message += plan.problem;
-                message += "\n\nIt will be deleted when you close this message, and the game will be extracted "
-                           "again from ";
-                message += RuntimeConfigFile::PathToUtf8(plan.image.filename());
-                message += ".";
-                RT_LOGF(RT_TAG_RUNTIME, "game folder repair: %s\n", message.c_str());
-                ShowAppletText(message);
-                NsmbwBootSplashSetStatus("Replacing the game folder...");
-                std::string deleteProblem;
-                if (!GameFolder::DeleteStartupFolder(plan.folder, deleteProblem)) {
-                    std::string fatal = "Unable to start because the game folder couldn't be replaced.\n\n";
-                    fatal += deleteProblem;
-                    fatal += "\n\nSee the Logs folder for the full diagnostic.";
-                    ShowFatalText(fatal);
-                    SetRuntimeExitCodeImpl(EXIT_FAILURE);
-                    ShutdownProcessTranscript();
-                    return 0;
-                }
-            }
-            if (plan.kind != GameFolder::StartupPlan::Kind::Ready && !plan.image.empty()) {
-                NsmbwBootSplashSetStatus("Extracting the disc image");
-                const auto progress = [](float fraction, const char* status) {
-                    NsmbwBootSplashSetProgress(fraction, status);
-                };
-                std::string extractProblem;
-                if (!GameFolder::ExtractStartupImage(plan.image, progress, extractProblem)) {
-                    std::string fatal = "Unable to start because the game data couldn't be extracted.\n\n";
-                    fatal += extractProblem.empty() ? std::string("The extraction was stopped.") : extractProblem;
-                    fatal += "\n\nSee the Logs folder for the full diagnostic.";
-                    ShowFatalText(fatal);
-                    SetRuntimeExitCodeImpl(EXIT_FAILURE);
-                    ShutdownProcessTranscript();
-                    return 0;
-                }
-            }
-        }
-#endif
         // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.
         if (!GameFolder::EnsureConfigured()) {
             // Switch has no chooser, so nothing found is said now, before the boot and its prewarm,
@@ -2027,7 +1982,7 @@ int RuntimeMain(int argc, char** argv) {
 #if defined(MKW_PLATFORM_SWITCH)
         // Newer reuses the base game's shaders. Copy the vanilla Dawn cache once,
         // before the renderer opens it and the shader compile screen appears.
-        if (RuntimeProduct::Active().gameId == "SMNE03") {
+        if (RuntimeProduct::IsNewer()) {
             const auto dawnCache = rendererCacheDirectory / "dawn_cache.db";
             std::error_code dawnCacheError;
             if (!std::filesystem::exists(dawnCache, dawnCacheError)) {

@@ -48,7 +48,7 @@ struct SaveRedirect {
     bool clone = false;
 };
 
-// Newer ships its resources as one RomFS image in the game's data folder. Mounts
+// Newer ships its resources as one RomFS image beside the NRO. Mounts
 // it as "pak" once; safe to call before the DVD layer initialises.
 bool MountNewerPack();
 // True when the mounted pack carries the product's version file (NewerRes/...)

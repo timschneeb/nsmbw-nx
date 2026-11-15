@@ -38,4 +38,8 @@ inline bool IsRetroRewind() noexcept {
     return Active().kind == Kind::RetroRewind;
 }
 
+inline bool IsNewer() noexcept {
+    return Active().gameId == "SMNE03";
+}
+
 } // namespace RuntimeProduct

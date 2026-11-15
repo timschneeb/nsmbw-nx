@@ -28,6 +28,7 @@ public:
     void Run();
     void Quit() { m_quit = true; }
     auto IsQuitting() const -> bool { return m_quit; }
+    auto IsShuttingDown() const -> bool { return m_shutting_down; }
 
     static auto Get() -> App&;
     static auto GetApp() -> App*;
@@ -51,6 +52,7 @@ public:
 private:
     void Poll();
     void Draw();
+    void SettlePop();
     void createFramebufferResources();
     void destroyFramebufferResources();
     void recordStaticCommands();
@@ -58,6 +60,7 @@ private:
     void LoadTheme();
 
     bool m_quit{};
+    bool m_shutting_down{};
     std::string m_argv0;
     std::string m_status;
     double m_deltaTime{1.0};

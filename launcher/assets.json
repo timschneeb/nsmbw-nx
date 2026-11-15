@@ -2,7 +2,47 @@
   "schema": 1,
   "launcher": {
     "version": "1.0.0",
-    "url": "https://github.com/timschneeb/nsmbw-nx/releases/latest/download/launcher.nro"
+    "url": "https://github.com/timschneeb/nsmbw-nx/releases/latest/download/launcher.nro",
+    "sha256": "21ffc2f6b9a2571cc842ad046b2f243fb7ec0dff1419549154c8fb69a2b4cf57",
+    "size": 3560191
   },
-  "games": {}
+  "games": {
+    "vanilla": {
+      "name": "New Super Mario Bros. Wii",
+      "components": {
+        "nro": {
+          "version": "1.0.0",
+          "sha256": "a4d6d87492b254900780c4409b2cdb2807289b8c859eb056c47e579ffc5df28e",
+          "size": 95118167,
+          "url": "https://github.com/timschneeb/nsmbw-nx/releases/latest/download/NSMBW.nro"
+        }
+      },
+      "author": "Nintendo"
+    },
+    "newersmbw": {
+      "name": "Newer Super Mario Bros. Wii",
+      "components": {
+        "nro": {
+          "version": "1.30",
+          "sha256": "1260ac75c75076f86ed6a2178df23930f8a15440e810ed745cbde81112808837",
+          "size": 101143383,
+          "url": "https://github.com/timschneeb/nsmbw-nx-mods/releases/latest/download/newersmbw-game.nro"
+        },
+        "romfs": {
+          "version": "1.30",
+          "sha256": "9f07de634e4d0e70db77985852f48948d025e8e15c0e7bcbbbe4b0b7b6cf49b1",
+          "size": 488610188,
+          "url": "https://github.com/timschneeb/nsmbw-nx-mods/releases/latest/download/newersmbw.romfs.zst",
+          "image_sha256": "22fb2676935f5ff45f8d5b0437ad1c2a12e15f46b34d7adc293b6fa5fff2c961",
+          "image_size": 586327032
+        }
+      },
+      "banner": {
+        "sha256": "b0bbdad3f4b0d8d4d9ff57c68184ac1067f75285f5af147136cc4f359e81ce92",
+        "size": 229807,
+        "url": "https://github.com/timschneeb/nsmbw-nx-mods/releases/latest/download/newersmbw-banner.png"
+      },
+      "author": "Newer Team"
+    }
+  }
 }

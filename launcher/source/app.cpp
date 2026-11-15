@@ -6,7 +6,6 @@
 #include "install.hpp"
 #include "log.hpp"
 #include "menu_main.hpp"
-#include "paths.hpp"
 #include "ui/nvg_util.hpp"
 
 #include <algorithm>
@@ -15,7 +14,6 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <vector>
 
 extern "C" {
@@ -82,7 +80,7 @@ void DrawElement(float x, float y, float w, float h, ThemeEntryID id) {
 App::App(int argc, char** argv) {
     (void)argc;
     g_app = this;
-    m_argv0 = argv != nullptr && argv[0] != nullptr ? argv[0] : "sdmc:/switch/nsmbw/launcher.nro";
+    m_argv0 = argv != nullptr && argv[0] != nullptr ? argv[0] : "";
     log_init(m_argv0.c_str());
     log_write("[app] argv0 %s\n", m_argv0.c_str());
 
@@ -94,14 +92,20 @@ App::App(int argc, char** argv) {
 
 App::~App() {
     // join worker threads before the services and curl they use are shut down.
+    m_shutting_down = true;
+    if (m_queue) {
+        m_queue.waitIdle();
+    }
     m_widgets.clear();
 
-    if (m_renderer) {
-        m_renderer.reset();
-    }
+    // The renderer owns the textures that nvgDeleteDk releases for the font images,
+    // so the context has to go first.
     if (m_vg != nullptr) {
         nvgDeleteDk(m_vg);
         m_vg = nullptr;
+    }
+    if (m_renderer) {
+        m_renderer.reset();
     }
     destroyFramebufferResources();
     http::Exit();
@@ -114,6 +118,7 @@ App::~App() {
     if (m_plReady) {
         plExit();
     }
+    appletSetAutoSleepDisabled(false);
     log_close();
 }
 
@@ -184,6 +189,9 @@ void App::Run() {
     if (R_SUCCEEDED(socketInitializeDefault())) {
         m_socketReady = true;
     }
+    if (R_FAILED(appletSetAutoSleepDisabled(true))) {
+        log_write("[applet] could not disable auto sleep\n");
+    }
     CleanupPendingInstalls();
 
     m_device = dk::DeviceMaker{}.setCbDebug(DekoError).create();
@@ -235,6 +243,7 @@ void App::Run() {
             if (!m_widgets.empty()) {
                 m_widgets.back()->OnFocusGained();
             }
+            SettlePop();
         }
 
         Draw();
@@ -243,6 +252,17 @@ void App::Run() {
         m_deltaTime = std::clamp(static_cast<double>(now - start) / 1e6, 1000.0 / 120.0, 1000.0 / 15.0) /
                       (1000.0 / 60.0);
         start = now;
+    }
+}
+
+void App::SettlePop() {
+    // A callback may have pushed a widget and marked its parent for removal. Once the
+    // child is gone, close the revealed parents before they are drawn for a frame.
+    while (!m_widgets.empty() && m_widgets.back()->ShouldPop()) {
+        m_widgets.pop_back();
+        if (!m_widgets.empty()) {
+            m_widgets.back()->OnFocusGained();
+        }
     }
 }
 
@@ -313,12 +333,6 @@ void App::Launch(const std::string& nroPath) {
     if (!envHasNextLoad()) {
         SetStatus("The loader does not support chaining NROs.");
         return;
-    }
-
-    std::ofstream launch((std::filesystem::path(RootDirectory()) / "launch.toml").string());
-    if (launch) {
-        launch << "launcher = \"" << m_argv0 << "\"\n";
-        launch << "nro = \"" << nroPath << "\"\n";
     }
 
     __nx_applet_exit_mode = 0;

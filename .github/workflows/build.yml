@@ -123,3 +123,46 @@ jobs:
             mkw_nand_settings_tests \
             mkw_sc_serial_tests \
             mkw_input_expr_tests
+
+  switch_launcher:
+    name: Switch launcher (devkitA64)
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitA64:latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install host build tools
+        shell: bash
+        run: |
+          apt-get update -q
+          apt-get install -qy --no-install-recommends \
+            cmake ninja-build git python3 python3-pip bison flex meson
+          python3 -m pip install --quiet --break-system-packages mako || \
+            python3 -m pip install --quiet mako
+
+      - name: Install Switch libraries
+        shell: bash
+        run: pacman -S --noconfirm --needed switch-curl switch-libzstd switch-bzip2
+
+      - name: Configure launcher
+        shell: bash
+        run: |
+          cmake -S launcher -B build-launcher -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build launcher
+        shell: bash
+        run: cmake --build build-launcher
+
+      - name: Launcher host tests
+        shell: bash
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra -I launcher/source \
+            launcher/tests/compare_version.cpp -o /tmp/compare_version
+          /tmp/compare_version
+          g++ -std=c++20 -O2 -Wall -Wextra -I launcher/source \
+            launcher/tests/launcher_logic.cpp -o /tmp/launcher_logic
+          /tmp/launcher_logic

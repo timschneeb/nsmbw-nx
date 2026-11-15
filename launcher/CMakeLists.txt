@@ -13,7 +13,8 @@ project(nsmbw_launcher VERSION 1.0.0 LANGUAGES C CXX ASM)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_compile_options(-O2 -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti)
+add_compile_options(-O2 -ffunction-sections -fdata-sections)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions> $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
 add_link_options(-Wl,--gc-sections)
 
 include(FetchContent)
@@ -42,6 +43,49 @@ FetchContent_MakeAvailable(yyjson)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+find_library(BZ2_LIBRARY NAMES bz2 REQUIRED)
+
+set(NSMBW_RUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../runtime")
+file(GLOB NSMBW_CRYPTOPP_SOURCES CONFIGURE_DEPENDS
+    "${NSMBW_RUNTIME_DIR}/third_party/cryptopp/*.cpp")
+list(FILTER NSMBW_CRYPTOPP_SOURCES EXCLUDE REGEX
+    "/(adhoc|bench[123]|datatest|dlltest|fipsalgt|fipstest|pch|regtest[1234]|simple|test|validat[0-9]+)\\.cpp$")
+list(FILTER NSMBW_CRYPTOPP_SOURCES EXCLUDE REGEX
+    "(_avx|_ppc|_simd|_sse)\\.cpp$")
+
+# The same disc reader and decoder sources the runtime uses, compiled into the
+# launcher so the base game data can be extracted before any game runs.
+add_library(nsmbw_disc STATIC
+    "${NSMBW_RUNTIME_DIR}/src/wii_disc.cpp"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/7zArcIn.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/7zBuf.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/7zCrc.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/7zCrcOpt.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/7zDec.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/7zStream.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/Bcj2.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/CpuArch.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/LzmaDec.c"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk/Lzma2Dec.c"
+    ${NSMBW_CRYPTOPP_SOURCES}
+    "${NSMBW_RUNTIME_DIR}/third_party/cryptopp/rijndael_simd.cpp"
+)
+target_include_directories(nsmbw_disc PRIVATE
+    "${NSMBW_RUNTIME_DIR}/include"
+    "${NSMBW_RUNTIME_DIR}/third_party"
+    "${NSMBW_RUNTIME_DIR}/third_party/lzma-sdk"
+)
+target_compile_definitions(nsmbw_disc PRIVATE
+    MKW_PLATFORM_SWITCH=1
+    CRYPTOPP_DISABLE_ASM
+    CRYPTOPP_NO_GLOBAL_BYTE
+    CRYPTOPP_ARM_AES_AVAILABLE=1
+    Z7_NO_METHODS_FILTERS
+)
+target_compile_options(nsmbw_disc PRIVATE -w -fexceptions -frtti)
+set_source_files_properties("${NSMBW_RUNTIME_DIR}/third_party/cryptopp/rijndael_simd.cpp"
+    PROPERTIES COMPILE_DEFINITIONS "CRYPTOPP_ARM_NEON_AVAILABLE=1;CRYPTOPP_ARM_NEON_HEADER=1")
+target_link_libraries(nsmbw_disc PUBLIC PkgConfig::ZSTD ${BZ2_LIBRARY})
 
 set(MKW_LOGO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src/platform/switch/nsmbw_logo.rgba")
 configure_file(
@@ -49,12 +93,28 @@ configure_file(
     "${CMAKE_BINARY_DIR}/nsmbw_logo.S"
     @ONLY)
 
+find_program(NX_BIN2S NAMES bin2s HINTS "$ENV{DEVKITPRO}/tools/bin" REQUIRED)
+set(LAUNCHER_CACERT "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/assets/certs/cacert.pem")
+if(NOT EXISTS "${LAUNCHER_CACERT}")
+    message(FATAL_ERROR "Missing CA bundle: ${LAUNCHER_CACERT}")
+endif()
+set(LAUNCHER_CACERT_S "${CMAKE_BINARY_DIR}/cacert.S")
+execute_process(
+    COMMAND "${NX_BIN2S}" "${LAUNCHER_CACERT}"
+    OUTPUT_FILE "${LAUNCHER_CACERT_S}"
+    RESULT_VARIABLE BIN2S_RESULT)
+if(NOT BIN2S_RESULT EQUAL 0)
+    message(FATAL_ERROR "bin2s failed")
+endif()
+
 add_executable(launcher
     "${CMAKE_BINARY_DIR}/nsmbw_logo.S"
+    "${LAUNCHER_CACERT_S}"
     source/main.cpp
     source/app.cpp
     source/log.cpp
     source/assets.cpp
+    source/basedata.cpp
     source/games.cpp
     source/http.cpp
     source/install.cpp
@@ -67,6 +127,7 @@ add_executable(launcher
     source/ui/scrolling_text.cpp
     source/ui/nvg_util.cpp
     source/ui/menus/menu_base.cpp
+    source/ui/menus/menu_download.cpp
     source/ui/progress_box.cpp
     source/ui/option_box.cpp
     source/ui/sidebar.cpp
@@ -82,11 +143,15 @@ target_compile_definitions(launcher PRIVATE
     ASSETS_URL="https://github.com/timschneeb/nsmbw-nx/releases/latest/download/assets.json"
 )
 
+target_compile_options(launcher PRIVATE -Wall -Wextra)
+
 target_link_libraries(launcher PRIVATE
     nanovg
     yyjson
+    nsmbw_disc
     PkgConfig::CURL
     PkgConfig::ZSTD
+    ${BZ2_LIBRARY}
     deko3d
     nx
 )
@@ -96,7 +161,7 @@ find_program(NX_ELF2NRO NAMES elf2nro HINTS "$ENV{DEVKITPRO}/tools/bin" REQUIRED
 
 set(NACP "${CMAKE_BINARY_DIR}/launcher.nacp")
 execute_process(
-    COMMAND "${NX_NACPTOOL}" --create "NSMBW Launcher" "WiiCompiled" "1.0.0" "${NACP}"
+    COMMAND "${NX_NACPTOOL}" --create "NSMBW Launcher" "WiiCompiled" "${PROJECT_VERSION}" "${NACP}"
     RESULT_VARIABLE NACP_RESULT)
 if(NOT NACP_RESULT EQUAL 0)
     message(FATAL_ERROR "nacptool failed")

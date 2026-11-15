@@ -43,7 +43,10 @@ struct Writer {
     s64 offset{};
 
     Result Open(const std::string& path, s64 size) {
-        fsdevCreateFile(path.c_str(), size, 0);
+        Result rc = fsdevCreateFile(path.c_str(), size, 0);
+        if (R_FAILED(rc)) {
+            return rc;
+        }
 
         FsFileSystem* device = nullptr;
         char fs_path[FS_MAX_PATH]{};
@@ -51,7 +54,7 @@ struct Writer {
             return MAKERESULT(Module_Libnx, LibnxError_BadInput);
         }
 
-        Result rc = fsFsOpenFile(device, fs_path, FsOpenMode_Write, &file);
+        rc = fsFsOpenFile(device, fs_path, FsOpenMode_Write, &file);
         if (R_FAILED(rc)) {
             return rc;
         }
@@ -91,6 +94,7 @@ struct FeedState {
     s64 image_size{};
     s64 written{};
     Result result{0};
+    std::string* error{};
     std::vector<u8> output{};
 
     auto Update(const u8* data, size_t size) -> bool {
@@ -99,6 +103,7 @@ struct FeedState {
         ZSTD_inBuffer input{data, size, 0};
         while (input.pos < input.size) {
             if (pbox->ShouldExit()) {
+                *error = "Install cancelled.";
                 result = MAKERESULT(Module_Libnx, LibnxError_BadInput);
                 return false;
             }
@@ -107,6 +112,7 @@ struct FeedState {
             const size_t rc = ZSTD_decompressStream(stream, &out, &input);
             if (ZSTD_isError(rc)) {
                 log_write("[romfs] zstd: %s\n", ZSTD_getErrorName(rc));
+                *error = "The resource image is corrupt.";
                 result = MAKERESULT(Module_Libnx, LibnxError_BadInput);
                 return false;
             }
@@ -115,6 +121,7 @@ struct FeedState {
                 sha256ContextUpdate(&image, output.data(), out.pos);
                 const Result write_rc = writer->Write(output.data(), out.pos);
                 if (R_FAILED(write_rc)) {
+                    *error = "Could not write assets.romfs.";
                     result = write_rc;
                     return false;
                 }
@@ -160,17 +167,22 @@ auto Verify(const Component& component, Sha256Context& compressed, Sha256Context
 }
 } // namespace
 
-Result InstallRomfs(const Component& component, const std::string& dest, ui::ProgressBox& pbox) {
+Result InstallRomfs(const Component& component, const std::string& dest, ui::ProgressBox& pbox,
+                    std::string& error) {
+    error.clear();
     if (component.image_size <= 0) {
+        error = "The catalogue has no resource image size.";
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     }
 
     const std::string part = dest + ".part";
+    std::error_code ec;
 
     Writer writer;
     Result rc = writer.Open(part, component.image_size);
     if (R_FAILED(rc)) {
         log_write("[romfs] cannot create %s: 0x%08X\n", part.c_str(), static_cast<unsigned>(rc));
+        error = "Could not create assets.romfs. Check the free space.";
         return rc;
     }
 
@@ -179,13 +191,15 @@ Result InstallRomfs(const Component& component, const std::string& dest, ui::Pro
     state.writer = &writer;
     state.pbox = &pbox;
     state.image_size = component.image_size;
+    state.error = &error;
     state.output.resize(1024 * 1024);
     sha256ContextCreate(&state.compressed);
     sha256ContextCreate(&state.image);
 
     if (state.stream == nullptr) {
         writer.Close();
-        fs::remove(part);
+        fs::remove(part, ec);
+        error = "Not enough memory to decompress the resource image.";
         return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
     }
     ZSTD_initDStream(state.stream);
@@ -198,6 +212,7 @@ Result InstallRomfs(const Component& component, const std::string& dest, ui::Pro
         FILE* file = std::fopen(component.path.c_str(), "rb");
         if (file == nullptr) {
             rc = MAKERESULT(Module_Libnx, LibnxError_NotFound);
+            error = "Cannot read the resource image.";
         } else {
             std::vector<u8> buffer(1024 * 1024);
             rc = 0;
@@ -213,6 +228,7 @@ Result InstallRomfs(const Component& component, const std::string& dest, ui::Pro
             }
             if (R_SUCCEEDED(rc) && std::ferror(file)) {
                 rc = MAKERESULT(Module_Libnx, LibnxError_IoError);
+                error = "Could not read the resource image.";
             }
             std::fclose(file);
         }
@@ -221,29 +237,33 @@ Result InstallRomfs(const Component& component, const std::string& dest, ui::Pro
         rc = http::DownloadStream(component.url, [&state](const u8* data, size_t size) {
             return state.Update(data, size);
         }, nullptr);
+        if (R_FAILED(rc) && error.empty()) {
+            error = pbox.ShouldExit() ? "Install cancelled." : "Download failed for assets.romfs.";
+        }
     }
 
     writer.Close();
     ZSTD_freeDStream(state.stream);
 
     if (R_FAILED(rc)) {
-        fs::remove(part);
+        fs::remove(part, ec);
         return rc;
     }
 
     rc = Verify(component, state.compressed, state.image, state.written);
     if (R_FAILED(rc)) {
+        error = "The resource image failed verification.";
         log_write("[romfs] verification failed for %s\n", dest.c_str());
-        fs::remove(part);
+        fs::remove(part, ec);
         return rc;
     }
 
-    std::error_code ec;
     fs::remove(dest, ec);
     fs::rename(part, dest, ec);
     if (ec) {
         log_write("[romfs] rename failed %s: %s\n", dest.c_str(), ec.message().c_str());
-        fs::remove(part);
+        fs::remove(part, ec);
+        error = "Could not place assets.romfs.";
         return MAKERESULT(Module_Libnx, LibnxError_IoError);
     }
 

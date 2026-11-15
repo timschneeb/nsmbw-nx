@@ -36,9 +36,8 @@ std::string g_startupProblem;
 // True when the message above is the "nothing there" one rather than "something is there and unusable".
 bool g_nothingFound = true;
 
-// PlanStartup() checks the folder, then EnsureConfigured() checks the same folder a moment later.
-// The scan stats all 1,189 files (~1.8 s), so the second call reuses the first result. Cleared after
-// that use, and whenever the folder is about to change.
+// The scan stats all 1,189 files (~1.8 s), so a repeat check of the same folder reuses the result.
+// Cleared after that use.
 struct StartupCheck {
     std::filesystem::path root;
     std::string problem;
@@ -152,7 +151,7 @@ std::string IdProblem(const std::string& id, int revision) {
         return "That is Newer Super Mario Bros. Wii (SMNE03): open it with NewerSMBW, the release's other "
                "program. This one runs only " + disc + ".";
     }
-    if (RuntimeProduct::Active().gameId == "SMNE03" && id == "SMNE01") {
+    if (RuntimeProduct::IsNewer() && id == "SMNE01") {
         return "That is New Super Mario Bros. Wii (SMNE01): open it with NSMBW, the release's other program. "
                "This one runs only " + disc + ".";
     }
@@ -460,180 +459,35 @@ bool ImportDiscImage(const fs::path& image, std::string& problem, bool& incomple
 #endif
 
 #if defined(MKW_PLATFORM_SWITCH)
-// No folder picker on Switch: the beside-program game folder, or one disc image beside it.
+// No folder picker on Switch: the shared extracted base game next to the launcher, then dvd_root.
 namespace {
 // What a player is told when nothing usable was found. The NRO's folder is whatever getcwd() said
 // (host_platform.cpp); nothing here is a fixed path.
-std::string NoGameProblem(const fs::path& program, const fs::path& image, const std::string& imageProblem,
-                          const std::string& folderProblem, const std::string& configuredProblem) {
-    const std::string where = program.empty() ? std::string("next to NSMBW.nro")
-                                              : RuntimeConfigFile::PathToUtf8(program);
-    // What to do comes last, after whatever was found and rejected: leading with "No game was found"
-    // while naming a folder that is plainly there reads as a contradiction.
+std::string NoGameProblem(const fs::path& root, const fs::path& common,
+                          const std::string& commonProblem, const std::string& configuredProblem) {
     std::string reasons;
-    if (!folderProblem.empty()) {
-        reasons += "The game folder can't be used: " + folderProblem + "\n\n";
-    }
-    if (!image.empty() && !imageProblem.empty()) {
-        reasons += "The disc image " + RuntimeConfigFile::PathToUtf8(image.filename()) + " can't be used: " +
-                   imageProblem + "\n\n";
+    if (!commonProblem.empty()) {
+        reasons += "The base game data at " + RuntimeConfigFile::PathToUtf8(common) +
+                   " can't be used: " + commonProblem + "\n\n";
     }
     if (!configuredProblem.empty()) {
         reasons += "The [paths] dvd_root entry can't be used: " + configuredProblem + "\n\n";
     }
+    const std::string where = root.empty() ? std::string("next to launcher.nro")
+                                           : RuntimeConfigFile::PathToUtf8(root);
+    const std::string target = common.empty() ? std::string("discs/SMNE01")
+                                              : RuntimeConfigFile::PathToUtf8(common);
     const std::string guidance =
-        "Put your own copy of " + std::string(RuntimeProduct::Active().discName) + " next to NSMBW.nro (" +
-        where + "): the extracted game folder named \"game\", or a disc image (.iso, .wbfs, .ciso, .wia or "
-        ".rvz), which is extracted into that folder on the next start.";
-    return reasons.empty() ? "No game was found. " + guidance : reasons + guidance;
-}
-// Whether the folder is unusable in a way an extraction repairs: not an extracted disc at all,
-// no readable sys/boot.bin, or files its sys/fst.bin lists that are missing. A changed module or
-// another disc's folder is not one of these: that may be the player's own mod, so it is left alone.
-bool StructurallyBroken(const fs::path& root, std::string& problem) {
-    if (!IsExtractedDisc(root)) {
-        problem = Check(root, nullptr);
-        return true;
-    }
-    std::error_code ec;
-    if (!fs::is_regular_file(root / "sys" / "boot.bin", ec)) {
-        problem = Check(root, nullptr);
-        return true;
-    }
-    std::ifstream boot(root / "sys" / "boot.bin", std::ios::binary);
-    char header[8] = {};
-    if (!boot.read(header, sizeof(header))) {
-        problem = Check(root, nullptr);
-        return true;
-    }
-    bool incomplete = false;
-    problem = Check(root, &incomplete);
-    g_startupCheck = {root, problem, incomplete, true};
-    if (incomplete) {
-        return true;
-    }
-    problem.clear();
-    return false;
-}
-
-// The place an image is extracted to that holds `folder` (the folder itself, or its parent for the
-// disc's DATA subtree), so deleting it also clears the way for the extraction.
-fs::path ExtractionTargetFor(const fs::path& folder) {
-    for (const fs::path& target : ExtractTargets()) {
-        if (target == folder || target == folder.parent_path()) {
-            return target;
-        }
-    }
-    return ExtractTargets().front();
+        "Open the NSMBW launcher and place your disc image (.iso, .wbfs, .ciso, .wia or .rvz) in " + where +
+        ". The launcher extracts the base game data to " + target +
+        ". Alternatively, put an extracted game folder (files/ and sys/) there, or set [paths] dvd_root to one.";
+    return reasons.empty() ? "Base game data is missing. " + guidance : reasons + guidance;
 }
 } // namespace
 
 #endif
 
 } // namespace
-
-#if defined(MKW_PLATFORM_SWITCH)
-StartupPlan PlanStartup() {
-    StartupPlan plan;
-    const fs::path program = ProgramDirectory();
-    if (program.empty()) {
-        return plan;  // EnsureConfigured() decides
-    }
-    CleanStaleImports();
-    // The image to extract from: beside the program first, then one named in [paths] dvd_root.
-    const auto startupImage = [&] {
-        if (const fs::path image = FirstUsableImage(program, nullptr, nullptr); !image.empty()) {
-            return image;
-        }
-        const fs::path configured = RuntimeConfigFile::ResolvedDvdRoot();
-        std::error_code ec;
-        if (!configured.empty() && fs::is_regular_file(configured, ec) && CheckImage(configured, nullptr).empty()) {
-            return configured;
-        }
-        return fs::path{};
-    };
-    // Anything at the game folder's own path counts, including an empty or half-deleted folder that
-    // Find() doesn't recognize: that is exactly what a repair replaces.
-    const fs::path root = program / fs::u8path(GameFolderName());
-    std::error_code dirError;
-    if (!fs::is_directory(root, dirError)) {
-        if (const fs::path image = startupImage(); !image.empty()) {
-            g_startupCheck.valid = false;
-            plan.kind = StartupPlan::Kind::Extract;
-            plan.image = image;
-        }
-        return plan;
-    }
-    const fs::path found = Find(root);
-    const fs::path beside = found.empty() ? root : found;
-    std::string structural;
-    if (!StructurallyBroken(beside, structural)) {
-        return plan;  // usable, or a problem that deleting the folder would not fix
-    }
-    const fs::path image = startupImage();
-    if (image.empty()) {
-        return plan;  // nothing to rebuild it from: the folder stays, EnsureConfigured explains
-    }
-    std::error_code ec;
-    if (fs::is_symlink(fs::symlink_status(beside, ec))) {
-        return plan;  // not this program's folder
-    }
-    g_startupCheck.valid = false;
-    plan.kind = StartupPlan::Kind::Repair;
-    plan.folder = ExtractionTargetFor(beside);
-    plan.image = image;
-    plan.problem = structural;
-    RT_LOGF(RT_TAG_RUNTIME, "game folder: %s can't be used: %s\n", RuntimeConfigFile::PathToUtf8(beside).c_str(),
-            structural.c_str());
-    return plan;
-}
-
-bool DeleteStartupFolder(const fs::path& folder, std::string& problem) {
-    bool allowed = false;
-    for (const fs::path& target : ExtractTargets()) {
-        if (target == folder) {
-            allowed = true;
-        }
-    }
-    if (!allowed) {
-        problem = "That folder isn't one this program extracts to: " + RuntimeConfigFile::PathToUtf8(folder) + ".";
-        return false;
-    }
-    RT_LOGF(RT_TAG_RUNTIME, "game folder: deleting %s\n", RuntimeConfigFile::PathToUtf8(folder).c_str());
-    if (!RemoveTree(folder)) {
-        problem = "Couldn't delete " + RuntimeConfigFile::PathToUtf8(folder) + ".";
-        return false;
-    }
-    return true;
-}
-
-bool ExtractStartupImage(const fs::path& image, const std::function<void(float, const char*)>& progress,
-                         std::string& problem) {
-    if (progress) {
-        progress(0.0f, "Extracting the disc image");
-    }
-    const auto step = [&](WiiDisc::Disc& disc, const fs::path& staging, const std::atomic<bool>*, int& files,
-                          WiiDisc::Disc::ExtractStats* stats) {
-        std::atomic<bool> never{false};
-        // The splash redraw is not free, so the bar advances in whole percents, not per chunk.
-        float shown = -1.0f;
-        const auto bytes = [&](uint64_t done, uint64_t total) {
-            const float fraction =
-                total != 0 ? static_cast<float>(static_cast<double>(done) / static_cast<double>(total)) : 0.0f;
-            if (progress == nullptr || (fraction < 1.0f && fraction * 100.0f < shown + 1.0f)) {
-                return;
-            }
-            shown = fraction * 100.0f;
-            char status[96];
-            std::snprintf(status, sizeof(status), "Extracting the disc image, %d%%",
-                          static_cast<int>(shown));
-            progress(fraction, status);
-        };
-        return disc.Extract(staging, bytes, never, files, stats);
-    };
-    return ExtractImageTo(image, ExtractTargets(), step, problem, nullptr);
-}
-#endif
 
 fs::path Find(const fs::path& path) {
     if (path.empty()) {
@@ -765,8 +619,8 @@ std::string Check(const fs::path& root, bool* incomplete) {
     const RuntimeProduct::Descriptor& product = RuntimeProduct::Active();
     const std::string disc(product.discName);
     // Newer runs on the vanilla folder: the disc header still says SMNE01. The
-    // pack in the Newer data folder proves which mod this is.
-    const bool newer_shared = product.gameId == "SMNE03" && id == "SMNE01" && revision == 1;
+    // assets.romfs beside the program proves which mod this is.
+    const bool newer_shared = RuntimeProduct::IsNewer() && id == "SMNE01" && revision == 1;
     if (newer_shared) {
         if (!RuntimeRiivolution::NewerPackVersionFileValid(product.versionFileSize)) {
             return leftOut("It has no Newer Super Mario Bros. Wii resources (assets.romfs) beside the program.");
@@ -835,8 +689,8 @@ const std::string& StartupProblem() {
 }
 
 const char* StartupProblemTitle() {
-    return g_nothingFound ? "Unable to start because the game files are missing."
-                          : "Unable to start because the game files can't be used.";
+    return g_nothingFound ? "Base game data is missing."
+                          : "Base game data can't be used.";
 }
 
 std::string Problem(const fs::path& root) {
@@ -1018,70 +872,49 @@ bool EnsureConfigured() {
         return true;
     }
 #elif defined(MKW_PLATFORM_SWITCH)
-    // No folder picker on Switch: the game folder beside the program, then one disc image beside it,
-    // then [paths] dvd_root. Finding nothing is reported by StartupProblem(), before the boot.
     {
         const fs::path program = ProgramDirectory();
-        if (RuntimeProduct::Active().gameId == "SMNE03" && !program.empty()) {
-            const fs::path shared = program.parent_path() / "vanilla" / "game";
+        const fs::path root = program.empty() ? fs::path{} : program.parent_path().parent_path();
+        const fs::path common = root.empty() ? fs::path{} : root / "discs" / "SMNE01";
+
+        std::string commonProblem;
+        if (!common.empty()) {
             std::error_code ec;
-            if (fs::is_directory(shared, ec)) {
-                const fs::path found = Find(shared);
-                const fs::path root = found.empty() ? shared : found;
-                const std::string problem = Problem(root);
-                if (problem.empty()) {
-                    RuntimeConfigFile::UseDvdRootForThisRun(root);
-                    RT_LOGF(RT_TAG_RUNTIME, "game folder: shared base %s\n",
-                            RuntimeConfigFile::PathToUtf8(root).c_str());
+            if (fs::is_directory(common, ec) && !ec) {
+                commonProblem = Problem(common);
+                if (commonProblem.empty()) {
+                    RuntimeConfigFile::UseDvdRootForThisRun(common);
+                    RT_LOGF(RT_TAG_RUNTIME, "game folder: base disc %s\n",
+                            RuntimeConfigFile::PathToUtf8(common).c_str());
                     return true;
                 }
-                RT_LOGF(RT_TAG_RUNTIME, "game folder: shared base %s can't be used: %s\n",
-                        RuntimeConfigFile::PathToUtf8(root).c_str(), problem.c_str());
+                RT_LOGF(RT_TAG_RUNTIME, "game folder: base disc %s can't be used: %s\n",
+                        RuntimeConfigFile::PathToUtf8(common).c_str(), commonProblem.c_str());
+            } else {
+                commonProblem = "The extracted game folder is missing.";
             }
         }
-        std::string folderProblem;
-        fs::path besideFolder;
-        if (const fs::path beside = Find(program / "game"); !beside.empty()) {
-            besideFolder = beside;
-            folderProblem = Problem(beside);
-            if (folderProblem.empty()) {
-                if (RuntimeConfigFile::DvdRoot().empty()) {
-                    RuntimeConfigFile::SetDvdRoot(beside);
-                } else {
-                    RuntimeConfigFile::UseDvdRootForThisRun(beside);
-                }
-                RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(beside).c_str());
-                return true;
-            }
-            RT_LOGF(RT_TAG_RUNTIME, "game folder: %s can't be used: %s\n",
-                    RuntimeConfigFile::PathToUtf8(beside).c_str(), folderProblem.c_str());
-        }
-        std::string imageProblem;
-        fs::path rejectedImage;
-        // An image is only a source for the extraction (game_folder.cpp's PlanStartup), never read in
-        // place, so here it only has a message: a folder that is there but can't be used is reported
-        // rather than silently skipped in favour of the vanilla image.
-        FirstUsableImage(program, &imageProblem, &rejectedImage);
+
         std::string configuredProblem;
-        const fs::path configuredPath = Find(RuntimeConfigFile::ResolvedDvdRoot());
-        if (configuredPath.empty()) {
-            if (!RuntimeConfigFile::DvdRoot().empty()) {
-                const fs::path saved = RuntimeConfigFile::ResolvedDvdRoot();
-                std::error_code existsError;
-                configuredProblem = fs::exists(saved, existsError)
-                                        ? Problem(saved)
-                                        : "it isn't there any more (" + RuntimeConfigFile::PathToUtf8(saved) + ")";
+        const fs::path configured = RuntimeConfigFile::ResolvedDvdRoot();
+        if (!configured.empty()) {
+            std::error_code ec;
+            if (fs::is_directory(configured, ec) && !ec) {
+                configuredProblem = Problem(configured);
+                if (configuredProblem.empty()) {
+                    RuntimeConfigFile::UseDvdRootForThisRun(configured);
+                    RT_LOGF(RT_TAG_RUNTIME, "game folder: dvd_root %s\n",
+                            RuntimeConfigFile::PathToUtf8(configured).c_str());
+                    return true;
+                }
+            } else {
+                configuredProblem = "dvd_root must point to an extracted game folder, not a disc image.";
             }
-        } else if (!besideFolder.empty() &&
-                   configuredPath.lexically_normal() == besideFolder.lexically_normal()) {
-            // The configured path is the folder checked above; its problem is already in the message.
-        } else if (Problem(configuredPath).empty()) {
-            return true;  // this is what ResolvedDvdRoot() already answers with
-        } else {
-            configuredProblem = Problem(configuredPath);
         }
-        g_startupProblem = NoGameProblem(program, rejectedImage, imageProblem, folderProblem, configuredProblem);
-        g_nothingFound = folderProblem.empty() && imageProblem.empty() && configuredProblem.empty();
+
+        g_startupProblem = NoGameProblem(root, common, commonProblem, configuredProblem);
+        g_nothingFound = commonProblem == "The extracted game folder is missing." &&
+                         configuredProblem.empty();
         RT_LOGF(RT_TAG_RUNTIME, "ERROR: %s\n", g_startupProblem.c_str());
         return false;
     }

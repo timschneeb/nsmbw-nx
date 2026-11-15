@@ -1,34 +1,8 @@
 #include "app.hpp"
-#include "log.hpp"
 #include "ui/menus/menu_base.hpp"
 #include "ui/nvg_util.hpp"
 
 namespace launcher::ui::menu {
-
-auto MenuBase::GetPolledData(bool force_refresh) -> PolledData {
-    static PolledData data{};
-    static TimeStamp timestamp{};
-    static bool has_init = false;
-
-    if (!has_init) {
-        has_init = true;
-        force_refresh = true;
-    }
-
-    if (force_refresh || timestamp.GetSeconds() >= 1) {
-        data.sd_free = 1;
-        data.sd_total = 1;
-        data.emmc_free = 1;
-        data.emmc_total = 1;
-
-        App::GetSdSize(&data.sd_free, &data.sd_total);
-        App::GetEmmcSize(&data.emmc_free, &data.emmc_total);
-
-        timestamp.Update();
-    }
-
-    return data;
-}
 
 MenuBase::MenuBase(const std::string& title, u32 flags) : m_title{title}, m_flags{flags} {
     // this->SetParent(this);
@@ -73,7 +47,7 @@ void MenuBase::Draw(NVGcontext* vg, Theme* theme) {
         title_sub_width = std::max(0.f, header_right - title_sub_x);
     }
 
-    m_scroll_title.Draw(vg, m_title != "Homebrew", header_left, start_y, title_width, 28.f,
+    m_scroll_title.Draw(vg, true, header_left, start_y, title_width, 28.f,
         NVG_ALIGN_LEFT | NVG_ALIGN_BOTTOM, theme->GetColour(ThemeEntryID_TEXT), m_title);
     m_scroll_title_sub_heading.Draw(vg, true, title_sub_x, start_y, title_sub_width, 16.f,
         NVG_ALIGN_LEFT | NVG_ALIGN_BOTTOM, theme->GetColour(ThemeEntryID_TEXT_INFO), m_title_sub_heading);

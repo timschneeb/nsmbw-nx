@@ -279,7 +279,7 @@ int ActiveFile() {
 namespace {
 
 bool IsNewer() {
-    return RuntimeProduct::Active().gameId == "SMNE03";
+    return RuntimeProduct::IsNewer();
 }
 
 // A call into the game, as it could make one itself: on a private copy of this thread's registers.

@@ -1,15 +1,14 @@
 #pragma once
 
+#include "version.hpp"
+
 #include <switch.h>
 
-#include <atomic>
-
+#include <functional>
 #include <map>
 #include <string>
 
 namespace launcher {
-
-auto CompareVersion(const std::string& a, const std::string& b) -> int;
 
 struct Component {
     std::string version;
@@ -24,11 +23,24 @@ struct Component {
     auto Valid() const -> bool { return !version.empty() && (!url.empty() || !path.empty()); }
 };
 
+// Wide title image shown in the launcher row. Banners are not versioned
+// components: they are small and can be replaced with the catalog.
+struct Banner {
+    std::string url;
+    std::string path;
+    std::string sha256;
+    s64 size{};
+
+    auto Valid() const -> bool { return !url.empty() || !path.empty(); }
+};
+
 struct AssetsGame {
     std::string id;
     std::string name;
+    std::string author;
     Component nro;
     Component romfs;
+    Banner banner;
 };
 
 struct Assets {
@@ -45,6 +57,11 @@ struct Assets {
 };
 
 auto AssetsUrl() -> std::string;
-Result FetchAssets(Assets& out, const std::atomic_bool* cancel = nullptr);
+
+// Loads assets.local.json, assets.cache.json or the bundled assets.json without network access.
+Result LoadLocalAssets(Assets& out);
+
+// Fetches the catalogue and its banners. The caller's catalogue stays untouched on failure.
+Result FetchRemoteAssets(Assets& out, const std::function<bool()>& canceled = {});
 
 } // namespace launcher

@@ -4,7 +4,7 @@
 # folder that is not configured yet is configured (configure-native.ps1) after translating.
 # -Newer <extracted Newer folder>: Newer Super Mario Bros. Wii instead (BUILDING.md section 7):
 # newer_prelink.py writes ..\game-newer, recomp-newer.yml is translated, native-build-newer is built.
-# Both share generated\, so switching between them retranslates.
+# The base game uses generated\, Newer uses generated-newer\ so they never overwrite each other.
 [CmdletBinding()]
 param([int]$Threads = 10, [int]$Jobs = 10, [string]$Newer)
 
@@ -25,6 +25,7 @@ if (Test-Path -LiteralPath (Join-Path $dotnetRoot 'dotnet.exe')) {
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $translator = Join-Path $ws 'translator\src\Translator.Cli\bin\Release\net8.0\Translator.Cli.dll'
 $project = if ($Newer) { 'projects/nsmbw/recomp-newer.yml' } else { 'projects/nsmbw/recomp.yml' }
+$generated = if ($Newer) { 'generated-newer' } else { 'generated' }
 
 function Invoke-Step([string]$Name, [string[]]$Arguments) {
     $log = Join-Path $logs "rebuild-$Name.log"
@@ -57,16 +58,16 @@ try {
         'newer-prelink ok'
     }
     Invoke-Step 'translate' @('translate-recursive', '0x80004050', '--project', $project,
-        '--outdir', 'generated/functions', '--output-metadata', 'generated/base_translation_output.json',
-        '--production-source-bundle', 'generated/base_translation_sources.bin',
+        '--outdir', "$generated/functions", '--output-metadata', "$generated/base_translation_output.json",
+        '--production-source-bundle', "$generated/base_translation_sources.bin",
         '--no-function-files', '--prune-stale', '--threads', "$Threads")
-    Invoke-Step 'manifest' @('emit-base-manifest', '--project', $project, '--out', 'build/base',
-        '--functions-dir', 'generated/functions', '--translation-output-metadata',
-        'generated/base_translation_output.json', '--region', 'E')
+    Invoke-Step 'manifest' @('emit-base-manifest', '--project', $project, '--out', "$generated/base",
+        '--functions-dir', "$generated/functions", '--translation-output-metadata',
+        "$generated/base_translation_output.json", '--region', 'E')
     Invoke-Step 'data-init' @('generate-data-init', '--project', $project)
     Invoke-Step 'shards' @('emit-build-shards', '--project', $project, '--base-metadata',
-        'generated/base_translation_output.json', '--base-functions-dir', 'generated/functions',
-        '--native-source-dir', 'runtime/src', '--out', 'generated/build_shards')
+        "$generated/base_translation_output.json", '--base-functions-dir', "$generated/functions",
+        '--native-source-dir', 'runtime/src', '--out', "$generated/build_shards")
 } finally {
     Pop-Location
 }

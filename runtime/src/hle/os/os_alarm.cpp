@@ -13,7 +13,7 @@
 #include "runtime_log.h"
 #include "hle/net/network.h"
 #include "bt_passthrough.h"
-#include "generated/RuntimeConfig.h"
+#include "RuntimeConfig.h"
 #include "os_internal.h"
 
 extern "C" void func_801B6020(CpuContext* ctx);

@@ -79,7 +79,7 @@ auto OptionBox::Update(Controller* controller, TouchInfo* touch) -> void {
     Widget::Update(controller, touch);
 
     if (touch->is_clicked) {
-        for (s64 i = 0; i < m_entries.size(); i++) {
+        for (s64 i = 0; i < static_cast<s64>(m_entries.size()); i++) {
             auto& e = m_entries[i];
             if (touch->in_range(e.GetPos())) {
                 SetIndex(i);
@@ -113,24 +113,43 @@ auto OptionBox::Draw(NVGcontext* vg, Theme* theme) -> void {
             ++body_start;
         }
 
-        constexpr float heading_y_offset = 28.f;
-        constexpr float body_gap = 18.f;
-        const auto heading_y = m_pos.y + heading_y_offset;
+        const bool has_body = body_start < m_message.size();
+
+        nvgTextLineHeight(vg, 1.2f);
+        nvgFontSize(vg, 26.f);
+        nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+        float heading_bounds[4]{};
+        nvgTextBoxBounds(vg, text_x, 0.f, text_width, heading.c_str(), nullptr, heading_bounds);
+        const float heading_h = heading_bounds[3] - heading_bounds[1];
+
+        float body_h = 0.f;
+        if (has_body) {
+            nvgTextLineHeight(vg, 1.35f);
+            nvgFontSize(vg, 20.f);
+            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+            float body_bounds[4]{};
+            nvgTextBoxBounds(vg, text_x, 0.f, text_width, m_message.c_str() + body_start, nullptr,
+                             body_bounds);
+            body_h = body_bounds[3] - body_bounds[1];
+        }
+
+        // Space-evenly: equal gaps above the title, between title and subtitle, and below the subtitle.
+        const float gap = has_body
+                              ? std::max(0.f, (CONTENT_HEIGHT - heading_h - body_h) / 3.f)
+                              : std::max(0.f, (CONTENT_HEIGHT - heading_h) / 2.f);
+        const float heading_y = m_pos.y + gap;
+        const float body_y = heading_y + heading_h + gap;
+
         nvgTextLineHeight(vg, 1.2f);
         gfx::drawTextBox(vg, text_x, heading_y, 26.f, text_width,
                          theme->GetColour(ThemeEntryID_TEXT), heading.c_str(),
                          NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
 
-        float heading_bounds[4]{};
-        nvgFontSize(vg, 26.f);
-        nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-        nvgTextBoxBounds(vg, text_x, heading_y, text_width, heading.c_str(), nullptr, heading_bounds);
-
-        if (body_start < m_message.size()) {
+        if (has_body) {
             nvgTextLineHeight(vg, 1.35f);
-            gfx::drawTextBox(vg, text_x, heading_bounds[3] + body_gap, 20.f,
-                             text_width, theme->GetColour(ThemeEntryID_TEXT),
-                             m_message.c_str() + body_start, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+            gfx::drawTextBox(vg, text_x, body_y, 20.f, text_width,
+                             theme->GetColour(ThemeEntryID_TEXT), m_message.c_str() + body_start,
+                             NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
         }
     }
     nvgRestore(vg);
@@ -164,7 +183,7 @@ auto OptionBox::Setup(s64 index) -> void {
             }
         }}),
         std::make_pair(Button::RIGHT, Action{[this] {
-            if (m_index < (m_entries.size() - 1)) {
+            if (m_index < static_cast<s64>(m_entries.size()) - 1) {
                 SetIndex(m_index + 1);
             }
         }}),

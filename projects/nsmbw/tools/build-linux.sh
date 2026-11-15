@@ -49,11 +49,13 @@ step() {
 if [[ -n "$newer" ]]; then
     project=projects/nsmbw/recomp-newer.yml
     build=$repo/native-build-newer
+    generated=generated-newer
     game_id=SMNE03
     output=${output:-$repo/../nsmbw-newer-build}
 else
     project=projects/nsmbw/recomp.yml
     build=$repo/native-build
+    generated=generated
     game_id=SMNE01
     output=${output:-$repo/../nsmbw-local-build}
 fi
@@ -96,17 +98,17 @@ logged() {
 }
 
 step "Translating ($project, logs in $logs)"
-logged translate "${translator[@]}" translate-recursive 0x80004050 --project "$project" --outdir generated/functions \
-    --output-metadata generated/base_translation_output.json \
-    --production-source-bundle generated/base_translation_sources.bin \
+logged translate "${translator[@]}" translate-recursive 0x80004050 --project "$project" --outdir "$generated/functions" \
+    --output-metadata "$generated/base_translation_output.json" \
+    --production-source-bundle "$generated/base_translation_sources.bin" \
     --no-function-files --prune-stale --threads "$jobs"
 grep -E "Recursively translated|skipped|warning" "$logs/translate.log" || true
-logged manifest "${translator[@]}" emit-base-manifest --project "$project" --out build/base \
-    --functions-dir generated/functions --translation-output-metadata generated/base_translation_output.json --region E
+logged manifest "${translator[@]}" emit-base-manifest --project "$project" --out "$generated/base" \
+    --functions-dir "$generated/functions" --translation-output-metadata "$generated/base_translation_output.json" --region E
 logged data-init "${translator[@]}" generate-data-init --project "$project"
 logged shards "${translator[@]}" emit-build-shards --project "$project" \
-    --base-metadata generated/base_translation_output.json --base-functions-dir generated/functions \
-    --native-source-dir runtime/src --out generated/build_shards
+    --base-metadata "$generated/base_translation_output.json" --base-functions-dir "$generated/functions" \
+    --native-source-dir runtime/src --out "$generated/build_shards"
 
 step "Configuring $build"
 configure=(-S runtime -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -114,7 +116,8 @@ configure=(-S runtime -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_AR="$bin/llvm-ar" -DCMAKE_C_COMPILER_AR="$bin/llvm-ar" -DCMAKE_CXX_COMPILER_AR="$bin/llvm-ar"
     -DCMAKE_RANLIB="$bin/llvm-ranlib" -DCMAKE_C_COMPILER_RANLIB="$bin/llvm-ranlib"
     -DCMAKE_CXX_COMPILER_RANLIB="$bin/llvm-ranlib" -DCMAKE_LINKER="$bin/ld.lld" -DCMAKE_ASM_COMPILER="$bin/clang"
-    -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -DMKW_TRANSLATED_COMPILE_JOBS="$shard_jobs" -DNSMBW_GAME_ID="$game_id")
+    -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -DMKW_TRANSLATED_COMPILE_JOBS="$shard_jobs" -DNSMBW_GAME_ID="$game_id" \
+    -DMKW_GENERATED_DIR="$repo/$generated")
 # SDL3 refuses to configure without these X11 extensions' headers unless they are switched off.
 pkg-config --exists xscrnsaver 2>/dev/null || configure+=(-DSDL_X11_XSCRNSAVER=OFF)
 pkg-config --exists xtst 2>/dev/null || configure+=(-DSDL_X11_XTEST=OFF)

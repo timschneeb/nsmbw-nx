@@ -69,7 +69,7 @@ struct List final : Object {
     }
 
 private:
-    auto Draw(NVGcontext* vg, Theme* theme) -> void override {}
+    auto Draw(NVGcontext*, Theme*) -> void override {}
     auto ClampX(float x, s64 count) const -> float;
     auto ClampY(float y, s64 count) const -> float;
 

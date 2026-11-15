@@ -64,7 +64,7 @@ ProgressBox::~ProgressBox() {
         m_thread.join();
     }
 
-    if (m_done) {
+    if (m_done && !App::Get().IsShuttingDown()) {
         m_done(m_thread_data.result);
     }
 }
@@ -146,6 +146,10 @@ auto ProgressBox::Draw(NVGcontext* vg, Theme* theme) -> void {
         gfx::drawTextArgs(vg, center_x, prog_bar.y + prog_bar.h + 30, 18,
                           NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT), "%s (%s)",
                           time_str, FormatSize(speed, 1000.0).c_str());
+    } else {
+        // Indeterminate work (a directory delete) still needs a sign of life.
+        gfx::drawSpinner(vg, theme, center_x, prog_bar.y + prog_bar.h / 2, 15,
+                         armTicksToNs(armGetSystemTick()) / 1e+9);
     }
 
     gfx::drawTextArgs(vg, center_x, m_pos.y + 40, 24, NVG_ALIGN_CENTER | NVG_ALIGN_TOP,

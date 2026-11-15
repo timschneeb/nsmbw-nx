@@ -48,8 +48,9 @@ dotnet build translator/Translator.sln -c Release
 ```
 
 Then the four translator steps, as [`tools/rebuild-all.ps1`](tools/rebuild-all.ps1) runs them:
-`translate-recursive`, `emit-base-manifest`, `generate-data-init` and `emit-build-shards`. The output
-goes to `generated/` (ignored by git: it is the game's code).
+`translate-recursive`, `emit-base-manifest`, `generate-data-init` and `emit-build-shards`. The base
+game writes to `generated/` and Newer to `generated-newer/` (both ignored by git); keep them apart
+so a Newer build cannot leak into the base NRO.
 
 ## 4. Windows
 
@@ -195,8 +196,14 @@ selected by `NSMBW_GAME_ID=SMNE03`). On first launch the runtime also copies the
 (`games/vanilla/data/Cache/dawn_cache.db`) if present, which removes most of the initial shader
 compile. Dawn cache entries are keyed by shader hashes, so the shared cache is safe.
 
-Both builds translate into the same `generated/` folder: building one after the other retranslates,
-and the first build in each build folder after a switch recompiles most shards.
+The Switch build writes `1.0.0` into the base NRO's NACP and `1.30` into Newer's. The launcher reads
+that version for manually copied games, so keep it in sync with the catalogue. The catalogue itself
+is generated from the built files with `launcher/tools/make_assets.py`; its Newer entry points at
+the mods release and includes the banner asset.
+
+The base game and Newer use separate translation folders, `generated/` and `generated-newer/`.
+Configure each runtime build with `-DMKW_GENERATED_DIR=<repo>/generated` or
+`-DMKW_GENERATED_DIR=<repo>/generated-newer`; the first build after a switch recompiles most shards.
 
 Things that are specific to Newer:
 

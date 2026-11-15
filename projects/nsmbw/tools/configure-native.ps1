@@ -33,7 +33,8 @@ $configure = Get-MkwNativeConfigureArguments `
     -CxxCompiler (Join-Path $bin 'x86_64-w64-mingw32-clang++.exe') `
     -ResourceCompiler (Join-Path $bin 'x86_64-w64-mingw32-windres.exe') `
     -DependenciesDirectory (Join-Path $workspace 'Dependencies') `
-    -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$TranslatedJobs", "-DNSMBW_GAME_ID=$gameId")
+    -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$TranslatedJobs", "-DNSMBW_GAME_ID=$gameId",
+        "-DMKW_GENERATED_DIR=$(Join-Path $workspace $(if ($Newer) { 'generated-newer' } else { 'generated' }))")
 
 # Windows PowerShell 5.1 turns a native program's stderr lines into error records; CMake prints
 # ordinary status there, so run it with 'Continue' and keep the log as plain text.

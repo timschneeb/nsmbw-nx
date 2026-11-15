@@ -91,3 +91,7 @@ build-switch-audit/
 build-native-audit2/
 build-switch-hermetic/
 /android/original/
+
+# Python cache
+__pycache__/
+*.pyc

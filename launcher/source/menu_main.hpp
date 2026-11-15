@@ -1,15 +1,17 @@
 #pragma once
 
 #include "assets.hpp"
+#include "basedata.hpp"
 #include "games.hpp"
+#include "ui/banner.hpp"
 #include "ui/list.hpp"
 #include "ui/menus/menu_base.hpp"
 #include "ui/scrolling_text.hpp"
 
-#include <atomic>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace launcher::ui {
@@ -26,28 +28,54 @@ public:
     auto GetShortTitle() const -> const char* override { return "Games"; }
 
 private:
+    void RefreshBanners();
     void Rebuild();
     void Activate(s64 index);
     void StartInstall(const GameEntry& entry, const AssetsGame& catalog, bool force = false);
+    void StartRemove(const GameEntry& entry, bool keep_data);
+    void StartVerify(const GameEntry& entry);
+    void CheckBaseDataOnBoot();
+    void PromptBaseData();
+    void StartBaseExtraction(const BaseImage& image, bool replace_existing);
+    void ConfirmInstall(const GameEntry& entry, const AssetsGame& catalog, bool force,
+                        const std::string& action, const std::function<void()>& on_confirm = {});
+    void CheckGameUpdate(const GameEntry& entry);
+    void CheckLauncherUpdate();
+    void FetchCatalogue(const std::string& title,
+                        const std::function<void(Result, bool)>& done);
+    void ConfirmUpdateAll();
+    void ShowUpdateAllConfirmation();
+    void StartUpdateAll();
     void StartLauncherUpdate();
     void OpenOptions();
+    void OpenLauncherOptions();
+    void OpenDownloads();
+    void UpdateFooter();
+    void LaunchNow(const GameEntry& entry);
+    void LaunchWithDiscCheck(const GameEntry& entry);
+    void ShowError(std::string message);
+    void ShowMessage(std::string message);
+    void ShowMessageLater(std::string message);
+    void ShowDialogLater(std::function<void()> dialog);
     auto RowCount() const -> s64;
     auto HasLauncherUpdate() const -> bool;
+    auto BannerFor(const GameEntry& entry) const -> BannerImage;
 
     Assets m_assets;
-    Assets m_fetched;
     std::vector<GameEntry> m_rows;
     std::unique_ptr<List> m_list;
     ScrollingText m_scroll_name;
+    ScrollingText m_scroll_author;
     s64 m_index{};
-    int m_banner{};
-
-    std::thread m_fetch;
-    std::atomic_bool m_fetch_done{false};
-    std::atomic_bool m_fetch_cancel{false};
-    bool m_fetch_joined{};
-    bool m_fetch_ok{};
-    bool m_demo_shown{};
+    s64 m_download_count{};
+    bool m_boot_checked{};
+    bool m_base_ready{};
+    int m_fallback_banner{};
+    std::map<std::string, BannerImage> m_banners;
+    std::vector<int> m_banner_discard_pending;
+    std::vector<int> m_banner_discard_ready;
+    std::string m_pending_message;
+    std::function<void()> m_pending_dialog;
 };
 
 } // namespace launcher::ui

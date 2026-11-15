@@ -11,18 +11,6 @@ enum MenuFlag {
     MenuFlag_Tab = 1 << 1,
 };
 
-struct PolledData {
-    struct tm tm{};
-    NifmInternetConnectionType type{};
-    NifmInternetConnectionStatus status{};
-    u32 strength{};
-    u32 ip{};
-    s64 sd_free{1};
-    s64 sd_total{1};
-    s64 emmc_free{1};
-    s64 emmc_total{1};
-};
-
 struct MenuBase : Widget {
     MenuBase(const std::string& title, u32 flags);
     virtual ~MenuBase();
@@ -58,8 +46,6 @@ struct MenuBase : Widget {
     auto IsTab() const -> bool {
         return m_flags & MenuFlag_Tab;
     }
-
-    static auto GetPolledData(bool force_refresh = false) -> PolledData;
 
 private:
     std::string m_title{};

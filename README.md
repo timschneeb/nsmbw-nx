@@ -349,7 +349,7 @@ addresses, so the app checks the disc and refuses anything else.
 
 ## Quick start
 
-Get everything from the [Releases](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest)
+Get everything from the [Releases](https://github.com/timschneeb/nsmbw-nx/releases/latest)
 page.
 
 > [!NOTE]
@@ -360,9 +360,13 @@ page.
    * This creates `/switch/nsmbw/launcher.nro`, `/switch/nsmbw/assets.json` and
      `/switch/nsmbw/games/vanilla/game.nro`.
    * Mods live next to it as `/switch/nsmbw/games/<id>/`, with one `game.nro` per game.
-3. Copy your disc image into `/switch/nsmbw/games/vanilla/` on the SD card.
+3. Copy your disc image into `/switch/nsmbw/`, next to `launcher.nro`. The launcher extracts the
+   base game to `/switch/nsmbw/discs/SMNE01/` on first start.
 4. Start the launcher from the home menu forwarder and pick a game.
-5. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking).
+5. Open the `Download games` row to fetch the catalogue and install mods such as Newer. Press Minus
+   for Update all and Check launcher update. Newer reuses `discs/SMNE01` and keeps its data in
+   `games/newersmbw/data/`.
+6. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking).
 
 > [!NOTE]
 > The first boot will take about 10 minutes. It will extract the disc image and compile shaders for the first time.

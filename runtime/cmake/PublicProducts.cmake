@@ -4,15 +4,15 @@
 # functions are compiled once into mkw_base_shared; only callers whose direct
 # ABI differs between profiles receive small base/RR variants.
 
-set(DATA_INIT_FILE "${MKW_RUNTIME_SOURCE_DIR}/../generated/data_sections_init.cpp")
-set(DATA_INIT_BLOB_ASM "${MKW_RUNTIME_SOURCE_DIR}/../generated/data_sections_init_blobs.S")
+set(DATA_INIT_FILE "${MKW_GENERATED_DIR}/data_sections_init.cpp")
+set(DATA_INIT_BLOB_ASM "${MKW_GENERATED_DIR}/data_sections_init_blobs.S")
 if(EXISTS "${DATA_INIT_FILE}")
     list(APPEND SOURCES "${DATA_INIT_FILE}")
 endif()
 # Crash-report symbolization table emitted by generate-data-init. The stub
 # (deliberately outside the globbed src/ tree so it is never picked up twice)
 # keeps link succeeding when the generated table has not been produced yet.
-set(GUEST_SYMBOL_TABLE_FILE "${MKW_RUNTIME_SOURCE_DIR}/../generated/guest_symbol_table.cpp")
+set(GUEST_SYMBOL_TABLE_FILE "${MKW_GENERATED_DIR}/guest_symbol_table.cpp")
 if(EXISTS "${GUEST_SYMBOL_TABLE_FILE}")
     list(APPEND SOURCES "${GUEST_SYMBOL_TABLE_FILE}")
 else()
@@ -81,9 +81,7 @@ function(mkw_configure_object_target target)
     target_include_directories(${target} PRIVATE
         "${MKW_RUNTIME_SOURCE_DIR}/include"
         "${MKW_RUNTIME_SOURCE_DIR}/src"
-        # Workspace root, so translator output is spelled "generated/<x>.h"
-        # instead of a ../ chain whose depth depends on the includer.
-        "${MKW_RUNTIME_SOURCE_DIR}/.."
+        "${MKW_GENERATED_DIR}"
         "${MKW_RUNTIME_SOURCE_DIR}/../aurora-main/include")
     target_compile_definitions(${target} PRIVATE
         TARGET_PC)
@@ -260,9 +258,7 @@ function(mkw_configure_product target)
     target_include_directories(${target} PRIVATE
         "${MKW_RUNTIME_SOURCE_DIR}/include"
         "${MKW_RUNTIME_SOURCE_DIR}/src"
-        # Workspace root, so translator output is spelled "generated/<x>.h"
-        # instead of a ../ chain whose depth depends on the includer.
-        "${MKW_RUNTIME_SOURCE_DIR}/.."
+        "${MKW_GENERATED_DIR}"
         "${MKW_RUNTIME_SOURCE_DIR}/../aurora-main/include")
     target_compile_definitions(${target} PRIVATE
         SDL_MAIN_HANDLED _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION TARGET_PC)
@@ -468,9 +464,14 @@ if(MKW_PLATFORM_SWITCH)
     endif()
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/switch")
     set(MKW_SWITCH_NACP "${CMAKE_BINARY_DIR}/switch/NSMBW.nacp")
+    # The launcher reads this version from the NRO when a game was copied manually.
+    set(MKW_SWITCH_NACP_VERSION "1.0.0")
+    if(NSMBW_GAME_ID STREQUAL "SMNE03")
+        set(MKW_SWITCH_NACP_VERSION "1.30")
+    endif()
     execute_process(
-        COMMAND "${MKW_NACPTOOL}" --create "New Super Mario Bros. Wii" "Aurora Recomp" "1.0.0"
-            "${MKW_SWITCH_NACP}"
+        COMMAND "${MKW_NACPTOOL}" --create "New Super Mario Bros. Wii" "Aurora Recomp"
+            "${MKW_SWITCH_NACP_VERSION}" "${MKW_SWITCH_NACP}"
         RESULT_VARIABLE MKW_NACP_RESULT)
     if(NOT MKW_NACP_RESULT EQUAL 0)
         message(FATAL_ERROR "nacptool failed to write ${MKW_SWITCH_NACP}")
@@ -496,6 +497,8 @@ if(MKW_PLATFORM_SWITCH)
         CACHE FILEPATH "Launcher NRO bundled into NSMBW-switch.zip")
     set(MKW_SWITCH_ASSETS_JSON "${CMAKE_SOURCE_DIR}/../launcher/assets.json"
         CACHE FILEPATH "assets.json bundled into NSMBW-switch.zip")
+    set(MKW_SWITCH_BANNER "${CMAKE_SOURCE_DIR}/../launcher/assets/banners/newersmbw.png"
+        CACHE FILEPATH "Mod banner bundled into NSMBW-switch.zip")
 
     set(MKW_SWITCH_PACKAGE_EXTRA)
     if(EXISTS "${MKW_SWITCH_LAUNCHER_NRO}")
@@ -511,6 +514,12 @@ if(MKW_PLATFORM_SWITCH)
                 "${MKW_SWITCH_ASSETS_JSON}" "${MKW_SWITCH_NRO_STAGE}/switch/nsmbw/assets.json")
     else()
         message(WARNING "assets.json not found at ${MKW_SWITCH_ASSETS_JSON}; the package will not include it")
+    endif()
+    if(EXISTS "${MKW_SWITCH_BANNER}")
+        list(APPEND MKW_SWITCH_PACKAGE_EXTRA
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${MKW_SWITCH_NRO_STAGE}/switch/nsmbw/banners"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MKW_SWITCH_BANNER}" "${MKW_SWITCH_NRO_STAGE}/switch/nsmbw/banners/newersmbw.png")
     endif()
 
     add_custom_target(switch-package

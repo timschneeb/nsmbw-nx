@@ -1,15 +1,24 @@
 #include "http.hpp"
 
 #include "log.hpp"
+#include "paths.hpp"
 
 #include <curl/curl.h>
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <mutex>
+
+// Embedded from runtime/assets/certs/cacert.pem by CMake.
+extern "C" const unsigned char cacert_pem[];
+extern "C" const unsigned char cacert_pem_end[];
 
 namespace launcher::http {
 namespace {
 bool g_init{};
+std::string g_ca_path;
+std::mutex g_init_mutex;
 
 size_t WriteFile(void* data, size_t size, size_t count, void* userdata) {
     FILE* file = static_cast<FILE*>(userdata);
@@ -25,23 +34,33 @@ size_t WriteStream(void* data, size_t size, size_t count, void* userdata) {
     return bytes;
 }
 
+struct MemoryContext {
+    std::vector<u8>* out{};
+    size_t max_size{};
+    bool too_large{};
+};
+
 size_t WriteMemory(void* data, size_t size, size_t count, void* userdata) {
-    auto* out = static_cast<std::vector<u8>*>(userdata);
+    auto* ctx = static_cast<MemoryContext*>(userdata);
     const size_t bytes = size * count;
+    if (ctx->out->size() + bytes > ctx->max_size) {
+        ctx->too_large = true;
+        return 0;
+    }
     const auto* src = static_cast<const u8*>(data);
-    out->insert(out->end(), src, src + bytes);
+    ctx->out->insert(ctx->out->end(), src, src + bytes);
     return bytes;
 }
 
 struct ProgressCtx {
     const Progress* progress{};
-    const std::atomic_bool* cancel{};
+    const Cancel* cancel{};
     bool aborted{};
 };
 
 int OnProgress(void* userdata, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* ctx = static_cast<ProgressCtx*>(userdata);
-    if (ctx->cancel != nullptr && ctx->cancel->load()) {
+    if (ctx->cancel != nullptr && *ctx->cancel && (*ctx->cancel)()) {
         ctx->aborted = true;
         return 1;
     }
@@ -52,6 +71,27 @@ int OnProgress(void* userdata, curl_off_t dltotal, curl_off_t dlnow, curl_off_t,
         }
     }
     return 0;
+}
+
+bool WriteCertificateBundle(const std::string& path) {
+    const auto expected = static_cast<size_t>(cacert_pem_end - cacert_pem);
+    std::error_code ec;
+    const auto actual = std::filesystem::file_size(path, ec);
+    if (!ec && actual == expected) {
+        return true;
+    }
+
+    FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) {
+        log_write("[http] cannot write %s\n", path.c_str());
+        return false;
+    }
+    const size_t written = std::fwrite(cacert_pem, 1, expected, file);
+    const bool ok = written == expected && std::fclose(file) == 0;
+    if (!ok) {
+        std::remove(path.c_str());
+    }
+    return ok;
 }
 
 CURL* MakeHandle(const std::string& url, ProgressCtx* ctx) {
@@ -71,14 +111,17 @@ CURL* MakeHandle(const std::string& url, ProgressCtx* ctx) {
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, OnProgress);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, ctx);
-    // The console has no CA bundle, same as sphaira.
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    if (!g_ca_path.empty()) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, g_ca_path.c_str());
+    }
     return curl;
 }
 } // namespace
 
 bool Init() {
+    std::lock_guard lock(g_init_mutex);
     if (g_init) {
         return true;
     }
@@ -86,15 +129,26 @@ bool Init() {
         log_write("[http] curl_global_init failed\n");
         return false;
     }
+
+    g_ca_path = (std::filesystem::path(RootDirectory()) / "cacert.pem").string();
+    if (!WriteCertificateBundle(g_ca_path)) {
+        log_write("[http] no CA bundle, network installs are disabled\n");
+        g_ca_path.clear();
+        curl_global_cleanup();
+        return false;
+    }
+
     g_init = true;
     return true;
 }
 
 void Exit() {
+    std::lock_guard lock(g_init_mutex);
     if (g_init) {
         curl_global_cleanup();
         g_init = false;
     }
+    g_ca_path.clear();
 }
 
 Result Download(const std::string& url, const std::string& path, const Progress& progress) {
@@ -168,21 +222,23 @@ Result DownloadStream(const std::string& url, const DataCallback& on_data, const
     return 0;
 }
 
-Result Get(const std::string& url, std::vector<u8>& out, const std::atomic_bool* cancel) {
+Result Get(const std::string& url, std::vector<u8>& out, const Cancel& cancel,
+           size_t max_size) {
     if (!Init()) {
         return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
     }
 
     ProgressCtx ctx{};
-    ctx.cancel = cancel;
+    ctx.cancel = &cancel;
     CURL* curl = MakeHandle(url, &ctx);
     if (curl == nullptr) {
         return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
     }
 
+    MemoryContext memory{&out, max_size, false};
     out.clear();
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemory);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &memory);
 
     const CURLcode rc = curl_easy_perform(curl);
     long code{};
@@ -191,6 +247,9 @@ Result Get(const std::string& url, std::vector<u8>& out, const std::atomic_bool*
 
     if (rc != CURLE_OK || code >= 400) {
         log_write("[http] %s failed: %s code %ld\n", url.c_str(), curl_easy_strerror(rc), code);
+        if (memory.too_large) {
+            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+        }
         return MAKERESULT(Module_Libnx, LibnxError_IoError);
     }
 

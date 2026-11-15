@@ -220,7 +220,7 @@ auto Sidebar::Draw(NVGcontext* vg, Theme* theme) -> void {
     m_list->Draw(vg, theme, m_items.size(), [this](auto* vg, auto* theme, auto& v, auto i) {
         const auto& [x, y, w, h] = v;
 
-        if (i != m_items.size() - 1) {
+        if (i != static_cast<s64>(m_items.size()) - 1) {
             gfx::drawRect(vg, x, y + h, w, 1.f, theme->GetColour(ThemeEntryID_LINE_SEPARATOR));
         }
 

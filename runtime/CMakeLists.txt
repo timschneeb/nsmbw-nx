@@ -658,9 +658,25 @@ endif()
 # this one manifest keeps configure independent of the 28k generated function
 # files and of optional Retro Rewind artifacts such as code.map.
 if(MKW_BUILD_PRODUCTS)
-    set(MKW_TRANSLATED_SHARD_MANIFEST
-        "${CMAKE_CURRENT_LIST_DIR}/../generated/build_shards/shards.cmake"
-        CACHE FILEPATH "Translator-owned aggregate shard manifest")
+    set(MKW_GENERATED_DIR "${CMAKE_CURRENT_LIST_DIR}/../generated"
+        CACHE PATH "Directory holding the translator output for this product")
+    if(NSMBW_GAME_ID AND EXISTS "${MKW_GENERATED_DIR}/RuntimeConfig.h")
+        file(STRINGS "${MKW_GENERATED_DIR}/RuntimeConfig.h" MKW_GENERATED_PRODUCT LIMIT_COUNT 1)
+        if(NSMBW_GAME_ID STREQUAL "SMNE03")
+            if(NOT MKW_GENERATED_PRODUCT MATCHES "Newer")
+                message(FATAL_ERROR
+                    "${MKW_GENERATED_DIR} does not contain the Newer translation. "
+                    "Use generated-newer/ for NSMBW_GAME_ID=SMNE03.")
+            endif()
+        elseif(NSMBW_GAME_ID STREQUAL "SMNE01")
+            if(MKW_GENERATED_PRODUCT MATCHES "Newer")
+                message(FATAL_ERROR
+                    "${MKW_GENERATED_DIR} contains the Newer translation. "
+                    "Use generated/ for the base game.")
+            endif()
+        endif()
+    endif()
+    set(MKW_TRANSLATED_SHARD_MANIFEST "${MKW_GENERATED_DIR}/build_shards/shards.cmake")
     # The prebuilt export only needs the aurora/third-party closure configured above, so a
     # packaging machine without a translation stops here instead of failing.
     if(MKW_NATIVE_PREBUILT_EXPORT_DIR AND NOT EXISTS "${MKW_TRANSLATED_SHARD_MANIFEST}")
@@ -703,7 +719,7 @@ else()
     if(MKW_PLATFORM_MACOS)
         # Compile-only audit of native runtime sources. It deliberately avoids
         # translated products until their host dependencies are portable.
-        # These sources depend on generated/RuntimeConfig.h, which is emitted for
+        # These sources depend on RuntimeConfig.h, which is emitted for
         # a particular game by the translator and is intentionally unavailable
         # in this platform-only configuration.
         set(MKW_MACOS_NATIVE_AUDIT_SOURCES ${SOURCES})
@@ -731,7 +747,7 @@ else()
     if(MKW_PLATFORM_SWITCH)
         # Compile-only audit of native runtime sources for devkitA64, mirroring
         # the macOS audit above. Same generated-header exclusions: these sources
-        # depend on generated/RuntimeConfig.h, which is emitted for a particular
+        # depend on RuntimeConfig.h, which is emitted for a particular
         # game by the translator and is intentionally unavailable in this
         # platform-only configuration.
         set(MKW_SWITCH_NATIVE_AUDIT_SOURCES ${SOURCES})

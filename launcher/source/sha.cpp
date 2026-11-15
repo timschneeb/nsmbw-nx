@@ -3,23 +3,36 @@
 #include "log.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <vector>
 
 namespace launcher {
 
-Result FileSha256(const std::string& path, std::string& hex) {
+Result FileSha256(const std::string& path, std::string& hex, const std::function<bool()>& canceled,
+                  const ShaProgress& progress) {
     FILE* file = std::fopen(path.c_str(), "rb");
     if (file == nullptr) {
         return MAKERESULT(Module_Libnx, LibnxError_NotFound);
     }
 
+    std::error_code size_ec;
+    const s64 total = static_cast<s64>(std::filesystem::file_size(path, size_ec));
     Sha256Context ctx;
     sha256ContextCreate(&ctx);
 
     std::vector<u8> buffer(1024 * 1024);
+    s64 done = 0;
     size_t read{};
     while ((read = std::fread(buffer.data(), 1, buffer.size(), file)) > 0) {
+        if (canceled && canceled()) {
+            std::fclose(file);
+            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+        }
         sha256ContextUpdate(&ctx, buffer.data(), read);
+        done += static_cast<s64>(read);
+        if (progress && total > 0) {
+            progress(done, total);
+        }
     }
 
     const bool failed = std::ferror(file) != 0;
