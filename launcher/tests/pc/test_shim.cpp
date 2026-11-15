@@ -12,9 +12,13 @@
 #include <system_error>
 #include <unistd.h>
 
-// http.cpp expects the embedded CA bundle. The tests use file:// URLs.
-extern "C" const unsigned char cacert_pem[] = {0};
-extern "C" const unsigned char cacert_pem_end[] = {0};
+// http.cpp expects the embedded CA bundle. Tests use file:// and loopback HTTP URLs.
+// Point both linker symbols at the same empty object so the pointer difference is zero.
+extern "C" {
+extern const unsigned char cacert_pem[1];
+const unsigned char cacert_pem[1] = {0};
+}
+asm(".globl cacert_pem\n.globl cacert_pem_end\n.set cacert_pem_end, cacert_pem\n");
 
 void sha256ContextCreate(Sha256Context* ctx) {
     ctx->ctx = EVP_MD_CTX_new();

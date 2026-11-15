@@ -4,6 +4,7 @@
 
 #include <switch.h>
 
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -35,7 +36,7 @@ inline void WriteFakeNro(const std::filesystem::path& path, const std::string& v
     asset.nacp.offset = sizeof(NroAssetHeader);
     asset.nacp.size = offsetof(NacpStruct, display_version) + 0x10;
     NacpStruct nacp{};
-    std::strncpy(nacp.display_version, version.c_str(), sizeof(nacp.display_version));
+    std::snprintf(nacp.display_version, sizeof(nacp.display_version), "%s", version.c_str());
     nacp.lang[0].name[0] = marker;
 
     std::error_code ec;
