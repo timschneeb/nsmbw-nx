@@ -105,24 +105,30 @@ void WriteUsageFile(const std::map<std::string, u64>& usage) {
 
 void ReadInstalledComponent(yyjson_val* node, InstalledComponent& out) {
     if (yyjson_is_str(node)) {
-        out.version = yyjson_get_str(node);
+        // Legacy installed.json stored one version string per component.
+        out.game_version = yyjson_get_str(node);
         return;
     }
     if (!yyjson_is_obj(node)) {
         return;
     }
 
-    yyjson_val* value = yyjson_obj_get(node, "version");
-    if (yyjson_is_str(value)) {
-        out.version = yyjson_get_str(value);
+    const auto get_string = [node](const char* key) -> std::string {
+        yyjson_val* value = yyjson_obj_get(node, key);
+        return yyjson_is_str(value) ? yyjson_get_str(value) : std::string{};
+    };
+    out.recomp_version = get_string("recomp_version");
+    out.game_version = get_string("game_version");
+    out.region = get_string("region");
+    const std::string legacy_version = get_string("version");
+    if (out.game_version.empty()) {
+        out.game_version = legacy_version;
     }
-    value = yyjson_obj_get(node, "sha256");
-    if (yyjson_is_str(value)) {
-        out.sha256 = yyjson_get_str(value);
-    }
-    value = yyjson_obj_get(node, "size");
-    if (yyjson_is_num(value)) {
-        out.size = static_cast<s64>(yyjson_get_num(value));
+    out.sha256 = get_string("sha256");
+
+    yyjson_val* size = yyjson_obj_get(node, "size");
+    if (yyjson_is_num(size)) {
+        out.size = static_cast<s64>(yyjson_get_num(size));
     }
 }
 
@@ -174,12 +180,17 @@ Result WriteInstalled(const std::string& dir, const Installed& installed) {
 
     std::string text;
     text += "{\n";
+    const auto component_json = [](const InstalledComponent& component) {
+        return std::string("{ \"recomp_version\": \"") + JsonEscape(component.recomp_version) +
+               "\", \"game_version\": \"" + JsonEscape(component.game_version) +
+               "\", \"region\": \"" + JsonEscape(component.region) +
+               "\", \"sha256\": \"" + JsonEscape(component.sha256) +
+               "\", \"size\": " + std::to_string(component.size) + " }";
+    };
     text += "  \"name\": \"" + JsonEscape(installed.name) + "\",\n";
     text += "  \"components\": {\n";
-    text += "    \"nro\": { \"version\": \"" + JsonEscape(installed.nro.version) + "\", \"sha256\": \"" +
-            JsonEscape(installed.nro.sha256) + "\", \"size\": " + std::to_string(installed.nro.size) + " },\n";
-    text += "    \"romfs\": { \"version\": \"" + JsonEscape(installed.romfs.version) + "\", \"sha256\": \"" +
-            JsonEscape(installed.romfs.sha256) + "\", \"size\": " + std::to_string(installed.romfs.size) + " }\n";
+    text += "    \"nro\": " + component_json(installed.nro) + ",\n";
+    text += "    \"romfs\": " + component_json(installed.romfs) + "\n";
     text += "  }\n";
     text += "}\n";
 
@@ -231,16 +242,21 @@ auto ScanGames(const Assets& assets) -> std::vector<GameEntry> {
         entry.installed = IsFile(entry.nro_path);
         entry.nro_valid = entry.installed && IsValidNro(entry.nro_path);
         entry.manual = !installed.present;
-        entry.version = installed.nro.version;
+        entry.version = installed.nro.game_version;
+        entry.recomp_version = installed.nro.recomp_version;
+        entry.region = installed.nro.region;
         if (const auto used = usage.find(id); used != usage.end()) {
             entry.last_used = used->second;
         }
 
-        if (entry.installed && entry.version.empty()) {
+        if (entry.installed && entry.manual && entry.recomp_version.empty()) {
             std::string nro_version;
             if (R_SUCCEEDED(ReadNroVersion(entry.nro_path, nro_version))) {
-                entry.version = std::move(nro_version);
+                entry.recomp_version = std::move(nro_version);
             }
+        }
+        if (entry.version.empty() && entry.manual) {
+            entry.version = entry.recomp_version;
         }
 
         const auto catalog = assets.games.find(id);
@@ -252,47 +268,75 @@ auto ScanGames(const Assets& assets) -> std::vector<GameEntry> {
             entry.author = catalog->second.author;
             if (!entry.installed) {
                 entry.state = GameState::Install;
+                entry.version = catalog->second.nro.game_version;
+                entry.recomp_version = catalog->second.nro.recomp_version;
+                entry.region = catalog->second.nro.region;
             } else {
-                const std::string installed_version =
-                    entry.manual ? entry.version : installed.nro.version;
                 bool nro_stale = !entry.nro_valid;
-                if (catalog->second.nro.Valid() &&
-                    CompareVersion(catalog->second.nro.version, installed_version) != 0) {
-                    nro_stale = true;
-                }
-                // The catalogue size is authoritative for manual installs too: the release ZIP
-                // ships game.nro without installed.json.
-                if (catalog->second.nro.size > 0 &&
-                    FileSize(entry.nro_path) != catalog->second.nro.size) {
-                    nro_stale = true;
-                }
-                if (!entry.manual && installed.nro.size > 0 &&
-                    FileSize(entry.nro_path) != installed.nro.size) {
-                    nro_stale = true;
+                if (catalog->second.nro.Valid()) {
+                    if (catalog->second.nro.recomp_version.empty() ||
+                        entry.recomp_version.empty() ||
+                        CompareVersion(catalog->second.nro.recomp_version, entry.recomp_version) != 0) {
+                        nro_stale = true;
+                    }
+                    if (!entry.manual) {
+                        if (!catalog->second.nro.game_version.empty() &&
+                            (installed.nro.game_version.empty() ||
+                             CompareVersion(catalog->second.nro.game_version,
+                                            installed.nro.game_version) != 0)) {
+                            nro_stale = true;
+                        }
+                        if (!catalog->second.nro.region.empty() &&
+                            (installed.nro.region.empty() ||
+                             catalog->second.nro.region != installed.nro.region)) {
+                            nro_stale = true;
+                        }
+                    }
+                    // The catalogue size is authoritative for manual installs too: the release ZIP
+                    // ships game.nro without installed.json.
+                    if (catalog->second.nro.size > 0 &&
+                        FileSize(entry.nro_path) != catalog->second.nro.size) {
+                        nro_stale = true;
+                    }
+                    if (!entry.manual && installed.nro.size > 0 &&
+                        FileSize(entry.nro_path) != installed.nro.size) {
+                        nro_stale = true;
+                    }
                 }
 
                 bool romfs_stale = false;
                 if (catalog->second.romfs.Valid()) {
-                    // A manual install has no recorded component versions. A correct image
-                    // size is the best available proof that it is current.
-                    if (entry.manual) {
-                        romfs_stale = catalog->second.romfs.image_size > 0 &&
-                                      FileSize(entry.romfs_path) != catalog->second.romfs.image_size;
-                    } else {
-                        romfs_stale =
-                            CompareVersion(catalog->second.romfs.version, installed.romfs.version) != 0 ||
-                            (installed.romfs.size > 0 &&
-                             FileSize(entry.romfs_path) != installed.romfs.size);
-                        if (catalog->second.romfs.image_size > 0 &&
-                            FileSize(entry.romfs_path) != catalog->second.romfs.image_size) {
+                    if (!entry.manual) {
+                        if (catalog->second.romfs.game_version.empty() ||
+                            installed.romfs.game_version.empty() ||
+                            CompareVersion(catalog->second.romfs.game_version,
+                                           installed.romfs.game_version) != 0) {
+                            romfs_stale = true;
+                        }
+                        if (!catalog->second.romfs.region.empty() &&
+                            (installed.romfs.region.empty() ||
+                             catalog->second.romfs.region != installed.romfs.region)) {
+                            romfs_stale = true;
+                        }
+                        if (installed.romfs.size > 0 &&
+                            FileSize(entry.romfs_path) != installed.romfs.size) {
                             romfs_stale = true;
                         }
                     }
+                    // A manual install has no recorded component versions. A correct image
+                    // size is the best available proof that it is current.
+                    if (catalog->second.romfs.image_size > 0 &&
+                        FileSize(entry.romfs_path) != catalog->second.romfs.image_size) {
+                        romfs_stale = true;
+                    }
                 }
                 entry.state = (nro_stale || romfs_stale) ? GameState::Update : GameState::Launch;
-                if (entry.state == GameState::Launch && !entry.manual) {
-                    entry.version = installed.nro.version;
-                }
+                entry.version = catalog->second.nro.game_version.empty()
+                                    ? installed.nro.game_version
+                                    : catalog->second.nro.game_version;
+                entry.recomp_version = entry.manual ? entry.recomp_version
+                                                    : installed.nro.recomp_version;
+                entry.region = entry.manual ? catalog->second.nro.region : installed.nro.region;
             }
         }
 
@@ -307,9 +351,10 @@ auto ScanGames(const Assets& assets) -> std::vector<GameEntry> {
             continue;
         }
 
-        log_write("[games] %s state=%d installed=%d manual=%d nro=%s res=%s\n", id.c_str(),
-                  static_cast<int>(entry.state), entry.installed, entry.manual,
-                  installed.nro.version.c_str(), installed.romfs.version.c_str());
+        log_write("[games] %s state=%d installed=%d manual=%d recomp=%s game=%s region=%s res=%s\n",
+                  id.c_str(), static_cast<int>(entry.state), entry.installed, entry.manual,
+                  entry.recomp_version.c_str(), entry.version.c_str(), entry.region.c_str(),
+                  installed.romfs.game_version.c_str());
         index[id] = entries.size();
         entries.push_back(std::move(entry));
     }
@@ -327,7 +372,9 @@ auto ScanGames(const Assets& assets) -> std::vector<GameEntry> {
         entry.nro_path = (games_dir / id / "game.nro").string();
         entry.romfs_path = (games_dir / id / "assets.romfs").string();
         entry.state = GameState::Install;
-        entry.version = "Not installed";
+        entry.version = catalog.nro.game_version.empty() ? "Not installed" : catalog.nro.game_version;
+        entry.recomp_version = catalog.nro.recomp_version;
+        entry.region = catalog.nro.region;
         entries.push_back(std::move(entry));
     }
 

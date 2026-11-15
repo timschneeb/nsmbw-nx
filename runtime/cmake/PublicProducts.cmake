@@ -465,10 +465,12 @@ if(MKW_PLATFORM_SWITCH)
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/switch")
     set(MKW_SWITCH_NACP "${CMAKE_BINARY_DIR}/switch/NSMBW.nacp")
     # The launcher reads this version from the NRO when a game was copied manually.
-    set(MKW_SWITCH_NACP_VERSION "1.0.0")
-    if(NSMBW_GAME_ID STREQUAL "SMNE03")
-        set(MKW_SWITCH_NACP_VERSION "1.30")
+    file(READ "${CMAKE_SOURCE_DIR}/../VERSION" NSMBW_RECOMP_VERSION)
+    string(STRIP "${NSMBW_RECOMP_VERSION}" NSMBW_RECOMP_VERSION)
+    if(NSMBW_RECOMP_VERSION STREQUAL "")
+        message(FATAL_ERROR "VERSION is empty")
     endif()
+    set(MKW_SWITCH_NACP_VERSION "${NSMBW_RECOMP_VERSION}")
     execute_process(
         COMMAND "${MKW_NACPTOOL}" --create "New Super Mario Bros. Wii" "Aurora Recomp"
             "${MKW_SWITCH_NACP_VERSION}" "${MKW_SWITCH_NACP}"

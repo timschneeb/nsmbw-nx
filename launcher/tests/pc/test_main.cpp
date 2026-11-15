@@ -197,7 +197,8 @@ int main() {
         AssetsGame game = assets.games["test"];
         game.id = "romfs";
         game.name = "RomFS Game";
-        game.romfs.version = "1.0.0";
+        game.romfs.game_version = "1.0.0";
+        game.romfs.region = "U";
         game.romfs.path = romfs.string();
         game.romfs.sha256 = test::FileSha(romfs);
         game.romfs.size = test::FileSize(romfs);
@@ -271,6 +272,45 @@ int main() {
         const auto all = ScanGames(empty);
         const auto* broken_entry = find_entry(all, "broken");
         expect(broken_entry != nullptr && !broken_entry->nro_valid, "invalid manual nro flagged");
+    }
+
+    // Legacy installed.json has no recomp_version/region. A managed install must migrate it.
+    {
+        const fs::path legacy_nro = root / "src" / "legacycat.nro";
+        test::WriteFakeNro(legacy_nro, "0.0.1");
+        const fs::path dir = root / "games" / "legacycat";
+        fs::create_directories(dir);
+        fs::copy_file(legacy_nro, dir / "game.nro", fs::copy_options::overwrite_existing);
+        std::ofstream(dir / "installed.json")
+            << "{\"name\":\"Legacy Cat\",\"components\":{\"nro\":{\"version\":\"0.0.1\","
+               "\"sha256\":\"" << test::FileSha(dir / "game.nro") << "\",\"size\":"
+            << test::FileSize(dir / "game.nro") << "}}}";
+
+        fs::remove(root / "assets.cache.json", ec);
+        test::WriteCatalogue(root / "assets.json",
+                             {test::GameJson("test", "Test Game", "Test Author", nro),
+                              test::GameJson("legacycat", "Legacy Cat", "Old Studio", legacy_nro,
+                                             "0.0.1", "", "1.0.0")},
+                             "0.0.1", "", {}, "0.0.1");
+        Assets migrated;
+        expect(R_SUCCEEDED(LoadLocalAssets(migrated)), "legacy catalogue loads");
+        const auto all = ScanGames(migrated);
+        const auto* legacy_entry = find_entry(all, "legacycat");
+        expect(legacy_entry != nullptr && legacy_entry->state == GameState::Update,
+               "legacy metadata marks the game as update");
+        expect(legacy_entry != nullptr && legacy_entry->recomp_version.empty(),
+               "legacy metadata has no recomp version");
+        if (legacy_entry != nullptr) {
+            const GameEntry entry_copy = *legacy_entry;
+            error.clear();
+            expect(R_SUCCEEDED(install(entry_copy, migrated.games["legacycat"], error)),
+                   "legacy metadata update succeeds: " + error);
+            const Installed installed = ReadInstalled(entry_copy.dir);
+            expect(installed.nro.recomp_version == "0.0.1",
+                   "legacy update records recomp version");
+            expect(installed.nro.game_version == "1.0.0", "legacy update records game version");
+            expect(installed.nro.region == "U", "legacy update records region");
+        }
     }
 
     if (g_failures != 0) {

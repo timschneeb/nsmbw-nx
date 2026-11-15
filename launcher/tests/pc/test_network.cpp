@@ -247,7 +247,9 @@ expect(R_FAILED(FetchRemoteAssets(empty_catalogue, {})), "empty catalogue fails"
     AssetsGame base_game;
     base_game.id = "base";
     base_game.name = "Base Game";
-    base_game.nro.version = "1.0.0";
+    base_game.nro.recomp_version = "1.0.0";
+    base_game.nro.game_version = "1.0.0";
+    base_game.nro.region = "U";
     base_game.nro.path = nro.string();
     base_game.nro.sha256 = nro_sha;
     base_game.nro.size = nro_size;
@@ -257,7 +259,9 @@ expect(R_FAILED(FetchRemoteAssets(empty_catalogue, {})), "empty catalogue fails"
         AssetsGame game;
         game.id = "urlgame";
         game.name = "URL Game";
-        game.nro.version = "1.0.0";
+        game.nro.recomp_version = "1.0.0";
+        game.nro.game_version = "1.0.0";
+        game.nro.region = "U";
         game.nro.url = server.Url("/game.nro");
         game.nro.sha256 = nro_sha;
         game.nro.size = nro_size;
@@ -340,7 +344,8 @@ expect(R_FAILED(FetchRemoteAssets(empty_catalogue, {})), "empty catalogue fails"
         game.name = "Network RomFS";
         game.nro.url = server.Url("/game.nro");
         game.nro.path.clear();
-        game.romfs.version = "1.0.0";
+        game.romfs.game_version = "1.0.0";
+        game.romfs.region = "U";
         game.romfs.url = server.Url("/network.romfs.zst");
         game.romfs.sha256 = test::FileSha(compressed);
         game.romfs.size = test::FileSize(compressed);

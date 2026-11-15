@@ -16,7 +16,9 @@ enum class GameState {
 };
 
 struct InstalledComponent {
-    std::string version;
+    std::string recomp_version;
+    std::string game_version;
+    std::string region;
     std::string sha256;
     s64 size{};
 };
@@ -33,6 +35,8 @@ struct GameEntry {
     std::string name;
     std::string author;
     std::string version;
+    std::string recomp_version;
+    std::string region;
     std::string dir;
     std::string nro_path;
     std::string romfs_path;
@@ -48,7 +52,7 @@ auto ReadInstalled(const std::string& dir) -> Installed;
 Result WriteInstalled(const std::string& dir, const Installed& installed);
 auto ScanGames(const Assets& assets) -> std::vector<GameEntry>;
 auto IsValidNro(const std::string& path) -> bool;
-// Reads the NRO's NACP display version, which is what a manual install reports.
+// Reads the NRO's NACP display version, which is the recomp build version.
 auto ReadNroVersion(const std::string& path, std::string& version) -> Result;
 // Removes the managed game files. With keep_data, saves, settings and disc images stay.
 Result RemoveGame(const std::string& dir, const std::string& id, bool keep_data);

@@ -11,7 +11,12 @@
 namespace launcher {
 
 struct Component {
-    std::string version;
+    // Recompiled NRO build version. Empty for a RomFS resource image.
+    std::string recomp_version;
+    // Game or mod-pack version: 1.0.0 for USA revision 1, 1.30 for Newer.
+    std::string game_version;
+    // Region the NRO or pack was made from: U for USA, E for Europe, J for Japan.
+    std::string region;
     std::string url;
     std::string path;
     std::string sha256;
@@ -20,7 +25,9 @@ struct Component {
     std::string image_sha256;
     s64 image_size{};
 
-    auto Valid() const -> bool { return !version.empty() && (!url.empty() || !path.empty()); }
+    auto Valid() const -> bool {
+        return !game_version.empty() && (!url.empty() || !path.empty());
+    }
 };
 
 // Wide title image shown in the launcher row. Banners are not versioned
@@ -44,6 +51,7 @@ struct AssetsGame {
 };
 
 struct Assets {
+    std::string recomp_version;
     std::string launcher_version;
     std::string launcher_url;
     std::string launcher_sha256;

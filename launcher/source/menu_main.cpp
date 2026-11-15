@@ -849,6 +849,10 @@ void MainMenu::OpenLauncherOptions() {
         }
 
         std::string message = "NSMBW Launcher v" + LauncherVersion() + "\n";
+        message += "Recomp version: " +
+                   (menu->m_assets.recomp_version.empty() ? "unknown"
+                                                         : menu->m_assets.recomp_version) +
+                   "\n";
         message += "Installed games: " + std::to_string(menu->m_rows.size()) + "\n";
         message += "Catalogue games: " + std::to_string(menu->m_assets.games.size()) + "\n";
         message += "Base game data: " + base + "\n";

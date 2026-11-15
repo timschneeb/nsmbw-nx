@@ -78,12 +78,15 @@ inline auto ShaBytes(const std::string& data) -> std::string {
 
 inline auto GameJson(const std::string& id, const std::string& name, const std::string& author,
                      const std::filesystem::path& nro, const std::string& version = "1.0.0",
-                     const std::string& banner = {}) -> std::string {
+                     const std::string& banner = {}, const std::string& game_version = {},
+                     const std::string& region = "U") -> std::string {
+    const std::string game = game_version.empty() ? version : game_version;
     std::ostringstream out;
     out << "\"" << id << "\": {\"name\": \"" << name << "\", \"author\": \"" << author
-        << "\", \"components\": {\"nro\": {\"version\": \"" << version << "\", \"sha256\": \""
-        << FileSha(nro) << "\", \"size\": " << FileSize(nro) << ", \"path\": \"" << nro.string()
-        << "\"}}";
+        << "\", \"components\": {\"nro\": {\"recomp_version\": \"" << version
+        << "\", \"game_version\": \"" << game << "\", \"region\": \"" << region
+        << "\", \"sha256\": \"" << FileSha(nro) << "\", \"size\": " << FileSize(nro)
+        << ", \"path\": \"" << nro.string() << "\"}}";
     if (!banner.empty()) {
         out << ", \"banner\": {\"path\": \"" << banner << "\"}";
     }
@@ -95,7 +98,8 @@ inline void WriteCatalogue(const std::filesystem::path& path,
                            const std::vector<std::string>& games,
                            const std::string& launcher_version = "",
                            const std::string& launcher_url = "",
-                           const std::filesystem::path& launcher_payload = {}) {
+                           const std::filesystem::path& launcher_payload = {},
+                           const std::string& recomp_version = "") {
     std::string launcher_sha;
     s64 launcher_size = 0;
     if (!launcher_url.empty()) {
@@ -106,7 +110,8 @@ inline void WriteCatalogue(const std::filesystem::path& path,
         launcher_size = FileSize(payload);
     }
     std::ofstream file(path);
-    file << "{\"schema\":1,\"launcher\":{\"version\":\"" << launcher_version << "\",\"url\":\""
+    file << "{\"schema\":1,\"recomp_version\":\"" << recomp_version
+         << "\",\"launcher\":{\"version\":\"" << launcher_version << "\",\"url\":\""
          << launcher_url << "\",\"sha256\":\"" << launcher_sha << "\",\"size\":" << launcher_size
          << "},\"games\":{";
     for (size_t i = 0; i < games.size(); ++i) {

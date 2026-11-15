@@ -165,7 +165,7 @@ int main() {
                                              demo.newer_nro, "1.0.0",
                                              demo.newer_banner.string());
     test::WriteCatalogue(root / "remote-assets.json", {catalog, newer}, "2.0.0",
-                         demo.launcher_url, demo.launcher_nro);
+                         demo.launcher_url, demo.launcher_nro, "0.0.1");
     select_main(app, 3);
     press(app, Button::A);
     shot(app, "download-empty");

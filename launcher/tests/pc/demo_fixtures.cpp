@@ -41,9 +41,9 @@ auto CreateDemoData(const fs::path& root, const std::string& banner_source) -> D
     demo.launcher_url = "file://" + demo.launcher_nro.string();
 
     WriteCatalogue(root / "assets.json", {catalog, newer, extra}, "2.0.0", demo.launcher_url,
-                   demo.launcher_nro);
+                   demo.launcher_nro, "0.0.1");
     WriteCatalogue(root / "remote-assets.json", {catalog, newer, extra}, "2.0.0",
-                   demo.launcher_url, demo.launcher_nro);
+                   demo.launcher_url, demo.launcher_nro, "0.0.1");
     std::ofstream(root / "assets.url") << "file://" << (root / "remote-assets.json").string()
                                        << "\n";
     return demo;

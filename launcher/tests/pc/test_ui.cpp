@@ -76,7 +76,7 @@ int main() {
     test::WriteCatalogue(root / "assets.json", {
         test::GameJson("test", "Test Game", "Test Author", test_nro),
         test::GameJson("newer", "Newer Game", "Newer Team", newer_nro),
-    });
+    }, "1.0.0", "", {}, "0.0.1");
     fs::copy_file(root / "assets.json", root / "remote-assets.json", fs::copy_options::overwrite_existing);
     std::ofstream(root / "assets.url") << "file://" << (root / "remote-assets.json").string() << "\n";
 
@@ -160,6 +160,7 @@ int main() {
         const auto text = message(app);
         expect(text.find("Credits: timschneeb, WitherBlitz, WiiCompiled, Aurora, Sphaira") != std::string::npos,
                "about credits");
+        expect(text.find("Recomp version: 0.0.1") != std::string::npos, "about recomp version");
         expect(text.find("Installed games: 2") != std::string::npos, "about installed count");
         expect(text.find("Available games") == std::string::npos, "about has no available games");
         expect(text.find("Base game data: Ready") != std::string::npos, "about base data");

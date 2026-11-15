@@ -28,7 +28,7 @@ files while the server is running. Every assertion also checks the filesystem, n
 - [x] A7 Invalid JSON, empty games, missing NRO, unsafe ids and object-less games are rejected.
 - [x] A8 Catalogue larger than 4 MiB is rejected; a cancelled fetch writes no cache.
 - [x] A9 Banners download, verify SHA, are reused without a second request and reject bad hashes.
-- [x] A10 Launcher version, URL, SHA and size parse correctly.
+- [x] A10 Launcher version, URL, SHA, size, top-level recomp version, NRO game version and region parse correctly.
 - [x] A11 `assets.url` missing/blank falls back to the built-in URL; trimming is applied.
 - [x] A12 New games, removed games, renamed games, new authors and launcher updates are picked up
       after a refresh without restarting the launcher.
@@ -37,12 +37,15 @@ files while the server is running. Every assertion also checks the filesystem, n
 ## B. Game scanning and row state
 
 - [x] B1 Not installed -> `Install`.
-- [x] B2 Installed with matching catalogue version and size -> `Launch`.
-- [x] B3 Higher or lower NRO version -> `Update` (downgrades are supported).
+- [x] B2 Installed with matching recomp, game, region and size -> `Launch`.
+- [x] B3 Higher or lower NRO recomp version -> `Update` (downgrades are supported).
 - [x] B4 NRO size mismatch (same version) -> `Update`.
 - [x] B5 Invalid installed NRO -> `Update` when catalogued, invalid flag when manual.
-- [x] B6 RomFS version or image size mismatch -> `Update`.
-- [x] B7 Manual install (no `installed.json`) reads the NACP version and is flagged manual.
+- [x] B5a Game version change only -> `Update`.
+- [x] B5b Region change only -> `Update`.
+- [x] B5c Old `installed.json` with only `version` migrates on the next update.
+- [x] B6 RomFS game version, region or image size mismatch -> `Update`.
+- [x] B7 Manual install (no `installed.json`) reads the NACP recomp version and is flagged manual.
 - [x] B8 Saves-only folder -> `Install` when catalogued, hidden when not catalogued.
 - [x] B9 `.`-prefixed and `.removed` folders are ignored.
 - [x] B10 Catalogue games without a folder are listed as `Install`.
@@ -127,8 +130,8 @@ files while the server is running. Every assertion also checks the filesystem, n
 - [x] G6 Update-all retry only downloads the remaining game.
 - [x] G7 NRO-only update leaves RomFS untouched and does not request it.
 - [x] G8 RomFS-only update leaves the NRO untouched and does not request it.
-- [x] G9 Republished NRO with a new version but same content still counts as an update.
-- [x] G10 Same version + different size counts as an update; same version + same size does not
+- [x] G9 Republished NRO with a new recomp version but same content still counts as an update.
+- [x] G10 Same recomp version + different size counts as an update; same version + same size does not
       (Verify files then detects the checksum change).
 - [x] G11 Interrupted/failed update keeps the previous component usable.
 - [x] G12 Catalogue refresh from an update check adds/removes rows without a restart.
@@ -148,7 +151,7 @@ files while the server is running. Every assertion also checks the filesystem, n
 - [x] I1 Settings without a local catalogue has `Update all`, `Check launcher update`, `About`.
 - [x] I2 With `assets.local.json`, `Clear local catalogue` appears; cancel and confirm both work.
 - [x] I3 Clearing reloads the cache/bundled catalogue and updates rows immediately.
-- [x] I4 About reports version, installed/catalogue counts, base data state, root, build and credits.
+- [x] I4 About reports launcher version, recomp version, installed/catalogue counts, base data state, root, build and credits.
 - [x] I5 About distinguishes `Ready`, `Ready (dvd_root)`, `Missing` and `Incomplete (problem)`.
 
 ## J. Base data UI (stubbed extraction)

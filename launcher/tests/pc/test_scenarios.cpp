@@ -83,8 +83,11 @@ struct GameDef {
     std::string name;
     std::string author;
     std::string version;
+    std::string game_version{"1.0.0"};
+    std::string region{"U"};
     bool romfs{};
     std::string romfs_version;
+    std::string romfs_region{"U"};
     std::string romfs_image_sha;
     s64 romfs_image_size{};
     bool banner{};
@@ -165,6 +168,16 @@ public:
     void SetVersion(const std::string& id, const std::string& version) {
         std::lock_guard lock(state->mutex);
         state->games.at(id).version = version;
+    }
+
+    void SetGameVersion(const std::string& id, const std::string& game_version) {
+        std::lock_guard lock(state->mutex);
+        state->games.at(id).game_version = game_version;
+    }
+
+    void SetRegion(const std::string& id, const std::string& region) {
+        std::lock_guard lock(state->mutex);
+        state->games.at(id).region = region;
     }
 
     void SetNroUrlOverride(const std::string& id, const std::string& path) {
@@ -315,7 +328,7 @@ private:
     auto CatalogueJson(const std::vector<std::string>& ids, bool local) -> std::string {
         std::lock_guard lock(state->mutex);
         std::ostringstream out;
-        out << "{\"schema\":1,\"launcher\":{";
+        out << "{\"schema\":1,\"recomp_version\":\"0.0.1\",\"launcher\":{";
         std::string launcher_sha = state->launcher.bad_sha ? std::string(64, '0') : std::string{};
         s64 launcher_size = 0;
         if (!state->launcher.bad_sha && !state->launcher.version.empty()) {
@@ -347,7 +360,9 @@ private:
 
             out << "\"" << Escape(id) << "\":{\"name\":\"" << Escape(game.name)
                 << "\",\"author\":\"" << Escape(game.author) << "\",\"components\":{\"nro\":{"
-                << "\"version\":\"" << Escape(game.version) << "\",\"sha256\":\"" << nro_sha
+                << "\"recomp_version\":\"" << Escape(game.version) << "\",\"game_version\":\""
+                << Escape(game.game_version) << "\",\"region\":\"" << Escape(game.region)
+                << "\",\"sha256\":\"" << nro_sha
                 << "\",\"size\":" << test::FileSize(nro) << ",\"" << (local ? "path" : "url")
                 << "\":\"" << Escape(nro_target) << "\"}";
 
@@ -355,7 +370,8 @@ private:
                 const fs::path zst = Src() / (id + ".romfs.zst");
                 const std::string target =
                     local ? zst.string() : server.Url("/games/" + id + ".romfs.zst");
-                out << ",\"romfs\":{\"version\":\"" << Escape(game.romfs_version)
+                out << ",\"romfs\":{\"game_version\":\"" << Escape(game.romfs_version)
+                    << "\",\"region\":\"" << Escape(game.romfs_region)
                     << "\",\"sha256\":\"" << test::FileSha(zst) << "\",\"size\":" << test::FileSize(zst)
                     << ",\"image_sha256\":\"" << Escape(game.romfs_image_sha)
                     << "\",\"image_size\":" << game.romfs_image_size << ",\""
@@ -587,8 +603,11 @@ void test_catalogue(Harness& h) {
                "remote catalogue replaces local files");
         expect(fs::is_regular_file(h.Root() / "assets.cache.json"), "remote catalogue cached");
         expect(!fs::exists(h.Root() / "assets.cache.json.tmp"), "cache write leaves no tmp");
+        expect_eq(fetched.recomp_version, std::string("0.0.1"), "recomp version parsed");
         expect_eq(fetched.games["alpha"].author, std::string("Studio A"), "author parsed");
-        expect_eq(fetched.games["alpha"].nro.version, std::string("1.0.0"), "nro version parsed");
+        expect_eq(fetched.games["alpha"].nro.recomp_version, std::string("1.0.0"), "nro recomp version parsed");
+        expect_eq(fetched.games["alpha"].nro.game_version, std::string("1.0.0"), "nro game version parsed");
+        expect_eq(fetched.games["alpha"].nro.region, std::string("U"), "nro region parsed");
     }
 
     // A failed fetch keeps the previous cache byte for byte.
@@ -644,6 +663,14 @@ void test_catalogue(Harness& h) {
         expect_eq(h.Hits("/banners/alpha.png"), 1, "banner requested once");
         expect(R_SUCCEEDED(FetchRemoteAssets(fetched, {})), "second banner fetch succeeds");
         expect_eq(h.Hits("/banners/alpha.png"), 1, "valid banner is not re-requested");
+
+        // A new catalogue SHA replaces the local banner.
+        h.SetBanner("alpha", "banner-two");
+        h.PointAssetsUrlToServer();
+        expect(R_SUCCEEDED(FetchRemoteAssets(fetched, {})), "changed banner fetch succeeds");
+        expect_eq(h.Hits("/banners/alpha.png"), 2, "changed banner is re-requested");
+        expect_eq(test::ReadFile(h.Root() / "banners" / "alpha.png"), std::string("banner-two"),
+                  "changed banner replaced");
     }
 
     // A bad banner hash never leaves a file behind.
@@ -746,8 +773,8 @@ void test_download_and_install(Harness& h) {
     {
         const Installed installed = ReadInstalled(alpha_dir.string());
         expect(installed.present, "alpha metadata present");
-        expect_eq(installed.nro.version, std::string("1.0.0"), "alpha nro version recorded");
-        expect_eq(installed.romfs.version, std::string("1.0.0"), "alpha romfs version recorded");
+        expect_eq(installed.nro.recomp_version, std::string("1.0.0"), "alpha nro version recorded");
+        expect_eq(installed.romfs.game_version, std::string("1.0.0"), "alpha romfs version recorded");
         expect_eq(installed.romfs.size, s64(4096), "alpha romfs size recorded");
         expect_eq(test::ReadFile(alpha_dir / "game.nro"), test::ReadFile(h.Src() / "alpha.nro"),
                   "alpha nro content");
@@ -838,7 +865,7 @@ void test_updates(Harness& h) {
     }
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
-        expect_eq(installed.nro.version, std::string("1.0.0"), "cancelled update keeps version");
+        expect_eq(installed.nro.recomp_version, std::string("1.0.0"), "cancelled update keeps version");
     }
 
     // The failed check left the row stale, so Game options now offers Update directly.
@@ -854,7 +881,7 @@ void test_updates(Harness& h) {
     close_dialog(*app);
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
-        expect_eq(installed.nro.version, std::string("1.1.0"), "nro updated");
+        expect_eq(installed.nro.recomp_version, std::string("1.1.0"), "nro updated");
         expect_eq(test::ReadFile(nro_path), test::ReadFile(h.Src() / "alpha.nro"), "updated nro content");
         expect_eq(test::ReadFile(romfs_path), romfs_bytes, "romfs untouched by nro update");
         expect(fs::last_write_time(romfs_path) == romfs_time, "romfs mtime untouched");
@@ -874,7 +901,7 @@ void test_updates(Harness& h) {
     close_dialog(*app);
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
-        expect_eq(installed.romfs.version, std::string("2.0.0"), "romfs updated");
+        expect_eq(installed.romfs.game_version, std::string("2.0.0"), "romfs updated");
         expect_eq(test::ReadFile(nro_path), nro_bytes, "nro untouched by romfs update");
         expect(fs::last_write_time(nro_path) == nro_time, "nro mtime untouched");
         expect_eq(test::FileSize(romfs_path), s64(7000), "romfs image size");
@@ -942,6 +969,37 @@ void test_updates(Harness& h) {
     expect_eq(dialog_message(*app), std::string("Installed Alpha."), "size update message");
     close_dialog(*app);
 
+    // Changing only the game version triggers an update and records it separately.
+    h.SetGameVersion("alpha", "1.1.0");
+    select_row(*app, *menu, menu->TestRowCount() - 1);
+    press(*app, Button::A);
+    press(*app, Button::B);
+    expect(menu->TestRows()[0].state == GameState::Update, "game version change marks the row stale");
+    select_row(*app, *menu, 0);
+    press(*app, Button::A);
+    expect_eq(dialog_message(*app), std::string("Installed Alpha."), "game version update message");
+    close_dialog(*app);
+    {
+        const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
+        expect_eq(installed.nro.game_version, std::string("1.1.0"), "game version updated");
+        expect_eq(installed.nro.recomp_version, std::string("1.2.0"), "recomp version kept");
+    }
+
+    // Changing only the region triggers an update and records the region.
+    h.SetRegion("alpha", "E");
+    select_row(*app, *menu, menu->TestRowCount() - 1);
+    press(*app, Button::A);
+    press(*app, Button::B);
+    expect(menu->TestRows()[0].state == GameState::Update, "region change marks the row stale");
+    select_row(*app, *menu, 0);
+    press(*app, Button::A);
+    expect_eq(dialog_message(*app), std::string("Installed Alpha."), "region update message");
+    close_dialog(*app);
+    {
+        const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
+        expect_eq(installed.nro.region, std::string("E"), "region updated");
+    }
+
     // A downgrade is offered like any other version change.
     h.RepublishNro("alpha", "1.0.0", 'D');
     select_row(*app, *menu, menu->TestRowCount() - 1);
@@ -954,7 +1012,7 @@ void test_updates(Harness& h) {
     close_dialog(*app);
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
-        expect_eq(installed.nro.version, std::string("1.0.0"), "downgrade applied");
+        expect_eq(installed.nro.recomp_version, std::string("1.0.0"), "downgrade applied");
     }
 
     // A failed update check reports the network error.
@@ -1014,7 +1072,7 @@ void test_update_all(Harness& h) {
     }
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
-        expect_eq(installed.nro.version, std::string("1.0.0"), "update all cancel changes nothing");
+        expect_eq(installed.nro.recomp_version, std::string("1.0.0"), "update all cancel changes nothing");
     }
 
     press(*app, Button::SELECT);
@@ -1025,8 +1083,8 @@ void test_update_all(Harness& h) {
     {
         const Installed alpha = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
         const Installed beta = ReadInstalled((fs::path(GamesDirectory()) / "beta").string());
-        expect_eq(alpha.nro.version, std::string("1.1.0"), "alpha updated by update all");
-        expect_eq(beta.nro.version, std::string("1.1.0"), "beta updated by update all");
+        expect_eq(alpha.nro.recomp_version, std::string("1.1.0"), "alpha updated by update all");
+        expect_eq(beta.nro.recomp_version, std::string("1.1.0"), "beta updated by update all");
     }
 
     // Nothing to do.
@@ -1049,8 +1107,8 @@ void test_update_all(Harness& h) {
     {
         const Installed alpha = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
         const Installed beta = ReadInstalled((fs::path(GamesDirectory()) / "beta").string());
-        expect_eq(alpha.nro.version, std::string("1.2.0"), "update all kept the successful game");
-        expect_eq(beta.nro.version, std::string("1.1.0"), "update all left the failed game");
+        expect_eq(alpha.nro.recomp_version, std::string("1.2.0"), "update all kept the successful game");
+        expect_eq(beta.nro.recomp_version, std::string("1.1.0"), "update all left the failed game");
         expect(menu->TestRows()[0].state == GameState::Launch ||
                    menu->TestRows()[1].state == GameState::Update,
                "failed update leaves a retryable row");
@@ -1066,7 +1124,7 @@ void test_update_all(Harness& h) {
     close_dialog(*app);
     {
         const Installed beta = ReadInstalled((fs::path(GamesDirectory()) / "beta").string());
-        expect_eq(beta.nro.version, std::string("1.2.0"), "retry updates the remaining game");
+        expect_eq(beta.nro.recomp_version, std::string("1.2.0"), "retry updates the remaining game");
         expect_eq(test::ReadFile(fs::path(GamesDirectory()) / "beta" / "game.nro"),
                   test::ReadFile(h.Src() / "beta.nro"), "retry rewrites the failed game");
         expect_eq(test::ReadFile(fs::path(GamesDirectory()) / "alpha" / "game.nro"), alpha_bytes,

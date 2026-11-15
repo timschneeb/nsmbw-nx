@@ -8,6 +8,8 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
         "Minimum macOS version supported by WiiCompiled" FORCE)
 endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION")
 project(mkw_recompiled)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")

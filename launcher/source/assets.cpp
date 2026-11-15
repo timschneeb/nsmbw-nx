@@ -73,7 +73,16 @@ auto ReadComponent(yyjson_val* object, const char* key) -> Component {
         return yyjson_is_str(value) ? yyjson_get_str(value) : std::string{};
     };
 
-    component.version = get_string("version");
+    component.recomp_version = get_string("recomp_version");
+    component.game_version = get_string("game_version");
+    component.region = get_string("region");
+    const std::string legacy_version = get_string("version");
+    if (component.recomp_version.empty()) {
+        component.recomp_version = legacy_version;
+    }
+    if (component.game_version.empty()) {
+        component.game_version = legacy_version;
+    }
     component.url = get_string("url");
     component.path = get_string("path");
     component.sha256 = get_string("sha256");
@@ -116,6 +125,9 @@ auto ParseAssets(const std::vector<u8>& data, Assets& out) -> Result {
     Assets parsed;
 
     if (yyjson_is_obj(root)) {
+        yyjson_val* recomp_version = yyjson_obj_get(root, "recomp_version");
+        parsed.recomp_version = yyjson_is_str(recomp_version) ? yyjson_get_str(recomp_version) : "";
+
         yyjson_val* launcher = yyjson_obj_get(root, "launcher");
         if (yyjson_is_obj(launcher)) {
             yyjson_val* version = yyjson_obj_get(launcher, "version");
@@ -154,10 +166,13 @@ auto ParseAssets(const std::vector<u8>& data, Assets& out) -> Result {
                 if (yyjson_is_obj(components)) {
                     game.nro = ReadComponent(components, "nro");
                     game.romfs = ReadComponent(components, "romfs");
+                    // A RomFS is a pack, not a recompiled NRO; keep the legacy
+                    // version fallback only for its game version.
+                    game.romfs.recomp_version.clear();
                 }
                 game.banner = ReadBanner(value, "banner");
-                // Every installable game needs an NRO. A data-only entry cannot be launched.
-                if (game.nro.Valid()) {
+                // Every installable game needs a recompiled NRO. A data-only entry cannot be launched.
+                if (game.nro.Valid() && !game.nro.recomp_version.empty()) {
                     parsed.games[game.id] = std::move(game);
                 } else {
                     log_write("[assets] skipping %s: no usable nro component\n", game.id.c_str());
@@ -175,7 +190,8 @@ auto ParseAssets(const std::vector<u8>& data, Assets& out) -> Result {
 
     parsed.valid = true;
     out = std::move(parsed);
-    log_write("[assets] %zu game(s), launcher %s\n", out.games.size(), out.launcher_version.c_str());
+    log_write("[assets] %zu game(s), recomp %s, launcher %s\n", out.games.size(),
+              out.recomp_version.c_str(), out.launcher_version.c_str());
     return 0;
 }
 

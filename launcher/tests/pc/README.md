@@ -21,6 +21,7 @@ Targets:
 Covered:
 
 - catalogue loading and `file://` fetching
+- recomp, game and region version parsing, including the legacy `version` fallback
 - NRO header and NACP version parsing
 - install from an SD path and from a URL
 - SHA and size verification
@@ -29,6 +30,7 @@ Covered:
 - `installed.json` state and scan results
 - delete game vs delete game and save data
 - manual install detection
+- game/region changes and legacy `installed.json` migration
 - HTTP 200/404/500, redirects and redirect loops
 - partial, chunked, cancelled and oversized transfers
 - remote catalogue fetch, cache retention on failure, local-file precedence

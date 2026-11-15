@@ -30,8 +30,31 @@ auto Lowercase(std::string value) -> std::string {
     return value;
 }
 
-auto Stale(const Component& component, const std::string& installed) -> bool {
-    return component.Valid() && CompareVersion(component.version, installed) != 0;
+auto StaleNro(const Component& component, const InstalledComponent& installed) -> bool {
+    if (!component.Valid()) {
+        return false;
+    }
+    if (component.recomp_version.empty() || installed.recomp_version.empty() ||
+        CompareVersion(component.recomp_version, installed.recomp_version) != 0) {
+        return true;
+    }
+    if (!component.game_version.empty() &&
+        (installed.game_version.empty() ||
+         CompareVersion(component.game_version, installed.game_version) != 0)) {
+        return true;
+    }
+    return !component.region.empty() && component.region != installed.region;
+}
+
+auto StaleRomfs(const Component& component, const InstalledComponent& installed) -> bool {
+    if (!component.Valid()) {
+        return false;
+    }
+    if (component.game_version.empty() || installed.game_version.empty() ||
+        CompareVersion(component.game_version, installed.game_version) != 0) {
+        return true;
+    }
+    return !component.region.empty() && component.region != installed.region;
 }
 
 auto FileSize(const std::string& path) -> s64 {
@@ -268,7 +291,7 @@ Result Obtain(const Component& component, const std::string& dest, ui::ProgressB
 
 auto NeedsNro(const GameEntry& entry, const AssetsGame& catalog, bool force) -> bool {
     const Installed installed = ReadInstalled(entry.dir);
-    if (force || Stale(catalog.nro, installed.nro.version) ||
+    if (force || StaleNro(catalog.nro, installed.nro) ||
         (!Exists(entry.nro_path) && catalog.nro.Valid()) ||
         (Exists(entry.nro_path) && !IsValidNro(entry.nro_path))) {
         return true;
@@ -282,7 +305,7 @@ auto NeedsRomfs(const GameEntry& entry, const AssetsGame& catalog, bool force) -
     }
 
     const Installed installed = ReadInstalled(entry.dir);
-    if (force || Stale(catalog.romfs, installed.romfs.version)) {
+    if (force || StaleRomfs(catalog.romfs, installed.romfs)) {
         return true;
     }
     if (installed.romfs.size > 0 && FileSize(entry.romfs_path) != installed.romfs.size) {
@@ -375,7 +398,9 @@ Result InstallGameInner(const GameEntry& entry, const AssetsGame& catalog, ui::P
         if (pbox.ShouldExit()) {
             return Fail(error, "Install cancelled.");
         }
-        installed.nro.version = catalog.nro.version;
+        installed.nro.recomp_version = catalog.nro.recomp_version;
+        installed.nro.game_version = catalog.nro.game_version;
+        installed.nro.region = catalog.nro.region;
         installed.nro.sha256 = catalog.nro.sha256;
         installed.nro.size = catalog.nro.size > 0 ? catalog.nro.size : FileSize(entry.nro_path);
         if (R_FAILED(WriteInstalled(entry.dir, installed))) {
@@ -394,7 +419,9 @@ Result InstallGameInner(const GameEntry& entry, const AssetsGame& catalog, ui::P
         if (R_FAILED(rc)) {
             return rc;
         }
-        installed.romfs.version = catalog.romfs.version;
+        installed.romfs.recomp_version.clear();
+        installed.romfs.game_version = catalog.romfs.game_version;
+        installed.romfs.region = catalog.romfs.region;
         installed.romfs.sha256 = catalog.romfs.image_sha256;
         installed.romfs.size =
             catalog.romfs.image_size > 0 ? catalog.romfs.image_size : FileSize(entry.romfs_path);
