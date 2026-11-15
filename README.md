@@ -21,7 +21,7 @@ This version has been specifically optimized for the Nintendo Switch and runs we
 > [!IMPORTANT]
 > There are no game files in this project or its releases: no disc image, no levels, music,
 > graphics or sounds. You need your own copy of **New Super Mario Bros. Wii (USA, `SMNE01`,
-> revision 1)** (`.iso`, `.ciso`, `.wbfs`, `.wia`, `.rvz`) and put it alongside the `NSMBW.nro` file.
+> revision 1)** (`.iso`, `.ciso`, `.wbfs`, `.wia`, `.rvz`) and put it alongside `launcher.nro` in the launcher folder.
 
 **[I just want to play](#quick-start)**
 

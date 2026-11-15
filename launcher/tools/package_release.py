@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Stage the Switch release assets and regenerate the catalogue.
+
+Build the launcher and both game NROs first, then run:
+
+    python3 launcher/tools/package_release.py
+
+The default paths match the in-tree build directories. The script writes
+``launcher/assets.json``, an SD-card ZIP and the raw release files under
+``dist/release`` so hashes and versions cannot go stale between a build and an
+upload.
+
+Main release: ``NSMBW-switch.zip`` and ``assets.json`` only.
+Modules release: every standalone binary, resource and debug symbol.
+
+It does not upload anything. It writes ``upload-main.sh`` and
+``upload-modules.sh`` with the matching ``gh release create`` commands.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import shlex
+import shutil
+import struct
+import sys
+import zipfile
+from pathlib import Path
+
+from make_assets import build_assets, write_assets
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+VERSION_FILE = REPO_ROOT / "VERSION"
+DEFAULT_LAUNCHER = REPO_ROOT / "build-launcher" / "launcher.nro"
+DEFAULT_VANILLA = REPO_ROOT / "build-switch-product" / "NSMBW.nro"
+DEFAULT_NEWER = REPO_ROOT / "build-switch-newer" / "NSMBW.nro"
+DEFAULT_ROMFS = Path("/tmp/opencode/newersmbw.romfs.zst")
+DEFAULT_IMAGE = Path("/tmp/opencode/newersmbw.romfs")
+DEFAULT_BANNER = REPO_ROOT / "launcher" / "assets" / "banners" / "newersmbw.png"
+DEFAULT_VANILLA_SYMBOLS = REPO_ROOT / "build-switch-product" / "dist" / "debug-symbols.zip"
+DEFAULT_NEWER_SYMBOLS = REPO_ROOT / "build-switch-newer" / "dist" / "debug-symbols.zip"
+DEFAULT_SOURCE_ASSETS = REPO_ROOT / "launcher" / "assets.json"
+
+# NacpStruct.display_version in libnx.
+NACP_DISPLAY_VERSION = 0x3060
+INSTALL_TEXT = """New Super Mario Bros. Wii for Nintendo Switch
+=============================================
+
+1. Copy the "switch" folder in this ZIP to the root of your SD card. The
+   launcher is at switch/nsmbw/launcher.nro.
+
+2. Start the NSMBW forwarder from the home menu, or open
+   switch/nsmbw/launcher.nro from hbmenu.
+
+3. On first start, place a USA SMNE01 revision 1 disc image (.iso, .wbfs,
+   .ciso, .wia or .rvz) next to launcher.nro. The launcher extracts the shared
+   base game data to switch/nsmbw/discs/SMNE01.
+
+4. Newer Super Mario Bros. Wii is installed from "Download games" in the
+   launcher. The base game data is shared; Newer only adds its own NRO and
+   resource image.
+"""
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_version_file() -> str:
+    version = VERSION_FILE.read_text(encoding="utf-8").strip()
+    if not version:
+        raise ValueError("%s is empty" % VERSION_FILE)
+    return version
+
+
+def nro_version(path: Path) -> str:
+    data = path.read_bytes()
+    if data[:4] == b"NRO0":
+        base = 0
+    elif data[16:20] == b"NRO0":
+        base = 16
+    else:
+        raise ValueError("%s is not an NRO" % path)
+
+    if len(data) < base + 16:
+        raise ValueError("%s is too short for an NRO header" % path)
+    header_size = struct.unpack_from("<I", data, base + 8)[0]
+    if header_size + 0x28 > len(data) or data[header_size:header_size + 4] != b"ASET":
+        raise ValueError("%s has no asset section" % path)
+
+    nacp_offset = struct.unpack_from("<Q", data, header_size + 24)[0]
+    start = header_size + nacp_offset + NACP_DISPLAY_VERSION
+    if start + 0x10 > len(data):
+        raise ValueError("%s has no NACP display version" % path)
+    raw = data[start:start + 0x10].split(b"\0", 1)[0]
+    try:
+        version = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError("%s has a non-ASCII NACP version" % path) from exc
+    if not version:
+        raise ValueError("%s has an empty NACP version" % path)
+    return version
+
+
+def release_url(repo: str, tag: str, pinned: bool, name: str) -> str:
+    if pinned:
+        return "https://github.com/%s/releases/download/%s/%s" % (repo, tag, name)
+    return "https://github.com/%s/releases/latest/download/%s" % (repo, name)
+
+
+def source_spec(args, version: str) -> dict:
+    return {
+        "recomp_version": version,
+        "launcher": {
+            "version": version,
+            "file": str(args.launcher),
+            "url": release_url(args.modules_repo, args.tag, args.pinned, "launcher.nro"),
+        },
+        "games": {
+            "vanilla": {
+                "name": "New Super Mario Bros. Wii",
+                "author": "Nintendo",
+                "nro": {
+                    "recomp_version": version,
+                    "game_version": args.vanilla_game_version,
+                    "region": args.region,
+                    "file": str(args.vanilla),
+                    "url": release_url(args.modules_repo, args.tag, args.pinned, "vanilla-game.nro"),
+                },
+            },
+            "newersmbw": {
+                "name": "Newer Super Mario Bros. Wii",
+                "author": "Newer Team",
+                "nro": {
+                    "recomp_version": version,
+                    "game_version": args.newer_game_version,
+                    "region": args.region,
+                    "file": str(args.newer),
+                    "url": release_url(args.modules_repo, args.tag, args.pinned,
+                                       "newersmbw-game.nro"),
+                },
+                "romfs": {
+                    "game_version": args.newer_romfs_version or args.newer_game_version,
+                    "region": args.region,
+                    "file": str(args.romfs),
+                    "image": str(args.image),
+                    "url": release_url(args.modules_repo, args.tag, args.pinned,
+                                       "newersmbw.romfs.zst"),
+                },
+                "banner": {
+                    "file": str(args.banner),
+                    "url": release_url(args.modules_repo, args.tag, args.pinned,
+                                       "newersmbw-banner.png"),
+                },
+            },
+        },
+    }
+
+
+def copy_checked(source: Path, target: Path) -> None:
+    if not source.is_file():
+        raise ValueError("missing %s" % source)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def stage_sd_zip(main_dir: Path, work_dir: Path, launcher: Path, assets_path: Path,
+                 banner: Path, vanilla: Path) -> Path:
+    stage = work_dir / "switch" / "nsmbw"
+    (stage / "banners").mkdir(parents=True, exist_ok=True)
+    (stage / "games" / "vanilla").mkdir(parents=True, exist_ok=True)
+    copy_checked(launcher, stage / "launcher.nro")
+    copy_checked(assets_path, stage / "assets.json")
+    copy_checked(banner, stage / "banners" / "newersmbw.png")
+    copy_checked(vanilla, stage / "games" / "vanilla" / "game.nro")
+    (stage / "INSTALL.txt").write_text(INSTALL_TEXT, encoding="utf-8")
+
+    zip_path = main_dir / "NSMBW-switch.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for path in sorted(stage.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(work_dir).as_posix())
+    shutil.rmtree(work_dir)
+    return zip_path
+
+
+def file_record(path: Path) -> dict:
+    return {"name": path.name, "sha256": sha256(path), "size": path.stat().st_size}
+
+
+def gh_script(path: Path, repo: str, tag: str, files: list[Path], notes: str,
+              create_repo: bool = False) -> None:
+    names = " ".join(shlex.quote(str(f)) for f in files)
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "# Generated by launcher/tools/package_release.py",
+    ]
+    if create_repo:
+        lines.append("# Create the repository once if it does not exist:")
+        lines.append("# gh repo create %s --public" % repo)
+    lines.append("gh release create %s --repo %s --title %s --notes %s %s" % (
+        shlex.quote(tag), repo, shlex.quote(tag), shlex.quote(notes), names))
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    path.chmod(0o755)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, default=REPO_ROOT / "dist" / "release")
+    parser.add_argument("--launcher", type=Path, default=DEFAULT_LAUNCHER)
+    parser.add_argument("--vanilla", type=Path, default=DEFAULT_VANILLA)
+    parser.add_argument("--newer", type=Path, default=DEFAULT_NEWER)
+    parser.add_argument("--romfs", type=Path, default=DEFAULT_ROMFS,
+                        help="compressed Newer RomFS (newersmbw.romfs.zst)")
+    parser.add_argument("--image", type=Path, default=DEFAULT_IMAGE,
+                        help="uncompressed Newer RomFS used for image_sha256/image_size")
+    parser.add_argument("--banner", type=Path, default=DEFAULT_BANNER)
+    parser.add_argument("--vanilla-symbols", type=Path, default=DEFAULT_VANILLA_SYMBOLS)
+    parser.add_argument("--newer-symbols", type=Path, default=DEFAULT_NEWER_SYMBOLS)
+    parser.add_argument("--skip-symbols", action="store_true",
+                        help="do not require or copy debug symbol archives")
+    parser.add_argument("--source-assets", type=Path, default=DEFAULT_SOURCE_ASSETS,
+                        help="launcher/assets.json to update")
+    parser.add_argument("--no-update-source", action="store_true",
+                        help="do not overwrite launcher/assets.json")
+    parser.add_argument("--main-repo", default="timschneeb/nsmbw-nx")
+    parser.add_argument("--modules-repo", default="timschneeb/nsmbw-nx-modules")
+    parser.add_argument("--tag", default="v0.0.1")
+    parser.add_argument("--pinned", action="store_true",
+                        help="use /releases/download/<tag>/ instead of /releases/latest/download/")
+    parser.add_argument("--vanilla-game-version", default="1.0.0")
+    parser.add_argument("--newer-game-version", default="1.30")
+    parser.add_argument("--newer-romfs-version", default="",
+                        help="defaults to --newer-game-version")
+    parser.add_argument("--region", default="U",
+                        help="region the NROs were recompiled from (U, E, J, ...)")
+    args = parser.parse_args()
+
+    version = read_version_file()
+    if args.tag.lstrip("v") != version:
+        raise ValueError("tag %s does not match VERSION %s" % (args.tag, version))
+
+    for path in (args.launcher, args.vanilla, args.newer, args.romfs, args.image, args.banner):
+        if not path.is_file():
+            raise ValueError("missing %s" % path)
+    if not args.skip_symbols:
+        for path in (args.vanilla_symbols, args.newer_symbols):
+            if not path.is_file():
+                raise ValueError("missing %s (use --skip-symbols to omit)" % path)
+
+    for path in (args.launcher, args.vanilla, args.newer):
+        actual = nro_version(path)
+        if actual != version:
+            raise ValueError("%s NACP is %s, expected VERSION %s" % (path, actual, version))
+
+    assets = build_assets(source_spec(args, version))
+
+    if args.out.exists():
+        shutil.rmtree(args.out)
+    main_dir = args.out / "main"
+    modules_dir = args.out / "modules"
+    main_dir.mkdir(parents=True)
+    modules_dir.mkdir(parents=True)
+
+    write_assets(assets, main_dir / "assets.json")
+    if not args.no_update_source:
+        write_assets(assets, args.source_assets)
+
+    copy_checked(args.launcher, modules_dir / "launcher.nro")
+    copy_checked(args.vanilla, modules_dir / "vanilla-game.nro")
+    copy_checked(args.newer, modules_dir / "newersmbw-game.nro")
+    copy_checked(args.romfs, modules_dir / "newersmbw.romfs.zst")
+    copy_checked(args.banner, modules_dir / "newersmbw-banner.png")
+    if not args.skip_symbols:
+        copy_checked(args.vanilla_symbols, modules_dir / "vanilla-debug-symbols.zip")
+        copy_checked(args.newer_symbols, modules_dir / "newersmbw-debug-symbols.zip")
+
+    zip_path = stage_sd_zip(main_dir, args.out / ".stage", args.launcher,
+                            main_dir / "assets.json", args.banner, args.vanilla)
+
+    # The main release is the user-facing ZIP and the catalogue only.
+    main_files = [zip_path, main_dir / "assets.json"]
+    modules_files = [modules_dir / "launcher.nro", modules_dir / "vanilla-game.nro",
+                     modules_dir / "newersmbw-game.nro", modules_dir / "newersmbw.romfs.zst",
+                     modules_dir / "newersmbw-banner.png"]
+    if not args.skip_symbols:
+        modules_files += [modules_dir / "vanilla-debug-symbols.zip",
+                          modules_dir / "newersmbw-debug-symbols.zip"]
+
+    manifest = {
+        "tag": args.tag,
+        "version": version,
+        "main_repo": args.main_repo,
+        "modules_repo": args.modules_repo,
+        "main": [file_record(path) for path in main_files],
+        "modules": [file_record(path) for path in modules_files],
+        "catalogue": assets,
+    }
+    (args.out / "release.json").write_text(json.dumps(manifest, indent=2) + "\n",
+                                           encoding="utf-8")
+
+    gh_script(args.out / "upload-main.sh", args.main_repo, args.tag, main_files,
+              "NSMBW Switch launcher, base runtime and catalogue")
+    gh_script(args.out / "upload-modules.sh", args.modules_repo, args.tag, modules_files,
+              "NSMBW Switch runtimes, resources and debug symbols", create_repo=True)
+
+    print("version    %s" % version)
+    print("catalogue  %s" % (main_dir / "assets.json"))
+    print("zip        %s" % zip_path)
+    for path in main_files + modules_files:
+        print("asset      %s  %d bytes" % (path, path.stat().st_size))
+    print("manifest   %s" % (args.out / "release.json"))
+    print("upload     %s" % (args.out / "upload-main.sh"))
+    print("upload     %s" % (args.out / "upload-modules.sh"))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        sys.exit(1)

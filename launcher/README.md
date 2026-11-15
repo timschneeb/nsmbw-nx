@@ -93,22 +93,38 @@ catalogue before reporting.
 ```json
 {
   "schema": 1,
-  "launcher": { "version": "1.0.0", "url": "...", "sha256": "...", "size": 0 },
+  "recomp_version": "0.0.1",
+  "launcher": { "version": "0.0.1", "url": "...", "sha256": "...", "size": 0 },
   "games": {
     "vanilla": {
       "name": "New Super Mario Bros. Wii",
       "author": "Nintendo",
       "components": {
-        "nro": { "version": "1.0.0", "url": ".../NSMBW.nro", "sha256": "...", "size": 0 }
+        "nro": {
+          "recomp_version": "0.0.1",
+          "game_version": "1.0.0",
+          "region": "U",
+          "url": ".../vanilla-game.nro",
+          "sha256": "...",
+          "size": 0
+        }
       }
     },
     "newersmbw": {
       "name": "Newer Super Mario Bros. Wii",
       "author": "Newer Team",
       "components": {
-        "nro": { "version": "1.30", "url": ".../newersmbw-game.nro", "sha256": "...", "size": 0 },
+        "nro": {
+          "recomp_version": "0.0.1",
+          "game_version": "1.30",
+          "region": "U",
+          "url": ".../newersmbw-game.nro",
+          "sha256": "...",
+          "size": 0
+        },
         "romfs": {
-          "version": "1.30",
+          "game_version": "1.30",
+          "region": "U",
           "url": ".../newersmbw.romfs.zst",
           "sha256": "<compressed>",
           "size": 0,
@@ -126,13 +142,19 @@ catalogue before reporting.
 }
 ```
 
+`recomp_version` is the release/bundle version shared by the main and modules repositories. Each NRO
+also carries its own `recomp_version` and a `game_version`, plus the `region` it was recompiled from
+(`U` for USA, `E` for Europe, `J` for Japan). Vanilla `1.0.0` is USA revision 1. The Newer RomFS is a
+pack, so it has `game_version` and `region` but no `recomp_version`. The old single `version` field
+is still accepted as a compatibility fallback.
+
 Components may use `url` (HTTP) or `path` (SD card). Each component has its own version, so an NRO
 bump with an unchanged RomFS downloads only the NRO. `vanilla` has no RomFS component: it lets the
 launcher deliver runtime updates without a new ZIP.
 
-The `banner` is optional. It is not versioned; the launcher replaces the cached image when the
-catalogue checksum changes. Without a banner, or offline before the first download, the row shows
-the embedded NSMBW logo.
+The `banner` is optional. Banners are downloaded when the catalogue is fetched. The release ZIP also
+contains the Newer banner as an offline fallback, so a fresh or offline launcher shows it before the
+first fetch. The launcher replaces the cached image when the catalogue checksum changes.
 
 Use `tools/make_assets.py` to fill in the hashes from the built files:
 
@@ -237,20 +259,34 @@ GitHub is fetched over verified TLS using the root bundle embedded in the launch
 
 ## Release assets
 
-The main repository release carries `launcher.nro`, `assets.json`, `NSMBW.nro`, `NSMBW-switch.zip`
-and `debug-symbols.zip`. The standalone `NSMBW.nro` is what the `vanilla` catalogue entry updates.
+The main repository release carries only `NSMBW-switch.zip` and `assets.json`. The ZIP contains
+`switch/nsmbw/launcher.nro`, `assets.json`, the banner and `games/vanilla/game.nro`, so the user
+copies one `switch` folder to the SD root.
 
-The mods repository release carries `newersmbw-game.nro`, `newersmbw.romfs.zst`,
-`newersmbw-banner.png` and the Newer debug symbols. The paths in the example catalogue match those
-names.
+The modules repository (`nsmbw-nx-modules`) carries every standalone binary and resource:
+`launcher.nro`, `vanilla-game.nro`, `vanilla-debug-symbols.zip`, `newersmbw-game.nro`,
+`newersmbw.romfs.zst`, `newersmbw-banner.png` and `newersmbw-debug-symbols.zip`. All catalogue URLs
+point there, so users do not see raw NROs on the main release page.
+
+Stage both releases after the final build:
+
+```
+python3 launcher/tools/package_release.py
+```
+
+This regenerates `assets.json`, builds `NSMBW-switch.zip`, writes `dist/release/main` and
+`dist/release/modules`, and creates `upload-main.sh` and `upload-modules.sh`.
 
 ## Versions
 
-`LAUNCHER_VERSION` comes from the `project(... VERSION ...)` line in `CMakeLists.txt` and is also
-written into the NACP. Bump it and the `launcher.version` field together, otherwise the launcher
-update row will not appear. The runtime NACP version is `1.0.0` for the base game and `1.30` for
-Newer, so manual installs report the same version as the catalogue. Bump the base NACP version and
-the `vanilla` catalogue entry together when a runtime update should reach existing installs.
+The repository root `VERSION` file is the single release version. Both the launcher project and the
+Switch runtime NACP read it, and `package_release.py` refuses to stage when an NRO NACP disagrees
+with it. The release tag must match it (`v0.0.1` for `0.0.1`).
+
+The launcher NACP, vanilla NRO NACP, Newer NRO NACP and top-level `recomp_version` are all the
+release version. The game version is separate: vanilla `1.0.0` for USA revision 1, Newer `1.30` for
+the pack. The Newer RomFS keeps the pack version. Bump `VERSION` and rebuild both products for a new
+release; no manual hash editing is needed.
 
 The launcher disables console auto-sleep while it is open, so long downloads and extractions are not
 interrupted by the idle timer.
