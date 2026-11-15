@@ -29,6 +29,11 @@ constexpr uint64_t kStrapTransitionCoverFrames = 60;
 
 std::atomic_bool g_bootShadersReady{false};
 bool g_bootShaderNotice = false;
+// On the run that builds the pipeline cache, wait for the prewarm queue to appear
+// before accepting a drain. Otherwise the queue is still empty when the guest
+// starts, the gate opens, and the shader screen never shows.
+bool g_bootShaderFirstRun = false;
+bool g_bootShaderSeenQueue = false;
 Clock::time_point g_bootShaderWaitStart{};
 constexpr uint32_t kBootShaderNoticeThreshold = 100;
 // The queue must stay empty this long before the guest is released, so a momentary dip between
@@ -56,7 +61,9 @@ void ResetBootShaderState() noexcept {
     // The boot screen is only for the first run that builds the pipeline cache. Once the prewarm
     // has drained on this cache, boot straight into the game and compile anything new in the
     // background.
-    if (aurora_boot_prewarm_compiled()) {
+    g_bootShaderFirstRun = !aurora_boot_prewarm_compiled();
+    g_bootShaderSeenQueue = false;
+    if (!g_bootShaderFirstRun) {
         g_bootShadersReady.store(true, std::memory_order_release);
         g_strapInputAccepted.store(true, std::memory_order_relaxed);
         g_startupDismissFrame.store(0, std::memory_order_relaxed);
@@ -72,8 +79,13 @@ void UpdateBootShaderState() noexcept {
         g_bootShaderWaitStart = now;
     }
     const uint32_t queued = aurora_get_queued_pipeline_count();
+    if (queued > 0) {
+        g_bootShaderSeenQueue = true;
+    }
     g_bootShaderNotice |= queued > kBootShaderNoticeThreshold;
-    if (aurora_boot_pipelines_pending()) {
+    const bool waiting_for_first_queue =
+        g_bootShaderFirstRun && !g_bootShaderSeenQueue && now - g_bootShaderWaitStart < std::chrono::seconds(10);
+    if (aurora_boot_pipelines_pending() || waiting_for_first_queue) {
         g_bootShaderDrainStart = {};
     } else if (g_bootShaderDrainStart == Clock::time_point{}) {
         g_bootShaderDrainStart = now;

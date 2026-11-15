@@ -1687,6 +1687,16 @@ void LogHorizonPerformanceState() {
     }
 }
 
+// Which language the game will run in, and where that choice came from, so a bug report can tell a
+// console language from one picked in Settings.
+void LogLanguageChoice() {
+    const bool chosen = RuntimeConfigFile::Get().language.has_value();
+    const std::string language = RuntimeConfigFile::Language();
+    const std::string console = RuntimePlatform::SystemLanguageCode();
+    RT_LOGF(RT_TAG_CONFIG, "language: %s (%s), console %s\n", language.c_str(),
+            chosen ? "Config.toml" : "not chosen yet", console.empty() ? "unknown" : console.c_str());
+}
+
 constexpr u32 kTargetCpuClockHz = 1581000000u;
 ClkrstSession g_cpuClockSession{};
 std::mutex g_cpuClockMutex;
@@ -1831,6 +1841,7 @@ int RuntimeMain(int argc, char** argv) {
 #if defined(MKW_PLATFORM_SWITCH)
     RT_LOG(RT_TAG_RUNTIME) << romfsStatus << std::endl;
     RT_LOG(RT_TAG_RUNTIME) << socketStatus << std::endl;
+    LogLanguageChoice();
     if (g_cpuClockReady) {
         std::lock_guard lock(g_cpuClockMutex);
         u32 hz = 0;
@@ -2013,6 +2024,44 @@ int RuntimeMain(int argc, char** argv) {
                       << RuntimeConfigFile::PathToUtf8(rendererCacheDirectory) << ": "
                       << rendererPathError.message() << std::endl;
         }
+#if defined(MKW_PLATFORM_SWITCH)
+        // Newer reuses the base game's shaders. Copy the vanilla Dawn cache once,
+        // before the renderer opens it and the shader compile screen appears.
+        if (RuntimeProduct::Active().gameId == "SMNE03") {
+            const auto dawnCache = rendererCacheDirectory / "dawn_cache.db";
+            std::error_code dawnCacheError;
+            if (!std::filesystem::exists(dawnCache, dawnCacheError)) {
+                const auto program = RuntimeConfigFile::ExecutableDirectory();
+                if (program) {
+                    const auto source = program->parent_path() / "vanilla" / "data" / "Cache" / "dawn_cache.db";
+                    if (std::filesystem::is_regular_file(source, dawnCacheError)) {
+                        std::FILE* in = std::fopen(RuntimeConfigFile::PathToUtf8(source).c_str(), "rb");
+                        std::FILE* out = in ? std::fopen(RuntimeConfigFile::PathToUtf8(dawnCache).c_str(), "wb") : nullptr;
+                        bool ok = in != nullptr && out != nullptr;
+                        if (ok) {
+                            std::vector<unsigned char> buffer(1024 * 1024);
+                            size_t read = 0;
+                            while ((read = std::fread(buffer.data(), 1, buffer.size(), in)) > 0) {
+                                if (std::fwrite(buffer.data(), 1, read, out) != read) {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            ok = ok && std::ferror(in) == 0 && std::ferror(out) == 0;
+                        }
+                        if (in != nullptr) std::fclose(in);
+                        if (out != nullptr) std::fclose(out);
+                        if (ok) {
+                            RT_LOG(RT_TAG_RUNTIME) << "copied the vanilla Dawn cache to "
+                                      << RuntimeConfigFile::PathToUtf8(dawnCache) << std::endl;
+                        } else {
+                            std::filesystem::remove(dawnCache, dawnCacheError);
+                        }
+                    }
+                }
+            }
+        }
+#endif
         const std::string auroraUserPath = RuntimeConfigFile::PathToUtf8(applicationDataDirectory);
         const std::string auroraCachePath = RuntimeConfigFile::PathToUtf8(rendererCacheDirectory);
         auroraConfig.userPath = auroraUserPath.c_str();

@@ -305,16 +305,22 @@ def main():
     for name in ("SystemUS_1.bin", "DLCodeUS_1.bin", "DLRelocsUS_1.bin"):
         if not (res / name).is_file():
             sys.exit(f"{res / name} is missing: is this Newer Super Mario Bros. Wii?")
-    for name in RELS:
-        newer = lz11((root / "files" / "rels" / f"{name}.rel.LZ").read_bytes())
-        if newer != (CLEAN / f"{name}.rel").read_bytes():
-            sys.exit(f"{name}.rel differs from the clean game's; only main.dol may be patched")
+    rels_dir = root / "files" / "rels"
+    if rels_dir.is_dir():
+        for name in RELS:
+            newer = lz11((rels_dir / f"{name}.rel.LZ").read_bytes())
+            if newer != (CLEAN / f"{name}.rel").read_bytes():
+                sys.exit(f"{name}.rel differs from the clean game's; only main.dol may be patched")
+    else:
+        print("no files/rels in the source; the clean RELs are used")
 
     dol = Dol((root / "sys" / "main.dol").read_bytes())
     text, off = dol.locate(PHASE_SLOT)
     loader_hook = rd(dol.data, off)
-    if loader_hook != LOADER[0]:
-        sys.exit(f"0x{PHASE_SLOT:08X} holds 0x{loader_hook:08X}, not Newer's loader at 0x{LOADER[0]:08X}")
+    # Newer's disc has the loader in main.dol's data; the Riivolution pack writes it to low memory.
+    if loader_hook not in (LOADER[0], 0x80001800):
+        sys.exit(f"0x{PHASE_SLOT:08X} holds 0x{loader_hook:08X}, not Newer's loader")
+    loader_base = loader_hook
     rel = bytearray((CLEAN / "nsmbw_linked.rel").read_bytes())
     layout = json.loads((CLEAN / "nsmbw_rel_layout.json").read_text())
     rel_base = int(layout["image_start"], 16)
@@ -396,7 +402,7 @@ def main():
 
     base_map =(REPO / "projects" / "nsmbw" / "MAP.txt").read_text()
     lines = [base_map.rstrip("\n"), "# Newer Super Mario Bros. Wii loader (main.dol .data) and blob"]
-    lines += [f"{a:08x} {a:08x}" for a in LOADER]
+    lines += [f"{loader_base + (a - LOADER[0]):08x} {a:08x}" for a in LOADER]
     lines += [f"{a:08x} newer_{a - DLCODE_ADDR:05x}" for a in sorted(starts)]
 
     # Synthetic REL: the gap up to the blob, then the blob as a code section and a data section.

@@ -397,6 +397,11 @@ function(mkw_configure_product target)
     # lookup works without application-specific configuration.
     set(MKW_INITIAL_PIPELINE_CACHE
         "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/initial_pipeline_cache.db")
+    # Newer reuses most of the base renderer and ships its own captured pipeline cache.
+    if(NSMBW_GAME_ID STREQUAL "SMNE03")
+        set(MKW_INITIAL_PIPELINE_CACHE
+            "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/newer_pipeline_cache.db")
+    endif()
     if(NOT EXISTS "${MKW_INITIAL_PIPELINE_CACHE}")
         message(FATAL_ERROR "Missing transferable Aurora pipeline cache: ${MKW_INITIAL_PIPELINE_CACHE}")
     endif()
@@ -478,6 +483,64 @@ if(MKW_PLATFORM_SWITCH)
             "--romfsdir=${CMAKE_BINARY_DIR}/romfs/WiiCompiled"
         COMMENT "Packing NSMBW.nro"
         VERBATIM)
+
+    # Release assets: the NRO in its SD card layout, the launcher and the update catalog,
+    # plus the matching debug symbols for crash logs.
+    if(NOT CMAKE_OBJCOPY)
+        message(FATAL_ERROR "CMAKE_OBJCOPY is required for the Switch symbols archive")
+    endif()
+    set(MKW_SWITCH_DIST_DIR "${CMAKE_BINARY_DIR}/dist")
+    set(MKW_SWITCH_NRO_STAGE "${CMAKE_BINARY_DIR}/package-nro")
+    set(MKW_SWITCH_SYMBOLS_STAGE "${CMAKE_BINARY_DIR}/package-symbols")
+    set(MKW_SWITCH_LAUNCHER_NRO "${CMAKE_SOURCE_DIR}/../build-launcher/launcher.nro"
+        CACHE FILEPATH "Launcher NRO bundled into NSMBW-switch.zip")
+    set(MKW_SWITCH_ASSETS_JSON "${CMAKE_SOURCE_DIR}/../launcher/assets.json"
+        CACHE FILEPATH "assets.json bundled into NSMBW-switch.zip")
+
+    set(MKW_SWITCH_PACKAGE_EXTRA)
+    if(EXISTS "${MKW_SWITCH_LAUNCHER_NRO}")
+        list(APPEND MKW_SWITCH_PACKAGE_EXTRA
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MKW_SWITCH_LAUNCHER_NRO}" "${MKW_SWITCH_NRO_STAGE}/switch/nsmbw/launcher.nro")
+    else()
+        message(WARNING "launcher.nro not found at ${MKW_SWITCH_LAUNCHER_NRO}; the package will not include it")
+    endif()
+    if(EXISTS "${MKW_SWITCH_ASSETS_JSON}")
+        list(APPEND MKW_SWITCH_PACKAGE_EXTRA
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MKW_SWITCH_ASSETS_JSON}" "${MKW_SWITCH_NRO_STAGE}/switch/nsmbw/assets.json")
+    else()
+        message(WARNING "assets.json not found at ${MKW_SWITCH_ASSETS_JSON}; the package will not include it")
+    endif()
+
+    add_custom_target(switch-package
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${MKW_SWITCH_NRO_STAGE}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${MKW_SWITCH_NRO_STAGE}/switch/nsmbw/games/vanilla"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/NSMBW.nro"
+            "${MKW_SWITCH_NRO_STAGE}/switch/nsmbw/games/vanilla/game.nro"
+        ${MKW_SWITCH_PACKAGE_EXTRA}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${MKW_SWITCH_DIST_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E chdir "${MKW_SWITCH_NRO_STAGE}"
+            ${CMAKE_COMMAND} -E tar cf "${MKW_SWITCH_DIST_DIR}/NSMBW-switch.zip"
+            --format=zip switch/nsmbw
+        DEPENDS WiiCompiled
+        COMMENT "Packing NSMBW-switch.zip"
+        VERBATIM)
+    add_custom_target(switch-symbols
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${MKW_SWITCH_SYMBOLS_STAGE}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${MKW_SWITCH_SYMBOLS_STAGE}"
+        COMMAND "${CMAKE_OBJCOPY}" --only-keep-debug "$<TARGET_FILE:WiiCompiled>"
+            "${MKW_SWITCH_SYMBOLS_STAGE}/NSMBW.debug"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${MKW_SWITCH_DIST_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E chdir "${MKW_SWITCH_SYMBOLS_STAGE}"
+            ${CMAKE_COMMAND} -E tar cf "${MKW_SWITCH_DIST_DIR}/debug-symbols.zip"
+            --format=zip NSMBW.debug
+        DEPENDS WiiCompiled
+        COMMENT "Packing debug-symbols.zip"
+        VERBATIM)
+    add_custom_target(switch-release DEPENDS switch-package switch-symbols)
 endif()
 if(MKW_PLATFORM_WINDOWS)
     # The app icon (projects/nsmbw/tools/make_icons.ps1): Explorer, the taskbar and, through SDL's

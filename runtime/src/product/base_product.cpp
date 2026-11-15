@@ -11,6 +11,13 @@ constexpr std::string_view kGameId = NSMBW_GAME_ID;
 // Newer Super Mario Bros. Wii (projects/nsmbw/recomp-newer.yml): translated from v1.30's code for
 // the USA, whose DLCodeUS_1.bin is this size; another version runs other code.
 constexpr bool kNewer = kGameId == "SMNE03";
+#if defined(MKW_PLATFORM_SWITCH)
+// The launcher gives each game its own folder, so Newer's user data can live
+// directly in data/ like the base game's.
+constexpr std::string_view kNewerUserDataFolder = {};
+#else
+constexpr std::string_view kNewerUserDataFolder = "NewerWiiSaveData";
+#endif
 
 } // namespace
 
@@ -24,7 +31,7 @@ const Descriptor& Active() noexcept {
               "NewerRes/DLCodeUS_1.bin",
               463252,
               "title/00010000/534d4e45/data/NerSMBW.sav",
-              "NewerWiiSaveData",
+              kNewerUserDataFolder,
               "game-newer",
           }
         : Descriptor{

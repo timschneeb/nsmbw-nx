@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <string_view>
 
 // Small host-services boundary for functionality that must not leak Win32
@@ -22,5 +23,9 @@ std::filesystem::path ApplicationDataDirectory(std::string_view applicationName)
 std::filesystem::path LogDirectory(std::string_view applicationName);
 
 uint64_t CurrentProcessId() noexcept;
+
+// The console's own language as the port's code ("en", "es", "fr" or "it"), or "" when the
+// platform has no such setting (desktop, Android) or it could not be read.
+std::string SystemLanguageCode();
 
 } // namespace RuntimePlatform

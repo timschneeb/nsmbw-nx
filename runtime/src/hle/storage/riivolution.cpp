@@ -18,6 +18,9 @@
 #include "runtime_log.h"
 #include "runtime_product.h"
 
+#include <switch/runtime/devices/fs_dev.h>
+#include <switch/runtime/devices/romfs_dev.h>
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -145,6 +148,21 @@ std::vector<RuntimeRiivolution::Overlay> RiivoDiscoverRoots() {
         !retroRewindRoot.empty()) {
         RiivoAddRoot(overlays, RuntimeNandPath::ResolveConfiguredPath(retroRewindRoot),
                      "canonical Retro Rewind installation");
+    }
+
+    // Newer ships as one RomFS image in its data folder. Mounting it gives the
+    // overlay a read-only devoptab root, so the pack never needs unpacking.
+    if (RuntimeRiivolution::MountNewerPack()) {
+        RiivoAddRoot(overlays, fs::path("pak:/"), "Newer RomFS");
+    }
+
+    // Loose files remain supported for manual installs. Explicit config roots win.
+    if (RuntimeProduct::Active().gameId == "SMNE03") {
+        std::error_code ec;
+        const auto data = RuntimeConfigFile::ApplicationDataDirectory();
+        if (fs::is_directory(data / "riivolution", ec)) {
+            RiivoAddRoot(overlays, data, "Newer pack");
+        }
     }
 
     for (const auto& root : RecompMod::DvdOverlayRoots()) {
@@ -411,6 +429,52 @@ void RiivoInitialize() {
 } // namespace
 
 namespace RuntimeRiivolution {
+
+bool MountNewerPack() {
+    if (RuntimeProduct::Active().gameId != "SMNE03") {
+        return false;
+    }
+
+    static bool tried = false;
+    static bool mounted = false;
+    static FsFile image_file{};
+    if (!tried) {
+        tried = true;
+        std::error_code ec;
+        // The RomFS image sits beside the NRO, not in the data folder.
+        const auto base = RuntimeConfigFile::ExecutableDirectory().value_or(
+            RuntimeConfigFile::ApplicationDataDirectory());
+        const auto image = base / "assets.romfs";
+        if (fs::is_regular_file(image, ec)) {
+            FsFileSystem* device = nullptr;
+            char fs_path[FS_MAX_PATH]{};
+            const std::string text = PathToUtf8(image);
+            if (fsdevTranslatePath(text.c_str(), &device, fs_path) == 0 && device != nullptr &&
+                R_SUCCEEDED(fsFsOpenFile(device, fs_path, FsOpenMode_Read, &image_file)) &&
+                R_SUCCEEDED(romfsMountFromFile(image_file, 0, "pak"))) {
+                mounted = true;
+                RT_LOG(RT_TAG_RIIVOLUTION) << "mounted " << text << " as pak:/" << std::endl;
+            } else {
+                RT_LOG(RT_TAG_RIIVOLUTION) << "failed to mount " << text << std::endl;
+            }
+        }
+    }
+    return mounted;
+}
+
+bool NewerPackVersionFileValid(uintmax_t expected) {
+    if (!MountNewerPack()) {
+        return false;
+    }
+
+    std::error_code ec;
+    const auto path = fs::path("pak:/NewerSMBW") / fs::path(std::string(RuntimeProduct::Active().versionFile));
+    const uintmax_t size = fs::file_size(path, ec);
+    RT_LOG(RT_TAG_RIIVOLUTION) << "pack version file " << PathToUtf8(path) << ": " << (ec ? 0 : size)
+              << " bytes (expected " << expected << ")" << std::endl;
+    return !ec && size == expected;
+}
+
 
 const std::vector<Overlay>& Overlays() {
     std::call_once(g_riivoOnce, RiivoInitialize);

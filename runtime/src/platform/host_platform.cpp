@@ -18,6 +18,7 @@
 #endif
 
 #if defined(MKW_PLATFORM_SWITCH)
+#include <switch.h>
 #include <system_error>
 #endif
 
@@ -114,6 +115,38 @@ uint64_t CurrentProcessId() noexcept {
     return static_cast<uint64_t>(::GetCurrentProcessId());
 #else
     return static_cast<uint64_t>(::getpid());
+#endif
+}
+
+std::string SystemLanguageCode() {
+#if defined(MKW_PLATFORM_SWITCH)
+    if (R_FAILED(setInitialize())) {
+        return {};
+    }
+    u64 languageCode = 0;
+    SetLanguage language = SetLanguage_ENUS;
+    const bool read = R_SUCCEEDED(setGetSystemLanguage(&languageCode)) &&
+                      R_SUCCEEDED(setMakeLanguage(languageCode, &language));
+    setExit();
+    if (!read) {
+        return {};
+    }
+    // The USA disc has English, French and Spanish; anything else runs in English. Italian keeps the
+    // English disc files and gets its text from a language pack (riivolution.cpp).
+    switch (language) {
+    case SetLanguage_FR:
+    case SetLanguage_FRCA:
+        return "fr";
+    case SetLanguage_ES:
+    case SetLanguage_ES419:
+        return "es";
+    case SetLanguage_IT:
+        return "it";
+    default:
+        return "en";
+    }
+#else
+    return {};
 #endif
 }
 

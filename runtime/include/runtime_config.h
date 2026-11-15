@@ -1030,8 +1030,17 @@ inline bool SetSpinningCoins(bool value) {
 }
 
 // NSMBW: the language the game runs in ("en", "es", "fr" or "it"); read by SCGetLanguage at boot.
-inline std::string Language(std::string fallback = "en") {
-    return Get().language.value_or(std::move(fallback));
+// Until the player picks one in Settings, it follows the console's own system language, so a first
+// start on a French or Spanish console opens in French or Spanish.
+inline std::string Language(std::string fallback = {}) {
+    if (const auto& chosen = Get().language) {
+        return *chosen;
+    }
+    if (!fallback.empty()) {
+        return fallback;
+    }
+    static const std::string console = RuntimePlatform::SystemLanguageCode();
+    return console.empty() ? std::string("en") : console;
 }
 
 // The USA disc's own languages. Any other runs on the English files, with the text a language pack

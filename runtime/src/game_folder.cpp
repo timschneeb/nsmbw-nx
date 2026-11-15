@@ -4,6 +4,7 @@
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "runtime_product.h"
+#include "hle/storage/riivolution.h"
 #include "ui_text.h"
 #include "wii_disc.h"
 
@@ -763,7 +764,14 @@ std::string Check(const fs::path& root, bool* incomplete) {
     const int revision = static_cast<unsigned char>(header[7]);
     const RuntimeProduct::Descriptor& product = RuntimeProduct::Active();
     const std::string disc(product.discName);
-    if (std::string problem = IdProblem(id, revision); !problem.empty()) {
+    // Newer runs on the vanilla folder: the disc header still says SMNE01. The
+    // pack in the Newer data folder proves which mod this is.
+    const bool newer_shared = product.gameId == "SMNE03" && id == "SMNE01" && revision == 1;
+    if (newer_shared) {
+        if (!RuntimeRiivolution::NewerPackVersionFileValid(product.versionFileSize)) {
+            return leftOut("It has no Newer Super Mario Bros. Wii resources (assets.romfs) beside the program.");
+        }
+    } else if (std::string problem = IdProblem(id, revision); !problem.empty()) {
         return problem;
     }
     // Every file the game reads (its own file table's list): a folder copied in part would start,
@@ -784,6 +792,9 @@ std::string Check(const fs::path& root, bool* incomplete) {
     };
     if (std::string problem = CheckModules(id, disc, sizeOf); !problem.empty()) {
         return problem;
+    }
+    if (newer_shared) {
+        return {};
     }
     return CheckVersionFile(id, disc, std::string(product.versionFile), product.versionFileSize, sizeOf);
 }
@@ -1011,6 +1022,23 @@ bool EnsureConfigured() {
     // then [paths] dvd_root. Finding nothing is reported by StartupProblem(), before the boot.
     {
         const fs::path program = ProgramDirectory();
+        if (RuntimeProduct::Active().gameId == "SMNE03" && !program.empty()) {
+            const fs::path shared = program.parent_path() / "vanilla" / "game";
+            std::error_code ec;
+            if (fs::is_directory(shared, ec)) {
+                const fs::path found = Find(shared);
+                const fs::path root = found.empty() ? shared : found;
+                const std::string problem = Problem(root);
+                if (problem.empty()) {
+                    RuntimeConfigFile::UseDvdRootForThisRun(root);
+                    RT_LOGF(RT_TAG_RUNTIME, "game folder: shared base %s\n",
+                            RuntimeConfigFile::PathToUtf8(root).c_str());
+                    return true;
+                }
+                RT_LOGF(RT_TAG_RUNTIME, "game folder: shared base %s can't be used: %s\n",
+                        RuntimeConfigFile::PathToUtf8(root).c_str(), problem.c_str());
+            }
+        }
         std::string folderProblem;
         fs::path besideFolder;
         if (const fs::path beside = Find(program / "game"); !beside.empty()) {

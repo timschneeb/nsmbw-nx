@@ -357,16 +357,18 @@ page.
 
 1. Download the Switch ZIP from the Releases page.
 2. Copy the ZIP contents onto the SD card of your Switch.
-   * This will place the `NSMBW.nro` into a new folder at `/switch/nsmbw`.
-3. Copy your disc image into the folder at `/switch/nsmbw` on the SD card.
-4. Start the game!
+   * This creates `/switch/nsmbw/launcher.nro`, `/switch/nsmbw/assets.json` and
+     `/switch/nsmbw/games/vanilla/game.nro`.
+   * Mods live next to it as `/switch/nsmbw/games/<id>/`, with one `game.nro` per game.
+3. Copy your disc image into `/switch/nsmbw/games/vanilla/` on the SD card.
+4. Start the launcher from the home menu forwarder and pick a game.
 5. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking).
 
 > [!NOTE]
 > The first boot will take about 10 minutes. It will extract the disc image and compile shaders for the first time.
 > Subsequent boots will preload shaders in the background (~1-2 minutes) while the game is running. This may slightly impact performance during this time.
 >
-> The game crashed or shows something wrong? Open an issue with your device, what you did, and the log from `/switch/nsmbw/data/Logs`.
+> The game crashed or shows something wrong? Open an issue with your device, what you did, and the log from `/switch/nsmbw/games/vanilla/data/Logs`.
 
 <!-- **Newer Super Mario Bros. Wii**
 - **Windows / Linux:** run `NewerSMBW.exe` (`./NewerSMBW`) from the same folder and choose your Newer

@@ -156,6 +156,45 @@ with `-DNSMBW_GAME_ID=SMNE03`), which CMake can only do once the translation is 
 By hand, on any platform: run `newer_prelink.py <extracted Newer folder>`, then the step 3 commands
 with `--project projects/nsmbw/recomp-newer.yml`, and configure with `-DNSMBW_GAME_ID=SMNE03`.
 
+### From the Riivolution pack (no Newer disc)
+
+The official Riivolution pack has no patched main.dol: it writes `Loader.bin` to `0x80001800` and
+applies memory patches at boot. `tools/newer_pack_prelink.py` does that offline instead:
+
+```
+python3 projects/nsmbw/tools/newer_pack_prelink.py <pack folder>
+```
+
+The pack folder holds `riivolution/NewerSMBW.xml` and `NewerSMBW/` (or `files/`). The script applies
+the pack's `<memory>` patches whose `original` bytes match the clean USA rev 1 main.dol (the other
+region entries are skipped), adds `Loader.bin` as a third text section at `0x80001800`, keeps the
+phase slot pointing there, then runs `newer_prelink.py` for the REL, Newer's blob and the function
+map. The loader stays position independent in the low-memory layout the pack expects.
+
+Translate [`recomp-newer-pack.yml`](recomp-newer-pack.yml) (same as `recomp-newer.yml` plus
+`0x80001800` in the entry points) with the step 3 commands, and configure with
+`-DNSMBW_GAME_ID=SMNE03`. The loader and the blob are translated like the game's own code; the
+loader still runs at boot and loads the pack's `NewerRes` files over the overlay.
+
+### Switch: RomFS pack and shared base
+
+For the launcher, the pack folder is packed as one Nintendo RomFS image and zstd-compressed:
+
+```
+python3 launcher/tools/pack_romfs.py _references/Newer_W_1.30 /tmp/newersmbw.romfs
+```
+
+The launcher decompresses the `.zst` on install to `games/newersmbw/assets.romfs`; the runtime
+mounts it as `pak:/` and adds it as the Riivolution overlay root. Newer does not need a
+`game-newer` folder: it reads the base game's extracted folder from `games/vanilla/game`, and
+`Check()` accepts the SMNE01 header when the pack carries `NewerRes/DLCodeUS_1.bin` (463,252
+bytes). The launcher never copies the base tree.
+
+The Newer build ships its own Aurora pipeline cache (`assets/pipeline/newer_pipeline_cache.db`,
+selected by `NSMBW_GAME_ID=SMNE03`). On first launch the runtime also copies the vanilla Dawn cache
+(`games/vanilla/data/Cache/dawn_cache.db`) if present, which removes most of the initial shader
+compile. Dawn cache entries are keyed by shader hashes, so the shared cache is safe.
+
 Both builds translate into the same `generated/` folder: building one after the other retranslates,
 and the first build in each build folder after a switch recompiles most shards.
 
