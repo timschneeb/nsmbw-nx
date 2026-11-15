@@ -12,6 +12,19 @@ cmake -S launcher -B build-launcher -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-launcher
 ```
 
+## PC tests
+
+A headless Linux build of the portable launcher logic lives in `launcher/tests/pc`. It is a test
+harness, not a PC launcher:
+
+```
+cmake -S launcher/tests/pc -B build-launcher-pc -G Ninja
+cmake --build build-launcher-pc
+cd build-launcher-pc && ctest --output-on-failure
+```
+
+See `launcher/tests/pc/README.md` for coverage, screenshots and limitations.
+
 ## Generated translation folders
 
 The base game and Newer use separate translator output folders: `generated/` for the base game and

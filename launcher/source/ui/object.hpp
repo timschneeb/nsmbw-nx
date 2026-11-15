@@ -1,6 +1,6 @@
 #pragma once
 
-#include "types.hpp"
+#include "ui/types.hpp"
 #include <stop_token>
 
 namespace launcher::ui {

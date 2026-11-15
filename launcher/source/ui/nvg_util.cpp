@@ -193,12 +193,32 @@ void drawTriangleInternal(NVGcontext* vg, float aX, float aY, float bX, float bY
 } // namespace
 
 const char* getButton(const Button want) {
+#ifdef LAUNCHER_TEST
+    switch (want) {
+        case Button::A: return "A";
+        case Button::B: return "B";
+        case Button::X: return "X";
+        case Button::Y: return "Y";
+        case Button::L: return "L";
+        case Button::R: return "R";
+        case Button::L2: return "ZL";
+        case Button::R2: return "ZR";
+        case Button::START: return "+";
+        case Button::SELECT: return "-";
+        case Button::LEFT: return "<";
+        case Button::RIGHT: return ">";
+        case Button::UP: return "^";
+        case Button::DOWN: return "v";
+        default: return "";
+    }
+#else
     for (auto& [key, val] : buttons) {
         if (key == want) {
             return val;
         }
     }
     __builtin_unreachable();
+#endif
 }
 
 void drawTextArgs(NVGcontext* vg, float x, float y, float size, int align, const NVGcolor& c, const char* str, ...) {

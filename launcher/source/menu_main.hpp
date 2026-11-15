@@ -61,6 +61,13 @@ private:
     auto HasLauncherUpdate() const -> bool;
     auto BannerFor(const GameEntry& entry) const -> BannerImage;
 
+public:
+#ifdef LAUNCHER_TEST
+    auto TestRows() const -> const std::vector<GameEntry>& { return m_rows; }
+    auto TestIndex() const -> s64 { return m_index; }
+    auto TestRowCount() const -> s64 { return RowCount(); }
+#endif
+
     Assets m_assets;
     std::vector<GameEntry> m_rows;
     std::unique_ptr<List> m_list;

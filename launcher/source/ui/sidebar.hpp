@@ -21,6 +21,8 @@ public:
     auto OnFocusGained() noexcept -> void override;
     auto OnFocusLost() noexcept -> void override;
 
+    auto Title() const -> const std::string& { return m_title; }
+
     void DrawEntry(NVGcontext* vg, Theme* theme, const std::string& left, const std::string& right, bool use_selected);
 
 protected:
@@ -62,6 +64,12 @@ public:
     auto OnFocusLost() noexcept -> void override;
 
     auto Add(std::unique_ptr<SidebarEntryBase>&& entry) -> SidebarEntryBase*;
+    auto Title() const -> const std::string& { return m_title; }
+    auto ItemCount() const -> size_t { return m_items.size(); }
+    auto ItemTitle(size_t index) const -> const std::string& { return m_items[index]->Title(); }
+#ifdef LAUNCHER_TEST
+    auto TestIndex() const -> s64 { return m_index; }
+#endif
 
     template<typename T, typename... Args>
     auto Add(Args&&... args) -> T* {

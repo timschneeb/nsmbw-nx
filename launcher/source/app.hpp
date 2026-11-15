@@ -1,5 +1,89 @@
 #pragma once
 
+#ifdef LAUNCHER_TEST
+#include <switch.h>
+#include <ui/types.hpp>
+
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <vector>
+
+struct NVGcontext;
+
+namespace launcher {
+
+namespace ui { struct Widget; }
+struct Controller;
+struct TouchInfo;
+
+enum class SoundEffect {
+    Focus,
+    Scroll,
+};
+
+class App {
+public:
+    App();
+    ~App();
+
+    void Run();
+    void Quit() { m_quit = true; }
+    auto IsQuitting() const -> bool { return m_quit; }
+    auto IsShuttingDown() const -> bool { return m_shutting_down; }
+
+    static auto Get() -> App&;
+    static auto GetApp() -> App*;
+    static auto GetVg() -> NVGcontext*;
+    static auto PlaySoundEffect(SoundEffect effect) -> void;
+    static auto GetTextScrollSpeed() -> int;
+    static auto IsApplication() -> bool;
+    static auto Exit() -> void;
+    static auto GetSdSize(s64* free, s64* total) -> Result;
+    static auto GetEmmcSize(s64* free, s64* total) -> Result;
+
+    void Launch(const std::string& path);
+    void Push(std::unique_ptr<ui::Widget>&& widget);
+    auto Theme() -> launcher::Theme& { return m_theme; }
+    auto RenderScreenshot(const std::string& path) -> bool;
+    void RenderFrame();
+    auto SetPixelRatio(float ratio) -> void { m_pixel_ratio = ratio; }
+    auto SetStatus(std::string status) -> void { m_status = std::move(status); }
+    auto Status() const -> const std::string& { return m_status; }
+
+    auto TestWidgetCount() const -> size_t { return m_widgets.size(); }
+    auto TestTop() -> ui::Widget* { return m_widgets.empty() ? nullptr : m_widgets.back().get(); }
+    auto TestWidgetAt(size_t index) -> ui::Widget* {
+        return index < m_widgets.size() ? m_widgets[index].get() : nullptr;
+    }
+    void TestUpdateTop(Controller* controller, TouchInfo* touch);
+    void TestSettlePop();
+    auto LaunchedPath() const -> const std::string& { return m_launched; }
+
+private:
+    std::vector<std::unique_ptr<ui::Widget>> m_widgets;
+    bool m_quit{};
+    bool m_shutting_down{};
+    std::string m_status;
+    std::string m_launched;
+    launcher::Theme m_theme{};
+    NVGcontext* m_vg{};
+    int m_width{1280};
+    int m_height{720};
+    float m_pixel_ratio{1.f};
+    void* m_egl_display{};
+    void* m_egl_context{};
+    unsigned m_fbo{};
+    unsigned m_color{};
+    unsigned m_depth{};
+};
+
+void DrawElement(float x, float y, float w, float h, ThemeEntryID id);
+void DrawElement(const Vec4& v, ThemeEntryID id);
+
+} // namespace launcher
+#else
+
 #include "ui/types.hpp"
 
 #include <deko3d.hpp>
@@ -103,3 +187,5 @@ void DrawElement(float x, float y, float w, float h, ThemeEntryID id);
 void DrawElement(const Vec4& v, ThemeEntryID id);
 
 } // namespace launcher
+
+#endif // LAUNCHER_TEST

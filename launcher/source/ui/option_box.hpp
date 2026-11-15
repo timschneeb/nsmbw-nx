@@ -15,6 +15,10 @@ public:
 
     auto Selected(bool enable) -> void;
 
+#ifdef LAUNCHER_TEST
+    auto Text() const -> const std::string& { return m_text; }
+#endif
+
 private:
     std::string m_text{};
     Vec2 m_text_pos{};
@@ -42,6 +46,20 @@ public:
 private:
     auto Setup(s64 index) -> void;
     void SetIndex(s64 index);
+
+public:
+    auto Message() const -> const std::string& { return m_message; }
+
+#ifdef LAUNCHER_TEST
+    auto TestOptions() const -> std::vector<std::string> {
+        std::vector<std::string> options;
+        for (const auto& entry : m_entries) {
+            options.push_back(entry.Text());
+        }
+        return options;
+    }
+    auto TestIndex() const -> s64 { return m_index; }
+#endif
 
 private:
     const std::string m_message;

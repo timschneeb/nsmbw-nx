@@ -1,5 +1,74 @@
 #pragma once
 
+#if defined(LAUNCHER_TEST_UI)
+#include "ui/widget.hpp"
+
+#include <functional>
+#include <string>
+
+namespace launcher::ui {
+
+struct ProgressBox;
+using ProgressBoxCallback = std::function<Result(ProgressBox*)>;
+using ProgressBoxDoneCallback = std::function<void(Result)>;
+
+// Test hook: cancel on ShouldExit call number N (0 based), negative disables it.
+auto TestProgressCancelAfter() -> int&;
+auto TestProgressCancelCalls() -> int&;
+
+struct ProgressBox : Widget {
+    ProgressBox() = default;
+    ProgressBox(const std::string& action, const std::string& title,
+                const ProgressBoxCallback& callback = {},
+                const ProgressBoxDoneCallback& done = {});
+    ~ProgressBox() override;
+
+    auto Update(Controller* controller, TouchInfo* touch) -> void override;
+    auto Draw(NVGcontext* vg, Theme* theme) -> void override;
+    auto OnFocusGained() noexcept -> void override;
+
+    auto SetActionName(const std::string&) -> ProgressBox& { return *this; }
+    auto SetTitle(const std::string&) -> ProgressBox& { return *this; }
+    auto NewTransfer(const std::string&) -> ProgressBox& { return *this; }
+    auto SetTransfer(const std::string&) -> ProgressBox& { return *this; }
+    auto UpdateTransfer(s64, s64) -> ProgressBox& { return *this; }
+
+    void RequestExit() {}
+    auto ShouldExit() -> bool {
+        const int after = TestProgressCancelAfter();
+        if (after < 0) {
+            return false;
+        }
+        return ++TestProgressCancelCalls() > after;
+    }
+    auto ShouldExitResult() -> Result { return 0; }
+
+private:
+    ProgressBoxCallback m_callback;
+    ProgressBoxDoneCallback m_done;
+    bool m_ran{};
+};
+
+} // namespace launcher::ui
+#elif defined(LAUNCHER_TEST)
+#include <switch.h>
+#include <string>
+
+namespace launcher::ui {
+struct ProgressBox {
+    bool exited{};
+    auto ShouldExit() -> bool { return exited; }
+    void RequestExit() { exited = true; }
+    auto NewTransfer(const std::string&) -> ProgressBox& { return *this; }
+    auto SetTransfer(const std::string&) -> ProgressBox& { return *this; }
+    auto UpdateTransfer(s64, s64) -> ProgressBox& { return *this; }
+    auto SetTitle(const std::string&) -> ProgressBox& { return *this; }
+    auto SetActionName(const std::string&) -> ProgressBox& { return *this; }
+    auto ShouldExitResult() -> Result { return exited ? 1 : 0; }
+};
+} // namespace launcher::ui
+#else
+
 #include "ui/scrolling_text.hpp"
 #include "ui/widget.hpp"
 
@@ -68,3 +137,5 @@ private:
 };
 
 } // namespace launcher::ui
+
+#endif // LAUNCHER_TEST_UI

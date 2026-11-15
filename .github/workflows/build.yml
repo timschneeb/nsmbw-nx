@@ -166,3 +166,28 @@ jobs:
           g++ -std=c++20 -O2 -Wall -Wextra -I launcher/source \
             launcher/tests/launcher_logic.cpp -o /tmp/launcher_logic
           /tmp/launcher_logic
+
+  launcher_pc_tests:
+    name: Launcher PC tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy --no-install-recommends \
+            cmake ninja-build g++ pkg-config git \
+            libcurl4-openssl-dev libzstd-dev libssl-dev fonts-noto-core libepoxy-dev libegl1-mesa-dev libgl1-mesa-dev libglfw3-dev
+
+      - name: Configure tests
+        run: cmake -S launcher/tests/pc -B build-launcher-pc -G Ninja
+
+      - name: Build tests
+        run: cmake --build build-launcher-pc --parallel 2
+
+      - name: Run tests
+        working-directory: build-launcher-pc
+        run: ctest --output-on-failure

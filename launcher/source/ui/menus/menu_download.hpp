@@ -27,6 +27,12 @@ public:
 
     auto GetShortTitle() const -> const char* override { return "Download"; }
 
+#ifdef LAUNCHER_TEST
+    auto TestRows() const -> const std::vector<GameEntry>& { return m_rows; }
+    auto TestIndex() const -> s64 { return m_index; }
+    auto TestLoaded() const -> bool { return m_loaded; }
+#endif
+
 private:
     void Rebuild();
     void Activate(s64 index);
