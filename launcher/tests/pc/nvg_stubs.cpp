@@ -50,6 +50,7 @@ void nvgFillPaint(NVGcontext*, NVGpaint) {}
 void nvgStrokePaint(NVGcontext*, NVGpaint) {}
 void nvgStrokeWidth(NVGcontext*, float) {}
 void nvgLineJoin(NVGcontext*, int) {}
+void nvgLineCap(NVGcontext*, int) {}
 NVGpaint nvgLinearGradient(NVGcontext*, float, float, float, float, NVGcolor, NVGcolor) { return {}; }
 NVGpaint nvgBoxGradient(NVGcontext*, float, float, float, float, float, float, NVGcolor, NVGcolor) { return {}; }
 NVGpaint nvgRadialGradient(NVGcontext*, float, float, float, float, NVGcolor, NVGcolor) { return {}; }

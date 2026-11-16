@@ -95,9 +95,18 @@ auto MainMenu::HasLauncherUpdate() const -> bool {
     return m_assets.valid && m_assets.LauncherUpdate(LauncherVersion());
 }
 
+auto MainMenu::ShowLauncherRow() const -> bool {
+#ifdef __SWITCH__
+    // Temporary layout preview: keep the launcher update row visible.
+    return true;
+#else
+    return HasLauncherUpdate();
+#endif
+}
+
 auto MainMenu::RowCount() const -> s64 {
     // Installed games, the optional launcher update, and the always present download entry.
-    return static_cast<s64>(m_rows.size()) + (HasLauncherUpdate() ? 1 : 0) + 1;
+    return static_cast<s64>(m_rows.size()) + (ShowLauncherRow() ? 1 : 0) + 1;
 }
 
 void MainMenu::Rebuild() {
@@ -245,8 +254,12 @@ void MainMenu::Activate(s64 index) {
 
     const auto games = static_cast<s64>(m_rows.size());
     if (index >= games) {
-        if (HasLauncherUpdate() && index == games) {
-            StartLauncherUpdate();
+        if (ShowLauncherRow() && index == games) {
+            if (HasLauncherUpdate()) {
+                StartLauncherUpdate();
+            } else {
+                CheckLauncherUpdate();
+            }
         } else {
             OpenDownloads();
         }
@@ -872,8 +885,8 @@ void MainMenu::UpdateFooter() {
     if (m_index >= 0 && m_index < games) {
         const GameEntry& row = m_rows[static_cast<size_t>(m_index)];
         hint = row.installed && row.nro_valid ? "Launch" : "Details";
-    } else if (HasLauncherUpdate() && m_index == games) {
-        hint = "Update";
+    } else if (ShowLauncherRow() && m_index == games) {
+        hint = HasLauncherUpdate() ? "Install launcher update" : "Check launcher update";
     } else if (m_index >= games) {
         hint = "Open";
     }
@@ -921,13 +934,14 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
         const auto& [x, y, w, h] = v;
 
         const auto games = static_cast<s64>(m_rows.size());
-        const bool launcher_row = HasLauncherUpdate() && i == games;
+        const bool launcher_row = ShowLauncherRow() && i == games;
         const bool download_row = !launcher_row && i >= games;
 
         std::string name;
         std::string subtitle;
         std::string meta;
         auto meta_id = ThemeEntryID_TEXT_INFO;
+        bool update_pill = false;
 
         if (i < games) {
             const GameEntry& entry = m_rows[static_cast<size_t>(i)];
@@ -939,8 +953,9 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
                     meta_id = ThemeEntryID_TEXT_SELECTED;
                     break;
                 case GameState::Update:
-                    meta = "Update";
-                    meta_id = ThemeEntryID_TEXT_SELECTED;
+                    update_pill = true;
+                    meta = "Update available";
+                    meta_id = ThemeEntryID_TEXT;
                     break;
                 case GameState::Launch:
                     if (!entry.nro_valid) {
@@ -955,9 +970,15 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
                     break;
             }
         } else if (launcher_row) {
-            name = "Launcher update";
-            meta = "v" + m_assets.launcher_version;
-            meta_id = ThemeEntryID_TEXT_SELECTED;
+            name = "Install launcher update";
+            if (HasLauncherUpdate() && !m_assets.launcher_version.empty()) {
+                subtitle = "v" + LauncherVersion() + " -> v" + m_assets.launcher_version;
+            } else {
+                subtitle = "v" + LauncherVersion() + " (preview)";
+            }
+            update_pill = true;
+            meta = "Update available";
+            meta_id = ThemeEntryID_TEXT;
         } else {
             name = "Download community mods & games";
         }
@@ -970,7 +991,6 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
         } else if (i != RowCount() - 1) {
             gfx::drawRect(vg, Vec4{x, y + h, w, 1.f}, theme->GetColour(ThemeEntryID_LINE_SEPARATOR));
         }
-
         const float banner_h = h - 10.f;
         float draw_w = 0.f;
         float draw_h = 0.f;
@@ -984,12 +1004,32 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
                 draw_w = static_cast<float>(banner.width) * scale;
                 draw_h = static_cast<float>(banner.height) * scale;
             }
+        } else if (launcher_row) {
+            const float icon_size = 56.f;
+            const float icon_x = x + 15.f + (kBannerBoxWidth - icon_size) / 2.f;
+            const float icon_y = y + 5.f + (banner_h - icon_size) / 2.f;
+            gfx::drawRect(vg, Vec4{icon_x, icon_y, icon_size, icon_size},
+                          theme->GetColour(ThemeEntryID_HIGHLIGHT_1), 14.f);
+            const float cx = icon_x + icon_size / 2.f;
+            const float top = icon_y + icon_size * 0.30f;
+            const float bottom = icon_y + icon_size * 0.70f;
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, cx, bottom);
+            nvgLineTo(vg, cx, top);
+            nvgMoveTo(vg, cx - icon_size * 0.18f, top + icon_size * 0.18f);
+            nvgLineTo(vg, cx, top);
+            nvgLineTo(vg, cx + icon_size * 0.18f, top + icon_size * 0.18f);
+            nvgStrokeColor(vg, theme->GetColour(ThemeEntryID_TEXT));
+            nvgStrokeWidth(vg, 4.f);
+            nvgLineCap(vg, NVG_ROUND);
+            nvgLineJoin(vg, NVG_ROUND);
+            nvgStroke(vg);
         } else if (download_row) {
             gfx::drawText(vg, x + 15.f + kBannerBoxWidth / 2.f, y + 5.f + banner_h / 2.f, 48.f,
                           theme->GetColour(ThemeEntryID_TEXT_SELECTED), "+",
                           NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
         }
-        if (!download_row) {
+        if (i < games) {
             if (draw_w <= 0.f || draw_h <= 0.f) {
                 draw_w = banner_h * static_cast<float>(kLogoWidth) / static_cast<float>(kLogoHeight);
                 draw_h = banner_h;
@@ -1013,8 +1053,23 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
                                  theme->GetColour(author_id), subtitle);
         }
 
-        gfx::drawText(vg, x + w - 15.f, y + (h / 2.f), 16.f, theme->GetColour(meta_id),
-                      meta.c_str(), NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+        if (update_pill) {
+            float bounds[4]{};
+            nvgFontSize(vg, 16.f);
+            gfx::textBounds(vg, 0, 0, bounds, meta.c_str());
+            const float pill_w = std::max(78.f, bounds[2] - bounds[0] + 24.f);
+            const float pill_h = 26.f;
+            const float pill_x = x + w - 15.f - pill_w;
+            const float pill_y = y + (h - pill_h) / 2.f;
+            gfx::drawRect(vg, Vec4{pill_x, pill_y, pill_w, pill_h},
+                          theme->GetColour(ThemeEntryID_HIGHLIGHT_1), pill_h / 2.f);
+            gfx::drawText(vg, pill_x + pill_w / 2.f, pill_y + pill_h / 2.f, 16.f,
+                          theme->GetColour(ThemeEntryID_TEXT), meta.c_str(),
+                          NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+        } else {
+            gfx::drawText(vg, x + w - 15.f, y + (h / 2.f), 16.f, theme->GetColour(meta_id),
+                          meta.c_str(), NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+        }
     });
 }
 
