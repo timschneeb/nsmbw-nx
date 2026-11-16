@@ -280,9 +280,12 @@ void MainMenu::LaunchWithDiscCheck(const GameEntry& entry) {
 
     auto* menu = this;
     const GameEntry copy = entry;
+    const std::string message =
+        "Base game data is missing\nPlace a USA Revision 1 (SMNE01) disc image in this folder:\n" +
+        RootDirectory() +
+        "\nRestart the launcher, or set [paths] dvd_root to an extracted game folder.";
     App::Get().Push(std::make_unique<OptionBox>(
-        "Base game data is missing\nPlace your disc image next to launcher.nro and restart the launcher, or set [paths] dvd_root to an extracted game folder.",
-        "Cancel", "Launch anyway", 0, [menu, copy](std::optional<s64> choice) {
+        message, "Cancel", "Launch anyway", 0, [menu, copy](std::optional<s64> choice) {
             if (choice && *choice) {
                 menu->LaunchNow(copy);
             }
@@ -370,7 +373,7 @@ void MainMenu::ConfirmInstall(const GameEntry& entry, const AssetsGame& catalog,
     auto* menu = this;
     std::string message = InstallPromptMessage(entry, catalog, action, force);
     if (!entry.base_ready) {
-        message += "\nBase game data is missing; extract it before playing.";
+        message += "\nBase game data is missing; a USA Revision 1 (SMNE01) disc image is required.";
     }
     App::Get().Push(std::make_unique<OptionBox>(
         message, "Cancel", action, 0,
@@ -595,9 +598,10 @@ void MainMenu::PromptBaseData() {
     }
 
     std::string message =
-        "Base game data is missing\nPlace your New Super Mario Bros. Wii disc image (.iso, .wbfs, .ciso, "
-        ".wia or .rvz) next to launcher.nro and restart the launcher. The exact size and free space are "
-        "checked when an image is found.";
+        "Base game data is missing\nPlace a USA Revision 1 (SMNE01) New Super Mario Bros. Wii disc image "
+        "(.iso, .wbfs, .ciso, .wia or .rvz) in this folder:\n" +
+        RootDirectory() +
+        "\nRestart the launcher. The exact size and free space are checked when an image is found.";
     if (!problem.empty()) {
         message += "\n" + problem;
     }

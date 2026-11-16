@@ -1458,6 +1458,7 @@ void test_settings_and_base(Harness& h) {
         const auto text = dialog_message(*scoped);
         expect(text.find("Base game data is missing") == 0, "boot missing base prompt");
         expect(text.find("disc image") != std::string::npos, "boot prompt explains the image");
+        expect(text.find(RootDirectory()) != std::string::npos, "boot prompt shows the folder");
         close_dialog(*scoped);
         test::Reset();
     }
@@ -1807,6 +1808,8 @@ void test_main_menu_edges(Harness& h) {
         auto* prompt = dialog_of(*app);
         expect(prompt != nullptr && prompt->Message().find("Base game data is missing") == 0,
                "launch base prompt");
+        expect(prompt != nullptr && prompt->Message().find(RootDirectory()) != std::string::npos,
+               "launch base prompt shows the folder");
         close_dialog(*app); // cancel
         expect(!app->IsQuitting(), "base prompt cancel does not launch");
 
@@ -1837,7 +1840,7 @@ void test_main_menu_edges(Harness& h) {
             if (download != nullptr) {
                 press(*app, Button::A); // first row
                 const auto text = dialog_message(*app);
-                expect(text.find("Base game data is missing; extract it before playing.") !=
+                expect(text.find("Base game data is missing; a USA Revision 1 (SMNE01) disc image is required.") !=
                            std::string::npos,
                        "install prompt warns about base data");
                 close_dialog(*app);

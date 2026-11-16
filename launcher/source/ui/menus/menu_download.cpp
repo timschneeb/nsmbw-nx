@@ -144,7 +144,7 @@ void DownloadMenu::StartInstall(const GameEntry& entry) {
     const AssetsGame game = catalog->second;
     std::string message = InstallPromptMessage(entry, game, "Install");
     if (!BaseDataReady()) {
-        message += "\nBase game data is missing; extract it before playing.";
+        message += "\nBase game data is missing; a USA Revision 1 (SMNE01) disc image is required.";
     }
 
     auto* menu = this;

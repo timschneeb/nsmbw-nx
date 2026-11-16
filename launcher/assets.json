@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "recomp_version": "0.0.9",
+  "recomp_version": "0.0.11",
   "launcher": {
-    "version": "0.0.9",
+    "version": "0.0.11",
     "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/launcher.nro",
-    "sha256": "37de0f62a8c5c422eb3c0aa2a5e294771be1286abf3a4226b161ba1825e7e61c",
+    "sha256": "7683e6d5313eb7e9fc3dda36a09048de0d20198ca916b1d3b270662e3805c196",
     "size": 3576575
   },
   "games": {
