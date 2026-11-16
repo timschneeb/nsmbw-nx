@@ -277,6 +277,14 @@ python3 launcher/tools/package_release.py
 This regenerates `assets.json`, builds `NSMBW-switch.zip`, writes `dist/release/main` and
 `dist/release/modules`, and creates `upload-main.sh` and `upload-modules.sh`.
 
+For a launcher-only update, keep the game assets on their existing modules release:
+
+```
+python3 launcher/tools/package_release.py --launcher-only --tag v0.0.2 --game-tag v0.0.1
+```
+
+The catalogue pins game URLs to `--game-tag` and the modules release carries only `launcher.nro`.
+
 ## Versions
 
 The repository root `VERSION` file is the single release version. Both the launcher project and the

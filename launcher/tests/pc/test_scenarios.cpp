@@ -496,6 +496,15 @@ auto sidebar_has(const Sidebar& sidebar, const std::string& title) -> bool {
     return false;
 }
 
+void update_via_options(App& app, const std::string& name) {
+    press(app, Button::X);
+    expect(select_sidebar(app, "Update"), "stale row offers Update");
+    expect(dialog_message(app).find("Update " + name + "?") == 0, "update prompt from options");
+    confirm_dialog(app);
+    expect_eq(dialog_message(app), "Installed " + name + ".", "update message");
+    close_dialog(app);
+}
+
 auto new_app() -> std::unique_ptr<App> {
     auto app = std::make_unique<App>();
     app->Push(std::make_unique<MainMenu>());
@@ -914,7 +923,7 @@ void test_updates(Harness& h) {
     expect_eq(dialog_message(*app), std::string("Alpha is up to date."), "up to date dialog");
     close_dialog(*app);
 
-    // Row A starts an update without a prompt.
+    // A launches a stale row; updates only from Game options.
     h.RepublishNro("alpha", "1.2.0", 'u');
     select_row(*app, *menu, menu->TestRowCount() - 1);
     press(*app, Button::A); // download row, triggers a catalogue refresh
@@ -923,8 +932,11 @@ void test_updates(Harness& h) {
     expect(menu->TestRows()[0].state == GameState::Update, "fetch marks the row stale");
     select_row(*app, *menu, 0);
     press(*app, Button::A);
-    expect_eq(dialog_message(*app), std::string("Installed Alpha."), "row update message");
-    close_dialog(*app);
+    expect(app->IsQuitting(), "stale row launches");
+    expect_eq(app->LaunchedPath(), (fs::path(GamesDirectory()) / "alpha" / "game.nro").string(),
+              "stale row launch path");
+    update_via_options(*app, "Alpha");
+    expect(menu->TestRows()[0].state == GameState::Launch, "row current after options update");
     expect_eq(fs::path(GamesDirectory()).empty(), false, "games folder exists");
 
     // Same version, same size, different bytes: not detected as an update, but Verify finds it.
@@ -966,8 +978,8 @@ void test_updates(Harness& h) {
     expect(menu->TestRows()[0].state == GameState::Update, "size mismatch marks the row stale");
     select_row(*app, *menu, 0);
     press(*app, Button::A);
-    expect_eq(dialog_message(*app), std::string("Installed Alpha."), "size update message");
-    close_dialog(*app);
+    expect(app->IsQuitting(), "size mismatch row launches");
+    update_via_options(*app, "Alpha");
 
     // Changing only the game version triggers an update and records it separately.
     h.SetGameVersion("alpha", "1.1.0");
@@ -977,8 +989,8 @@ void test_updates(Harness& h) {
     expect(menu->TestRows()[0].state == GameState::Update, "game version change marks the row stale");
     select_row(*app, *menu, 0);
     press(*app, Button::A);
-    expect_eq(dialog_message(*app), std::string("Installed Alpha."), "game version update message");
-    close_dialog(*app);
+    expect(app->IsQuitting(), "game version row launches");
+    update_via_options(*app, "Alpha");
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
         expect_eq(installed.nro.game_version, std::string("1.1.0"), "game version updated");
@@ -993,8 +1005,8 @@ void test_updates(Harness& h) {
     expect(menu->TestRows()[0].state == GameState::Update, "region change marks the row stale");
     select_row(*app, *menu, 0);
     press(*app, Button::A);
-    expect_eq(dialog_message(*app), std::string("Installed Alpha."), "region update message");
-    close_dialog(*app);
+    expect(app->IsQuitting(), "region row launches");
+    update_via_options(*app, "Alpha");
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
         expect_eq(installed.nro.region, std::string("E"), "region updated");
@@ -1008,8 +1020,8 @@ void test_updates(Harness& h) {
     expect(menu->TestRows()[0].state == GameState::Update, "downgrade marks the row stale");
     select_row(*app, *menu, 0);
     press(*app, Button::A);
-    expect_eq(dialog_message(*app), std::string("Installed Alpha."), "downgrade message");
-    close_dialog(*app);
+    expect(app->IsQuitting(), "downgrade row launches");
+    update_via_options(*app, "Alpha");
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
         expect_eq(installed.nro.recomp_version, std::string("1.0.0"), "downgrade applied");
@@ -1694,7 +1706,7 @@ void test_main_menu_edges(Harness& h) {
             return;
         }
         select_row(*app, *menu, 0);
-        expect(menu->m_actions.at(Button::A).m_hint == "Details", "missing base hint");
+        expect(menu->m_actions.at(Button::A).m_hint == "Launch", "missing base hint");
         press(*app, Button::A);
         auto* prompt = dialog_of(*app);
         expect(prompt != nullptr && prompt->Message().find("Base game data is missing") == 0,

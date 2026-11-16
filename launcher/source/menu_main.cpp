@@ -254,10 +254,7 @@ void MainMenu::Activate(s64 index) {
     }
 
     const GameEntry& entry = m_rows[static_cast<size_t>(index)];
-    if (entry.state == GameState::Launch) {
-        if (!entry.installed) {
-            return;
-        }
+    if (entry.installed) {
         if (!IsValidNro(entry.nro_path)) {
             ShowError("Not a valid NRO\n" + entry.nro_path);
             return;
@@ -870,13 +867,7 @@ void MainMenu::UpdateFooter() {
     const auto games = static_cast<s64>(m_rows.size());
     if (m_index >= 0 && m_index < games) {
         const GameEntry& row = m_rows[static_cast<size_t>(m_index)];
-        if (row.state == GameState::Update) {
-            hint = "Update";
-        } else if (!row.base_ready || !row.nro_valid) {
-            hint = "Details";
-        } else {
-            hint = "Launch";
-        }
+        hint = row.installed && row.nro_valid ? "Launch" : "Details";
     } else if (HasLauncherUpdate() && m_index == games) {
         hint = "Update";
     } else if (m_index >= games) {

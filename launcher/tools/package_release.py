@@ -227,6 +227,10 @@ def main() -> int:
     parser.add_argument("--newer-symbols", type=Path, default=DEFAULT_NEWER_SYMBOLS)
     parser.add_argument("--skip-symbols", action="store_true",
                         help="do not require or copy debug symbol archives")
+    parser.add_argument("--launcher-only", action="store_true",
+                        help="publish only the launcher and catalogue, keep game assets on --game-tag")
+    parser.add_argument("--game-tag", default="v0.0.1",
+                        help="modules tag that keeps the game assets for --launcher-only")
     parser.add_argument("--source-assets", type=Path, default=DEFAULT_SOURCE_ASSETS,
                         help="launcher/assets.json to update")
     parser.add_argument("--no-update-source", action="store_true",
@@ -248,20 +252,46 @@ def main() -> int:
     if args.tag.lstrip("v") != version:
         raise ValueError("tag %s does not match VERSION %s" % (args.tag, version))
 
-    for path in (args.launcher, args.vanilla, args.newer, args.romfs, args.image, args.banner):
+    required = [args.launcher, args.vanilla, args.banner]
+    if not args.launcher_only:
+        required += [args.newer, args.romfs, args.image]
+    for path in required:
         if not path.is_file():
             raise ValueError("missing %s" % path)
-    if not args.skip_symbols:
+    if not args.skip_symbols and not args.launcher_only:
         for path in (args.vanilla_symbols, args.newer_symbols):
             if not path.is_file():
                 raise ValueError("missing %s (use --skip-symbols to omit)" % path)
 
-    for path in (args.launcher, args.vanilla, args.newer):
+    versioned = [args.launcher]
+    if not args.launcher_only:
+        versioned += [args.vanilla, args.newer]
+    for path in versioned:
         actual = nro_version(path)
         if actual != version:
             raise ValueError("%s NACP is %s, expected VERSION %s" % (path, actual, version))
 
-    assets = build_assets(source_spec(args, version))
+    if args.launcher_only:
+        assets = json.loads(args.source_assets.read_text(encoding="utf-8"))
+        assets["recomp_version"] = version
+        assets["launcher"] = {
+            "version": version,
+            "url": release_url(args.modules_repo, args.tag, args.pinned, "launcher.nro"),
+            "sha256": sha256(args.launcher),
+            "size": args.launcher.stat().st_size,
+        }
+        for game in assets.get("games", {}).values():
+            components = list(game.get("components", {}).values())
+            if game.get("banner"):
+                components.append(game["banner"])
+            for component in components:
+                url = component.get("url", "")
+                if not url:
+                    continue
+                name = url.rsplit("/", 1)[-1]
+                component["url"] = release_url(args.modules_repo, args.game_tag, True, name)
+    else:
+        assets = build_assets(source_spec(args, version))
 
     if args.out.exists():
         shutil.rmtree(args.out)
@@ -275,31 +305,35 @@ def main() -> int:
         write_assets(assets, args.source_assets)
 
     copy_checked(args.launcher, modules_dir / "launcher.nro")
-    copy_checked(args.vanilla, modules_dir / "vanilla-game.nro")
-    copy_checked(args.newer, modules_dir / "newersmbw-game.nro")
-    copy_checked(args.romfs, modules_dir / "newersmbw.romfs.zst")
-    copy_checked(args.banner, modules_dir / "newersmbw-banner.png")
-    if not args.skip_symbols:
-        copy_checked(args.vanilla_symbols, modules_dir / "vanilla-debug-symbols.zip")
-        copy_checked(args.newer_symbols, modules_dir / "newersmbw-debug-symbols.zip")
+    if not args.launcher_only:
+        copy_checked(args.vanilla, modules_dir / "vanilla-game.nro")
+        copy_checked(args.newer, modules_dir / "newersmbw-game.nro")
+        copy_checked(args.romfs, modules_dir / "newersmbw.romfs.zst")
+        copy_checked(args.banner, modules_dir / "newersmbw-banner.png")
+        if not args.skip_symbols:
+            copy_checked(args.vanilla_symbols, modules_dir / "vanilla-debug-symbols.zip")
+            copy_checked(args.newer_symbols, modules_dir / "newersmbw-debug-symbols.zip")
 
     zip_path = stage_sd_zip(main_dir, args.out / ".stage", args.launcher,
                             main_dir / "assets.json", args.banner, args.vanilla)
 
     # The main release is the user-facing ZIP and the catalogue only.
     main_files = [zip_path, main_dir / "assets.json"]
-    modules_files = [modules_dir / "launcher.nro", modules_dir / "vanilla-game.nro",
-                     modules_dir / "newersmbw-game.nro", modules_dir / "newersmbw.romfs.zst",
-                     modules_dir / "newersmbw-banner.png"]
-    if not args.skip_symbols:
-        modules_files += [modules_dir / "vanilla-debug-symbols.zip",
-                          modules_dir / "newersmbw-debug-symbols.zip"]
+    modules_files = [modules_dir / "launcher.nro"]
+    if not args.launcher_only:
+        modules_files += [modules_dir / "vanilla-game.nro",
+                          modules_dir / "newersmbw-game.nro", modules_dir / "newersmbw.romfs.zst",
+                          modules_dir / "newersmbw-banner.png"]
+        if not args.skip_symbols:
+            modules_files += [modules_dir / "vanilla-debug-symbols.zip",
+                              modules_dir / "newersmbw-debug-symbols.zip"]
 
     manifest = {
         "tag": args.tag,
         "version": version,
         "main_repo": args.main_repo,
         "modules_repo": args.modules_repo,
+        "launcher_only": args.launcher_only,
         "main": [file_record(path) for path in main_files],
         "modules": [file_record(path) for path in modules_files],
         "catalogue": assets,
@@ -309,8 +343,10 @@ def main() -> int:
 
     gh_script(args.out / "upload-main.sh", args.main_repo, args.tag, main_files,
               "NSMBW Switch launcher, base runtime and catalogue")
+    modules_notes = ("NSMBW Switch launcher" if args.launcher_only else
+                     "NSMBW Switch runtimes, resources and debug symbols")
     gh_script(args.out / "upload-modules.sh", args.modules_repo, args.tag, modules_files,
-              "NSMBW Switch runtimes, resources and debug symbols", create_repo=True)
+              modules_notes, create_repo=True)
 
     print("version    %s" % version)
     print("catalogue  %s" % (main_dir / "assets.json"))
