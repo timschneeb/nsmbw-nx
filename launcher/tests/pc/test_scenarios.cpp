@@ -137,6 +137,9 @@ public:
         test::Reset();
         launcher::ui::TestProgressCancelAfter() = -1;
         launcher::ui::TestProgressCancelCalls() = 0;
+        launcher::ui::TestProgressCancelOnLabel().clear();
+        launcher::ui::TestProgressCancelAfterBytes() = 0;
+        launcher::ui::TestProgressEvents().clear();
     }
 
     auto Root() const -> const fs::path& { return root; }
@@ -870,6 +873,7 @@ void test_updates(Harness& h) {
         expect(text.find("Needs") != std::string::npos, "update prompt shows free space");
         const auto* box = dialog_of(*app);
         expect(box != nullptr && box->TestOptions().size() == 2, "update prompt options");
+        expect(box != nullptr && box->TestIndex() == 1, "update prompt defaults to Update");
         close_dialog(*app); // cancel
     }
     {
@@ -1036,6 +1040,98 @@ void test_updates(Harness& h) {
               "game update network failure");
     close_dialog(*app);
     h.PointAssetsUrlToServer();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Transactional NRO plus RomFS updates
+// ---------------------------------------------------------------------------------------------
+
+void test_transactional_update(Harness& h) {
+    std::cout << "[transaction]\n";
+
+    h.AddGame("alpha", "Alpha", "1.0.0", "Studio A");
+    h.SetRomfs("alpha", "1.0.0", std::string(8192, 'a'));
+    h.WriteLocalCatalogue({"alpha"});
+    h.PointAssetsUrlToServer();
+    install_local("alpha");
+
+    const fs::path dir = fs::path(GamesDirectory()) / "alpha";
+    const auto nro_before = test::ReadFile(dir / "game.nro");
+    const auto romfs_before = test::ReadFile(dir / "assets.romfs");
+    const auto json_before = test::ReadFile(dir / "installed.json");
+
+    h.RepublishNro("alpha", "1.1.0", 'n');
+    h.SetRomfs("alpha", "1.1.0", std::string(8192, 'b'));
+    h.WriteLocalCatalogue({"alpha"});
+
+    Assets assets;
+    expect(R_SUCCEEDED(LoadLocalAssets(assets)), "transaction catalogue loads");
+    GameEntry entry;
+    bool found = false;
+    for (const auto& candidate : ScanGames(assets)) {
+        if (candidate.id == "alpha") {
+            entry = candidate;
+            found = true;
+            break;
+        }
+    }
+    expect(found, "transaction entry found");
+    if (!found) {
+        return;
+    }
+
+    {
+        ui::ProgressBox pbox;
+        launcher::ui::TestProgressCancelOnLabel() = "assets.romfs";
+        launcher::ui::TestProgressCancelAfterBytes() = 0;
+        std::string error;
+        const Result rc = InstallGame(entry, assets.games.at("alpha"), pbox, error, false);
+        expect(R_FAILED(rc), "cancelled transaction fails");
+        expect_eq(error, std::string("Install cancelled."), "transaction cancel message");
+    }
+    launcher::ui::TestProgressCancelOnLabel().clear();
+    launcher::ui::TestProgressCancelAfterBytes() = 0;
+    launcher::ui::TestProgressCancelAfter() = -1;
+    launcher::ui::TestProgressCancelCalls() = 0;
+
+    expect_eq(test::ReadFile(dir / "game.nro"), nro_before, "cancelled transaction keeps nro");
+    expect_eq(test::ReadFile(dir / "assets.romfs"), romfs_before,
+              "cancelled transaction keeps romfs");
+    expect_eq(test::ReadFile(dir / "installed.json"), json_before,
+              "cancelled transaction keeps metadata");
+    expect(!fs::exists(dir / "game.nro.part"), "cancelled transaction leaves no nro part");
+    expect(!fs::exists(dir / "assets.romfs.part"), "cancelled transaction leaves no romfs part");
+
+    {
+        ui::ProgressBox pbox;
+        launcher::ui::TestProgressEvents().clear();
+        std::string error;
+        const Result rc = InstallGame(entry, assets.games.at("alpha"), pbox, error, false);
+        expect(R_SUCCEEDED(rc), "transaction retry succeeds: " + error);
+    }
+
+    const Installed installed = ReadInstalled(dir.string());
+    expect_eq(installed.nro.recomp_version, std::string("1.1.0"), "transaction nro updated");
+    expect_eq(installed.romfs.game_version, std::string("1.1.0"), "transaction romfs updated");
+    expect_eq(test::ReadFile(dir / "game.nro"), test::ReadFile(h.Src() / "alpha.nro"),
+              "transaction nro content");
+    expect_eq(test::ReadFile(dir / "assets.romfs"), std::string(8192, 'b'),
+              "transaction romfs content");
+
+    const auto& events = launcher::ui::TestProgressEvents();
+    expect(!events.empty(), "combined progress events");
+    bool monotonic = true;
+    for (size_t i = 1; i < events.size(); ++i) {
+        if (events[i].first < events[i - 1].first) {
+            monotonic = false;
+        }
+    }
+    expect(monotonic, "combined progress is monotonic");
+    const s64 expected_total = installed.nro.size + installed.romfs.size;
+    expect(!events.empty() && events.back().first == expected_total,
+           "combined progress reaches total offset");
+    expect(!events.empty() && events.back().second == expected_total,
+           "combined progress reaches total size");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2189,6 +2285,10 @@ int main() {
     {
         Harness h("updates");
         test_updates(h);
+    }
+    {
+        Harness h("transaction");
+        test_transactional_update(h);
     }
     {
         Harness h("update-all");

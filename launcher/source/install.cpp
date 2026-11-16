@@ -159,17 +159,18 @@ Result CopyLocal(const std::string& src, const std::string& dest, ui::ProgressBo
 
 Result DownloadVerified(const std::string& url, const std::string& dest, const std::string& sha,
                         s64 expected_size, const std::function<bool(const std::string&)>& validate,
-                        const std::string& invalid_error, ui::ProgressBox& pbox, std::string& error) {
+                        const std::string& invalid_error, ui::ProgressBox& pbox, std::string& error,
+                        bool commit = true) {
     const std::string part = dest + ".part";
     const auto name = fs::path(dest).filename().string();
-    pbox.NewTransfer(name);
+    pbox.NewTransfer("Downloading " + name);
 
     Result rc = http::Download(url, part, [&pbox](s64 now, s64 total) {
         if (total > 0) {
             pbox.UpdateTransfer(now, total);
         }
         return !pbox.ShouldExit();
-    });
+    }, expected_size);
 
     if (R_FAILED(rc)) {
         std::error_code ec;
@@ -186,9 +187,16 @@ Result DownloadVerified(const std::string& url, const std::string& dest, const s
         return Fail(error, "Downloaded " + name + " has the wrong size.");
     }
 
-    pbox.NewTransfer("Verifying " + name);
+    if (expected_size > 0) {
+        pbox.UpdateTransfer(expected_size, expected_size);
+    }
+    pbox.SetTransfer("Verifying " + name);
     rc = Verify(part, sha, error, [&pbox] { return pbox.ShouldExit(); },
-                [&pbox](s64 now, s64 total) { pbox.UpdateTransfer(now, total); });
+                [&pbox](s64 now, s64 total) {
+                    if (!pbox.IsCombined()) {
+                        pbox.UpdateTransfer(now, total);
+                    }
+                });
     if (R_FAILED(rc)) {
         fs::remove(part, ec);
         return rc;
@@ -204,6 +212,10 @@ Result DownloadVerified(const std::string& url, const std::string& dest, const s
         return Fail(error, "Install cancelled.");
     }
 
+    if (!commit) {
+        return 0;
+    }
+
     fs::remove(dest, ec);
     fs::rename(part, dest, ec);
     if (ec) {
@@ -217,7 +229,7 @@ Result DownloadVerified(const std::string& url, const std::string& dest, const s
 
 Result Obtain(const Component& component, const std::string& dest, ui::ProgressBox& pbox,
               std::string& error, const std::function<bool(const std::string&)>& validate = {},
-              const std::string& invalid_error = {}) {
+              const std::string& invalid_error = {}, bool commit = true) {
     if (!component.path.empty()) {
         std::error_code ec;
         const auto name = fs::path(dest).filename().string();
@@ -227,13 +239,17 @@ Result Obtain(const Component& component, const std::string& dest, ui::ProgressB
             if (!Exists(dest)) {
                 if (!component.url.empty()) {
                     return DownloadVerified(component.url, dest, component.sha256, component.size,
-                                            validate, invalid_error, pbox, error);
+                                            validate, invalid_error, pbox, error, commit);
                 }
                 return Fail(error, "Missing " + name + ".");
             }
             pbox.NewTransfer("Verifying " + name);
             Result rc = Verify(dest, component.sha256, error, [&pbox] { return pbox.ShouldExit(); },
-                               [&pbox](s64 now, s64 total) { pbox.UpdateTransfer(now, total); });
+                               [&pbox](s64 now, s64 total) {
+                                   if (!pbox.IsCombined()) {
+                                       pbox.UpdateTransfer(now, total);
+                                   }
+                               });
             if (R_FAILED(rc)) {
                 return rc;
             }
@@ -255,9 +271,16 @@ Result Obtain(const Component& component, const std::string& dest, ui::ProgressB
             return Fail(error, "Copied " + name + " has the wrong size.");
         }
 
-        pbox.NewTransfer("Verifying " + name);
+        if (component.size > 0) {
+            pbox.UpdateTransfer(component.size, component.size);
+        }
+        pbox.SetTransfer("Verifying " + name);
         rc = Verify(part, component.sha256, error, [&pbox] { return pbox.ShouldExit(); },
-                    [&pbox](s64 now, s64 total) { pbox.UpdateTransfer(now, total); });
+                    [&pbox](s64 now, s64 total) {
+                        if (!pbox.IsCombined()) {
+                            pbox.UpdateTransfer(now, total);
+                        }
+                    });
         if (R_FAILED(rc)) {
             fs::remove(part, ec);
             return rc;
@@ -273,6 +296,10 @@ Result Obtain(const Component& component, const std::string& dest, ui::ProgressB
             return Fail(error, "Install cancelled.");
         }
 
+        if (!commit) {
+            return 0;
+        }
+
         fs::remove(dest, ec);
         fs::rename(part, dest, ec);
         if (ec) {
@@ -286,7 +313,7 @@ Result Obtain(const Component& component, const std::string& dest, ui::ProgressB
         return Fail(error, "No download source for " + fs::path(dest).filename().string() + ".");
     }
     return DownloadVerified(component.url, dest, component.sha256, component.size, validate,
-                            invalid_error, pbox, error);
+                            invalid_error, pbox, error, commit);
 }
 
 auto NeedsNro(const GameEntry& entry, const AssetsGame& catalog, bool force) -> bool {
@@ -386,46 +413,114 @@ Result InstallGameInner(const GameEntry& entry, const AssetsGame& catalog, ui::P
     std::error_code ec;
     fs::create_directories(entry.dir, ec);
 
+    const std::string nro_part = entry.nro_path + ".part";
+    const std::string romfs_part = entry.romfs_path + ".part";
+    const auto cleanup_parts = [&] {
+        std::error_code cleanup_ec;
+        fs::remove(nro_part, cleanup_ec);
+        fs::remove(romfs_part, cleanup_ec);
+    };
+
+    const bool nro_in_place = !catalog.nro.path.empty() && Exists(entry.nro_path) &&
+                              Lowercase(catalog.nro.path) == Lowercase(entry.nro_path);
+    const bool stage_nro = nro && !nro_in_place;
+    const bool stage_romfs = romfs;
+
+    s64 combined_total = 0;
+    bool combined = stage_nro || stage_romfs;
+    if (stage_nro) {
+        if (catalog.nro.size > 0) {
+            combined_total += catalog.nro.size;
+        } else {
+            combined = false;
+        }
+    }
+    if (stage_romfs) {
+        if (catalog.romfs.image_size > 0) {
+            combined_total += catalog.romfs.image_size;
+        } else {
+            combined = false;
+        }
+    }
+    if (combined && combined_total > 0) {
+        pbox.SetCombinedProgress(combined_total);
+    }
+
+    Installed updated = installed;
+
     if (nro) {
         if (catalog.nro.sha256.empty()) {
+            cleanup_parts();
             return Fail(error, "The catalogue has no checksum for game.nro.");
         }
+        pbox.SetProgressBase(0);
         rc = Obtain(catalog.nro, entry.nro_path, pbox, error, IsValidNro,
-                    "The downloaded game file is not a valid NRO.");
+                    "The downloaded game file is not a valid NRO.", !stage_nro);
         if (R_FAILED(rc)) {
+            cleanup_parts();
             return rc;
         }
         if (pbox.ShouldExit()) {
+            cleanup_parts();
             return Fail(error, "Install cancelled.");
         }
-        installed.nro.recomp_version = catalog.nro.recomp_version;
-        installed.nro.game_version = catalog.nro.game_version;
-        installed.nro.region = catalog.nro.region;
-        installed.nro.sha256 = catalog.nro.sha256;
-        installed.nro.size = catalog.nro.size > 0 ? catalog.nro.size : FileSize(entry.nro_path);
-        if (R_FAILED(WriteInstalled(entry.dir, installed))) {
-            return Fail(error, "Could not write installed.json.");
-        }
+        updated.nro.recomp_version = catalog.nro.recomp_version;
+        updated.nro.game_version = catalog.nro.game_version;
+        updated.nro.region = catalog.nro.region;
+        updated.nro.sha256 = catalog.nro.sha256;
+        updated.nro.size = catalog.nro.size > 0
+                               ? catalog.nro.size
+                               : FileSize(stage_nro ? nro_part : entry.nro_path);
     }
 
     if (romfs) {
         if (catalog.romfs.sha256.empty() && catalog.romfs.image_sha256.empty()) {
+            cleanup_parts();
             return Fail(error, "The catalogue has no checksum for assets.romfs.");
         }
         if (pbox.ShouldExit()) {
+            cleanup_parts();
             return Fail(error, "Install cancelled.");
         }
-        rc = InstallRomfs(catalog.romfs, entry.romfs_path, pbox, error);
+        if (combined) {
+            pbox.SetProgressBase(stage_nro ? catalog.nro.size : 0);
+        }
+        rc = InstallRomfs(catalog.romfs, entry.romfs_path, pbox, error, !stage_romfs);
         if (R_FAILED(rc)) {
+            cleanup_parts();
             return rc;
         }
-        installed.romfs.recomp_version.clear();
-        installed.romfs.game_version = catalog.romfs.game_version;
-        installed.romfs.region = catalog.romfs.region;
-        installed.romfs.sha256 = catalog.romfs.image_sha256;
-        installed.romfs.size =
-            catalog.romfs.image_size > 0 ? catalog.romfs.image_size : FileSize(entry.romfs_path);
-        if (R_FAILED(WriteInstalled(entry.dir, installed))) {
+        updated.romfs.recomp_version.clear();
+        updated.romfs.game_version = catalog.romfs.game_version;
+        updated.romfs.region = catalog.romfs.region;
+        updated.romfs.sha256 = catalog.romfs.image_sha256;
+        updated.romfs.size = catalog.romfs.image_size > 0 ? catalog.romfs.image_size
+                                                          : FileSize(romfs_part);
+    }
+
+    if (stage_nro) {
+        fs::remove(entry.nro_path, ec);
+        fs::rename(nro_part, entry.nro_path, ec);
+        if (ec) {
+            log_write("[install] nro commit failed %s: %s\n", entry.nro_path.c_str(),
+                      ec.message().c_str());
+            cleanup_parts();
+            return Fail(error, "Could not place game.nro.");
+        }
+    }
+    if (stage_romfs) {
+        fs::remove(entry.romfs_path, ec);
+        fs::rename(romfs_part, entry.romfs_path, ec);
+        if (ec) {
+            log_write("[install] romfs commit failed %s: %s\n", entry.romfs_path.c_str(),
+                      ec.message().c_str());
+            cleanup_parts();
+            return Fail(error, "Could not place assets.romfs.");
+        }
+    }
+    if (nro || romfs) {
+        if (R_FAILED(WriteInstalled(entry.dir, updated))) {
+            cleanup_parts();
             return Fail(error, "Could not write installed.json.");
         }
     }

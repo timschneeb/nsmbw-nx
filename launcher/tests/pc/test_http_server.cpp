@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <thread>
 
@@ -117,11 +118,37 @@ void TestServer::Handle(int client) {
         parsed.method = request.substr(0, first_space);
         parsed.path = request.substr(first_space + 1, second_space - first_space - 1);
     }
+    const auto range_pos = request.find("Range: bytes=");
+    if (range_pos != std::string::npos) {
+        const auto range_end = request.find("\r\n", range_pos);
+        parsed.range = request.substr(range_pos + 13, range_end - (range_pos + 13));
+    }
 
-    const TestResponse response = Resolve(parsed);
+    TestResponse response = Resolve(parsed);
+    if (!parsed.range.empty() && !response.ignore_range) {
+        long long start = -1;
+        long long end = -1;
+        if (std::sscanf(parsed.range.c_str(), "%lld-%lld", &start, &end) == 2 &&
+            start >= 0 && static_cast<size_t>(start) < response.body.size()) {
+            const long long total = static_cast<long long>(response.body.size());
+            if (end < start || end >= total) {
+                end = total - 1;
+            }
+            response.body = response.body.substr(static_cast<size_t>(start),
+                                                 static_cast<size_t>(end - start + 1));
+            response.status = 206;
+            response.content_range = "bytes " + std::to_string(start) + "-" +
+                                     std::to_string(end) + "/" + std::to_string(total);
+        } else {
+            response.status = 416;
+            response.body.clear();
+        }
+    }
     const char* reason = response.status == 200 ? "OK"
+                       : response.status == 206 ? "Partial Content"
                        : response.status == 302 ? "Found"
                        : response.status == 404 ? "Not Found"
+                       : response.status == 416 ? "Range Not Satisfiable"
                        : response.status == 500 ? "Internal Server Error"
                                                 : "Status";
     std::string headers = "HTTP/1.1 " + std::to_string(response.status) + " " + reason + "\r\n";
@@ -129,6 +156,9 @@ void TestServer::Handle(int client) {
     headers += "Connection: close\r\n";
     if (!response.location.empty()) {
         headers += "Location: " + response.location + "\r\n";
+    }
+    if (!response.content_range.empty()) {
+        headers += "Content-Range: " + response.content_range + "\r\n";
     }
     if (response.chunked) {
         headers += "Transfer-Encoding: chunked\r\n\r\n";

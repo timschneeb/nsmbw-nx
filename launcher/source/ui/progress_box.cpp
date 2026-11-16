@@ -4,6 +4,7 @@
 #include "ui/nvg_util.hpp"
 #include "ui/option_box.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -13,6 +14,10 @@ namespace launcher::ui {
 namespace {
 
 void threadFunc(void* arg) {
+#ifdef __SWITCH__
+    // Keep transfers off the core that renders the progress box.
+    svcSetThreadCoreMask(threadGetCurHandle(), 2, 1u << 2);
+#endif
     auto d = static_cast<ProgressBox::ThreadData*>(arg);
     d->result = d->callback(d->pbox);
     d->pbox->RequestExit();
@@ -33,6 +38,10 @@ auto FormatSize(double size, double base) -> std::string {
         std::snprintf(buffer, sizeof(buffer), "%.2f %s", size, suffixes[index]);
     }
     return buffer;
+}
+
+auto FormatRate(double size, double base) -> std::string {
+    return FormatSize(size, base) + "/s";
 }
 
 } // namespace
@@ -136,16 +145,19 @@ auto ProgressBox::Draw(NVGcontext* vg, Theme* theme) -> void {
 
         char time_str[64];
         if (hours) {
-            std::snprintf(time_str, sizeof(time_str), "%zu hours %zu minutes remaining", hours, minutes);
+            std::snprintf(time_str, sizeof(time_str), "%lld hours %lld minutes remaining",
+                          static_cast<long long>(hours), static_cast<long long>(minutes));
         } else if (minutes) {
-            std::snprintf(time_str, sizeof(time_str), "%zu minutes %zu seconds remaining", minutes, seconds);
+            std::snprintf(time_str, sizeof(time_str), "%lld minutes %lld seconds remaining",
+                          static_cast<long long>(minutes), static_cast<long long>(seconds));
         } else {
-            std::snprintf(time_str, sizeof(time_str), "%zu seconds remaining", seconds);
+            std::snprintf(time_str, sizeof(time_str), "%lld seconds remaining",
+                          static_cast<long long>(seconds));
         }
 
         gfx::drawTextArgs(vg, center_x, prog_bar.y + prog_bar.h + 30, 18,
                           NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT), "%s (%s)",
-                          time_str, FormatSize(speed, 1000.0).c_str());
+                          time_str, FormatRate(speed, 1000.0).c_str());
     } else {
         // Indeterminate work (a directory delete) still needs a sign of life.
         gfx::drawSpinner(vg, theme, center_x, prog_bar.y + prog_bar.h / 2, 15,
@@ -191,6 +203,9 @@ auto ProgressBox::SetTitle(const std::string& title) -> ProgressBox& {
 auto ProgressBox::NewTransfer(const std::string& transfer) -> ProgressBox& {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_transfer = transfer;
+    if (m_combined) {
+        return *this;
+    }
     m_size = 0;
     m_offset = 0;
     m_last_offset = 0;
@@ -206,9 +221,43 @@ auto ProgressBox::SetTransfer(const std::string& transfer) -> ProgressBox& {
 
 auto ProgressBox::UpdateTransfer(s64 offset, s64 size) -> ProgressBox& {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_size = size;
-    m_offset = offset;
+    if (m_combined) {
+        m_size = m_total;
+        m_offset = std::min<s64>(m_total, m_base + offset);
+    } else {
+        m_size = size;
+        m_offset = offset;
+    }
     return *this;
+}
+
+auto ProgressBox::SetCombinedProgress(s64 total) -> ProgressBox& {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_combined = true;
+    m_total = total;
+    m_base = 0;
+    m_size = total;
+    m_offset = 0;
+    m_last_offset = 0;
+    m_timestamp.Update();
+    return *this;
+}
+
+auto ProgressBox::SetProgressBase(s64 base) -> ProgressBox& {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_combined) {
+        return *this;
+    }
+    m_base = base;
+    m_offset = base;
+    m_last_offset = base;
+    m_timestamp.Update();
+    return *this;
+}
+
+auto ProgressBox::IsCombined() -> bool {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_combined;
 }
 
 void ProgressBox::RequestExit() {

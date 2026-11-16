@@ -128,6 +128,40 @@ int main() {
         expect(R_FAILED(rc), "download cancellation fails");
         expect(!fs::exists(path), "cancelled download leaves no file");
     }
+    {
+        std::string body(8 * 1024 * 1024, '\0');
+        for (size_t i = 0; i < body.size(); ++i) {
+            body[i] = static_cast<char>((i * 31 + 7) & 0xFF);
+        }
+        server.Route("/parallel", TestResponse{200, body, "application/octet-stream", "", false,
+                                               false, 0, 65536});
+        const auto path = root / "parallel.bin";
+        int calls = 0;
+        s64 total = 0;
+        const Result rc = http::Download(server.Url("/parallel"), path.string(),
+            [&calls, &total](s64, s64 now_total) {
+                ++calls;
+                total = now_total;
+                return true;
+            }, static_cast<s64>(body.size()), 4);
+        expect(R_SUCCEEDED(rc), "parallel download succeeds");
+        expect(calls > 0, "parallel download reports progress");
+        expect(total == static_cast<s64>(body.size()), "parallel download total");
+        expect(test::ReadFile(path) == body, "parallel download body");
+        fs::remove(path);
+    }
+    {
+        const std::string body(4 * 1024 * 1024, 'z');
+        TestResponse response{200, body, "application/octet-stream", "", false, false, 0, 65536};
+        response.ignore_range = true;
+        server.Route("/no-ranges", response);
+        const auto path = root / "fallback.bin";
+        const Result rc = http::Download(server.Url("/no-ranges"), path.string(),
+            [](s64, s64) { return true; }, static_cast<s64>(body.size()), 4);
+        expect(R_SUCCEEDED(rc), "parallel download falls back without ranges");
+        expect(test::ReadFile(path) == body, "fallback download body");
+        fs::remove(path);
+    }
 
     // Catalogue fetching.
     const fs::path nro = root / "src" / "game.nro";

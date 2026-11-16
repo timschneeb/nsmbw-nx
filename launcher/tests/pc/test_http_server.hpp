@@ -12,6 +12,7 @@
 struct TestRequest {
     std::string method;
     std::string path;
+    std::string range;
 };
 
 struct TestResponse {
@@ -37,6 +38,8 @@ struct TestResponse {
     bool chunked{};
     int delay_ms{};
     size_t chunk_size{4096};
+    bool ignore_range{};
+    std::string content_range;
 };
 
 class TestServer {

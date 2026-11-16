@@ -462,7 +462,7 @@ void MainMenu::ShowUpdateAllConfirmation() {
 
     auto* menu = this;
     App::Get().Push(std::make_unique<OptionBox>(
-        message, "Cancel", "Update all", 0,
+        message, "Cancel", "Update all", 1,
         [menu](std::optional<s64> choice) {
             if (choice && *choice) {
                 menu->StartUpdateAll();
@@ -496,7 +496,7 @@ void MainMenu::CheckGameUpdate(const GameEntry& entry) {
             ShowDialogLater([this, updated, game] {
                 std::string message = InstallPromptMessage(updated, game, "Update");
                 App::Get().Push(std::make_unique<OptionBox>(
-                    message, "Cancel", "Update", 0,
+                    message, "Cancel", "Update", 1,
                     [this, updated, game](std::optional<s64> choice) {
                         if (choice && *choice) {
                             StartInstall(updated, game, false);
@@ -527,7 +527,7 @@ void MainMenu::CheckLauncherUpdate() {
         ShowDialogLater([this, version] {
             App::Get().Push(std::make_unique<OptionBox>(
                 "Launcher update available\nVersion " + version + " is ready to install.",
-                "Cancel", "Update", 0, [this](std::optional<s64> choice) {
+                "Cancel", "Update", 1, [this](std::optional<s64> choice) {
                     if (choice && *choice) {
                         StartLauncherUpdate();
                     }

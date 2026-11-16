@@ -168,7 +168,7 @@ auto Verify(const Component& component, Sha256Context& compressed, Sha256Context
 } // namespace
 
 Result InstallRomfs(const Component& component, const std::string& dest, ui::ProgressBox& pbox,
-                    std::string& error) {
+                    std::string& error, bool commit) {
     error.clear();
     if (component.image_size <= 0) {
         error = "The catalogue has no resource image size.";
@@ -204,11 +204,12 @@ Result InstallRomfs(const Component& component, const std::string& dest, ui::Pro
     }
     ZSTD_initDStream(state.stream);
 
-    pbox.NewTransfer(fs::path(dest).filename().string());
+    const std::string name = fs::path(dest).filename().string();
+    pbox.NewTransfer("Installing " + name);
     pbox.UpdateTransfer(0, component.image_size);
 
     if (!component.path.empty()) {
-        pbox.SetTransfer("Decompressing " + fs::path(dest).filename().string());
+        pbox.SetTransfer("Decompressing " + name);
         FILE* file = std::fopen(component.path.c_str(), "rb");
         if (file == nullptr) {
             rc = MAKERESULT(Module_Libnx, LibnxError_NotFound);
@@ -233,7 +234,7 @@ Result InstallRomfs(const Component& component, const std::string& dest, ui::Pro
             std::fclose(file);
         }
     } else {
-        pbox.SetTransfer("Downloading " + fs::path(dest).filename().string());
+        pbox.SetTransfer("Downloading " + name);
         rc = http::DownloadStream(component.url, [&state](const u8* data, size_t size) {
             return state.Update(data, size);
         }, nullptr);
@@ -256,6 +257,12 @@ Result InstallRomfs(const Component& component, const std::string& dest, ui::Pro
         log_write("[romfs] verification failed for %s\n", dest.c_str());
         fs::remove(part, ec);
         return rc;
+    }
+
+    if (!commit) {
+        log_write("[romfs] staged %lld bytes to %s\n",
+                  static_cast<long long>(state.written), part.c_str());
+        return 0;
     }
 
     fs::remove(dest, ec);

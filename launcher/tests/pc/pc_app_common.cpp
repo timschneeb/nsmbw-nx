@@ -9,7 +9,9 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <utility>
+#include <vector>
 
 extern "C" {
 unsigned char nsmbw_logo_rgba[820 * 339 * 4] = {};
@@ -186,6 +188,21 @@ auto TestProgressCancelAfter() -> int& {
 
 auto TestProgressCancelCalls() -> int& {
     static int value = 0;
+    return value;
+}
+
+auto TestProgressCancelOnLabel() -> std::string& {
+    static std::string value;
+    return value;
+}
+
+auto TestProgressCancelAfterBytes() -> s64& {
+    static s64 value = 0;
+    return value;
+}
+
+auto TestProgressEvents() -> std::vector<std::pair<s64, s64>>& {
+    static std::vector<std::pair<s64, s64>> value;
     return value;
 }
 
