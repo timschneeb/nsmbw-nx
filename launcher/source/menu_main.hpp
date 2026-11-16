@@ -59,7 +59,6 @@ private:
     void ShowDialogLater(std::function<void()> dialog);
     auto RowCount() const -> s64;
     auto HasLauncherUpdate() const -> bool;
-    auto ShowLauncherRow() const -> bool;
     auto BannerFor(const GameEntry& entry) const -> BannerImage;
 
 public:

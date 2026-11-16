@@ -95,18 +95,9 @@ auto MainMenu::HasLauncherUpdate() const -> bool {
     return m_assets.valid && m_assets.LauncherUpdate(LauncherVersion());
 }
 
-auto MainMenu::ShowLauncherRow() const -> bool {
-#ifdef __SWITCH__
-    // Temporary layout preview: keep the launcher update row visible.
-    return true;
-#else
-    return HasLauncherUpdate();
-#endif
-}
-
 auto MainMenu::RowCount() const -> s64 {
     // Installed games, the optional launcher update, and the always present download entry.
-    return static_cast<s64>(m_rows.size()) + (ShowLauncherRow() ? 1 : 0) + 1;
+    return static_cast<s64>(m_rows.size()) + (HasLauncherUpdate() ? 1 : 0) + 1;
 }
 
 void MainMenu::Rebuild() {
@@ -254,12 +245,8 @@ void MainMenu::Activate(s64 index) {
 
     const auto games = static_cast<s64>(m_rows.size());
     if (index >= games) {
-        if (ShowLauncherRow() && index == games) {
-            if (HasLauncherUpdate()) {
-                StartLauncherUpdate();
-            } else {
-                CheckLauncherUpdate();
-            }
+        if (HasLauncherUpdate() && index == games) {
+            StartLauncherUpdate();
         } else {
             OpenDownloads();
         }
@@ -895,8 +882,8 @@ void MainMenu::UpdateFooter() {
     if (m_index >= 0 && m_index < games) {
         const GameEntry& row = m_rows[static_cast<size_t>(m_index)];
         hint = row.installed && row.nro_valid ? "Launch" : "Details";
-    } else if (ShowLauncherRow() && m_index == games) {
-        hint = HasLauncherUpdate() ? "Install launcher update" : "Check launcher update";
+    } else if (HasLauncherUpdate() && m_index == games) {
+        hint = "Install launcher update";
     } else if (m_index >= games) {
         hint = "Open";
     }
@@ -944,7 +931,7 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
         const auto& [x, y, w, h] = v;
 
         const auto games = static_cast<s64>(m_rows.size());
-        const bool launcher_row = ShowLauncherRow() && i == games;
+        const bool launcher_row = HasLauncherUpdate() && i == games;
         const bool download_row = !launcher_row && i >= games;
 
         std::string name;
@@ -981,11 +968,7 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
             }
         } else if (launcher_row) {
             name = "Install launcher update";
-            if (HasLauncherUpdate() && !m_assets.launcher_version.empty()) {
-                subtitle = "v" + LauncherVersion() + " -> v" + m_assets.launcher_version;
-            } else {
-                subtitle = "v" + LauncherVersion() + " (preview)";
-            }
+            subtitle = "v" + LauncherVersion() + " -> v" + m_assets.launcher_version;
             update_pill = true;
             meta = "Update available";
             meta_id = ThemeEntryID_TEXT;
@@ -1035,9 +1018,9 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
             nvgLineJoin(vg, NVG_ROUND);
             nvgStroke(vg);
         } else if (download_row) {
+            const auto plus_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT;
             gfx::drawText(vg, x + 15.f + kBannerBoxWidth / 2.f, y + 5.f + banner_h / 2.f, 48.f,
-                          theme->GetColour(ThemeEntryID_TEXT_SELECTED), "+",
-                          NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+                          theme->GetColour(plus_id), "+", NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
         }
         if (i < games) {
             if (draw_w <= 0.f || draw_h <= 0.f) {
