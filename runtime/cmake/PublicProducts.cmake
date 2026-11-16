@@ -132,6 +132,15 @@ target_compile_definitions(mkw_runtime_common PRIVATE
 if(MKW_ENABLE_SHADOW_SAMPLER)
     target_compile_definitions(mkw_runtime_common PRIVATE MKW_SHADOW_SAMPLER=1)
 endif()
+if(MKW_PLATFORM_SWITCH)
+    if(NSMBW_GAME_ID STREQUAL "SMNE03")
+        target_compile_definitions(mkw_runtime_common PRIVATE
+            NSMBW_BOOT_TITLE="Newer Super Mario Bros. Wii")
+    else()
+        target_compile_definitions(mkw_runtime_common PRIVATE
+            NSMBW_BOOT_TITLE="New Super Mario Bros. Wii")
+    endif()
+endif()
 target_link_libraries(mkw_runtime_common PRIVATE
     aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
 if(MKW_PLATFORM_SWITCH AND TARGET Freetype::Freetype)

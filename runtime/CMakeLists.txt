@@ -495,10 +495,17 @@ else()
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/android/co_switch.S")
         # Strong __libnx_exception_entry for fault-driven guest MMIO loads.
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/fastmem_entry.S")
-        # Boot splash logo, embedded raw RGBA. The assembler reads it from the build root.
-        configure_file("${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/nsmbw_logo.rgba"
-                       "${CMAKE_CURRENT_BINARY_DIR}/nsmbw_logo.rgba" COPYONLY)
-        list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/nsmbw_logo.S")
+        # Boot splash logo, embedded as PNG and decoded at startup. The assembler reads it from
+        # the build root. Newer builds use the Newer banner.
+        if(NSMBW_GAME_ID STREQUAL "SMNE03")
+            set(MKW_SWITCH_BOOT_LOGO
+                "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/newersmbw_logo.png")
+        else()
+            set(MKW_SWITCH_BOOT_LOGO
+                "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/nsmbw_logo.png")
+        endif()
+        configure_file("${MKW_SWITCH_BOOT_LOGO}" "${CMAKE_CURRENT_BINARY_DIR}/boot_logo.png" COPYONLY)
+        list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/boot_logo.S")
 
     endif()
 endif()

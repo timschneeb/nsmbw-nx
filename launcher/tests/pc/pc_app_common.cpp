@@ -14,14 +14,12 @@
 #include <vector>
 
 extern "C" {
-unsigned char nsmbw_logo_rgba[820 * 339 * 4] = {};
+unsigned char nsmbw_logo_png[512 * 1024] = {};
+unsigned int nsmbw_logo_png_size = 0;
 }
 
 namespace launcher::pc {
 namespace {
-constexpr int kLogoWidth = 820;
-constexpr int kLogoHeight = 339;
-
 auto CurrentAppStorage() -> App*& {
     static App* app{};
     return app;
@@ -33,22 +31,21 @@ auto CurrentApp() -> App*& {
 }
 
 void LoadLogo() {
+    nsmbw_logo_png_size = 0;
     const std::filesystem::path path =
-        std::filesystem::path(LAUNCHER_SOURCE_DIR) / "runtime/src/platform/switch/nsmbw_logo.rgba";
+        std::filesystem::path(LAUNCHER_SOURCE_DIR) / "runtime/src/platform/switch/nsmbw_logo.png";
     std::ifstream file(path, std::ios::binary);
-    if (file) {
-        file.read(reinterpret_cast<char*>(nsmbw_logo_rgba), sizeof(nsmbw_logo_rgba));
+    if (!file) {
         return;
     }
-    for (int y = 0; y < kLogoHeight; ++y) {
-        for (int x = 0; x < kLogoWidth; ++x) {
-            const size_t at = (static_cast<size_t>(y) * kLogoWidth + x) * 4;
-            nsmbw_logo_rgba[at + 0] = static_cast<unsigned char>(x * 255 / (kLogoWidth - 1));
-            nsmbw_logo_rgba[at + 1] = static_cast<unsigned char>(y * 255 / (kLogoHeight - 1));
-            nsmbw_logo_rgba[at + 2] = 32;
-            nsmbw_logo_rgba[at + 3] = 255;
-        }
+    file.seekg(0, std::ios::end);
+    const auto size = static_cast<size_t>(file.tellg());
+    file.seekg(0, std::ios::beg);
+    if (size == 0 || size > sizeof(nsmbw_logo_png)) {
+        return;
     }
+    file.read(reinterpret_cast<char*>(nsmbw_logo_png), static_cast<std::streamsize>(size));
+    nsmbw_logo_png_size = static_cast<unsigned int>(size);
 }
 
 void LoadFonts(NVGcontext* vg) {

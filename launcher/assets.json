@@ -4,20 +4,20 @@
   "launcher": {
     "version": "0.0.21",
     "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/launcher.nro",
-    "sha256": "1d494abbb4c1883a8655be0299406bd3edd375fc6bbaf67277b463089e6f44c7",
-    "size": 3576575
+    "sha256": "e32953eac1a5b51807fad726a1f57c7d34243f1b1f06ff0164ea929beb9dc3c4",
+    "size": 2527999
   },
   "games": {
     "vanilla": {
       "name": "New Super Mario Bros. Wii",
       "components": {
         "nro": {
-          "recomp_version": "0.0.1",
+          "recomp_version": "0.0.21",
           "game_version": "1.0.0",
           "region": "U",
-          "sha256": "b7864c3ed292df2790c5e570ce8d6284e17befa91c81bc9b4fc7178193329cb0",
-          "size": 95118167,
-          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v0.0.1/vanilla-game.nro"
+          "sha256": "745af37641c75bb9bb42313bbaa71de56a262ecec2a8763663f18c672ef08fba",
+          "size": 94151511,
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/vanilla-game.nro"
         }
       },
       "author": "Nintendo"
@@ -26,19 +26,19 @@
       "name": "Newer Super Mario Bros. Wii",
       "components": {
         "nro": {
-          "recomp_version": "0.0.1",
+          "recomp_version": "0.0.21",
           "game_version": "1.30",
           "region": "U",
-          "sha256": "becdb44e761e8a391381b5b0b9bc976321ae62fdce42032ab2f9ad3a3c8c39c9",
-          "size": 101143383,
-          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v0.0.1/newersmbw-game.nro"
+          "sha256": "8ad757145bb00b391d6770e565987f414eb0feff3ef04a26ba149259e3761dec",
+          "size": 100336471,
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-game.nro"
         },
         "romfs": {
           "game_version": "1.30",
           "region": "U",
           "sha256": "9f07de634e4d0e70db77985852f48948d025e8e15c0e7bcbbbe4b0b7b6cf49b1",
           "size": 488610188,
-          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v0.0.1/newersmbw.romfs.zst",
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw.romfs.zst",
           "image_sha256": "22fb2676935f5ff45f8d5b0437ad1c2a12e15f46b34d7adc293b6fa5fff2c961",
           "image_size": 586327032
         }
@@ -47,7 +47,7 @@
       "banner": {
         "sha256": "b0bbdad3f4b0d8d4d9ff57c68184ac1067f75285f5af147136cc4f359e81ce92",
         "size": 229807,
-        "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v0.0.1/newersmbw-banner.png"
+        "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-banner.png"
       }
     }
   }

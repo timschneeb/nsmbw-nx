@@ -1,9 +1,13 @@
     .section .rodata
     .balign 16
-    .global nsmbw_logo_rgba
-    .type nsmbw_logo_rgba, %object
-nsmbw_logo_rgba:
+    .global nsmbw_logo_png
+    .type nsmbw_logo_png, %object
+nsmbw_logo_png:
     .incbin "@MKW_LOGO_PATH@"
-    .global nsmbw_logo_rgba_end
-nsmbw_logo_rgba_end:
-    .size nsmbw_logo_rgba, . - nsmbw_logo_rgba
+nsmbw_logo_png_end:
+    .size nsmbw_logo_png, nsmbw_logo_png_end - nsmbw_logo_png
+    .global nsmbw_logo_png_size
+    .type nsmbw_logo_png_size, %object
+nsmbw_logo_png_size:
+    .int nsmbw_logo_png_end - nsmbw_logo_png
+    .size nsmbw_logo_png_size, 4

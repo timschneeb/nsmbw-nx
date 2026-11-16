@@ -9,7 +9,16 @@
 #include <cstdio>
 #include <cstring>
 
-extern "C" const unsigned char nsmbw_logo_rgba[];
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#undef STB_IMAGE_IMPLEMENTATION
+
+#ifndef NSMBW_BOOT_TITLE
+#define NSMBW_BOOT_TITLE "New Super Mario Bros. Wii"
+#endif
+
+extern "C" const unsigned char nsmbw_boot_logo_png[];
+extern "C" const unsigned char nsmbw_boot_logo_png_end[];
 
 namespace {
 constexpr u32 kFbWidth = 1280;
@@ -169,30 +178,75 @@ void ShowConsoleFallback() {
     }
     consoleClear();
     std::printf("\n\n\n");
-    PrintCentered(g_console, "New Super Mario Bros. Wii");
+    PrintCentered(g_console, NSMBW_BOOT_TITLE);
     std::printf("\n");
     PrintCentered(g_console, g_status);
     consoleUpdate(g_console);
 }
 
+struct LogoImage {
+    int width{};
+    int height{};
+    unsigned char* pixels{};
+};
+
+LogoImage g_logo{};
+
+bool EnsureLogo() {
+    if (g_logo.pixels != nullptr) {
+        return true;
+    }
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    const int size = static_cast<int>(nsmbw_boot_logo_png_end - nsmbw_boot_logo_png);
+    unsigned char* pixels =
+        stbi_load_from_memory(nsmbw_boot_logo_png, size, &width, &height, &channels, 4);
+    if (pixels == nullptr || width <= 0 || height <= 0) {
+        if (pixels != nullptr) {
+            stbi_image_free(pixels);
+        }
+        return false;
+    }
+
+    g_logo = {width, height, pixels};
+    return true;
+}
+
 void DrawLogo(Pixel* framebuffer, u32 stridePixels) {
-    constexpr int kLogoWidth = 820;
-    constexpr int kLogoHeight = 339;
-    constexpr int kLogoX = (static_cast<int>(kFbWidth) - kLogoWidth) / 2;
-    constexpr int kLogoY = 148;
-    for (int y = 0; y < kLogoHeight; ++y) {
-        const int targetY = kLogoY + y;
+    if (!EnsureLogo()) {
+        return;
+    }
+
+    constexpr int kTargetWidth = 820;
+    constexpr int kTargetHeight = 339;
+    const float scale =
+        std::min(static_cast<float>(kTargetWidth) / static_cast<float>(g_logo.width),
+                 static_cast<float>(kTargetHeight) / static_cast<float>(g_logo.height));
+    const int logoWidth =
+        std::max(1, static_cast<int>(static_cast<float>(g_logo.width) * scale));
+    const int logoHeight =
+        std::max(1, static_cast<int>(static_cast<float>(g_logo.height) * scale));
+    const int logoX = (static_cast<int>(kFbWidth) - logoWidth) / 2;
+    const int logoY = 148 + (kTargetHeight - logoHeight) / 2;
+
+    for (int y = 0; y < logoHeight; ++y) {
+        const int targetY = logoY + y;
         if (targetY < 0 || targetY >= static_cast<int>(kFbHeight)) {
             continue;
         }
         Pixel* row = framebuffer + static_cast<size_t>(targetY) * stridePixels;
-        const unsigned char* source = nsmbw_logo_rgba + y * kLogoWidth * 4;
-        for (int x = 0; x < kLogoWidth; ++x) {
-            const int targetX = kLogoX + x;
+        const int sourceY = std::min(g_logo.height - 1, y * g_logo.height / logoHeight);
+        const unsigned char* source =
+            g_logo.pixels + static_cast<size_t>(sourceY) * g_logo.width * 4;
+        for (int x = 0; x < logoWidth; ++x) {
+            const int targetX = logoX + x;
             if (targetX < 0 || targetX >= static_cast<int>(kFbWidth)) {
                 continue;
             }
-            const unsigned char* pixel = source + x * 4;
+            const int sourceX = std::min(g_logo.width - 1, x * g_logo.width / logoWidth);
+            const unsigned char* pixel = source + static_cast<size_t>(sourceX) * 4;
             BlendPixel(&row[targetX], pixel[0], pixel[1], pixel[2], pixel[3]);
         }
     }
@@ -352,5 +406,9 @@ extern "C" void NsmbwBootSplashHide() {
         PrintConsole* console = g_console;
         g_console = nullptr;
         consoleExit(console);
+    }
+    if (g_logo.pixels != nullptr) {
+        stbi_image_free(g_logo.pixels);
+        g_logo = {};
     }
 }

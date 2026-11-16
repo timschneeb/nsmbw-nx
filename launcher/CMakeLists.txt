@@ -95,7 +95,7 @@ set_source_files_properties("${NSMBW_RUNTIME_DIR}/third_party/cryptopp/rijndael_
     PROPERTIES COMPILE_DEFINITIONS "CRYPTOPP_ARM_NEON_AVAILABLE=1;CRYPTOPP_ARM_NEON_HEADER=1")
 target_link_libraries(nsmbw_disc PUBLIC PkgConfig::ZSTD ${BZ2_LIBRARY})
 
-set(MKW_LOGO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src/platform/switch/nsmbw_logo.rgba")
+set(MKW_LOGO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src/platform/switch/nsmbw_logo.png")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/source/nsmbw_logo.S.in"
     "${CMAKE_BINARY_DIR}/nsmbw_logo.S"

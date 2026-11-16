@@ -15,7 +15,8 @@
 #include <filesystem>
 #include <utility>
 
-extern "C" const unsigned char nsmbw_logo_rgba[];
+extern "C" const unsigned char nsmbw_logo_png[];
+extern "C" const unsigned int nsmbw_logo_png_size;
 
 namespace launcher::ui {
 namespace {
@@ -55,7 +56,8 @@ MainMenu::MainMenu() : MenuBase{"Games", menu::MenuFlag_None} {
     );
 
     if (App::GetVg() != nullptr) {
-        m_fallback_banner = nvgCreateImageRGBA(App::GetVg(), kLogoWidth, kLogoHeight, 0, nsmbw_logo_rgba);
+        m_fallback_banner = nvgCreateImageMem(App::GetVg(), 0, nsmbw_logo_png,
+                                              static_cast<int>(nsmbw_logo_png_size));
     }
     log_write("[menu] banner image %d\n", m_fallback_banner);
 

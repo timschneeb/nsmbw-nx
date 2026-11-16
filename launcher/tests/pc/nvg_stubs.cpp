@@ -69,6 +69,7 @@ void nvgTextBoxBounds(NVGcontext*, float, float, float, const char*, const char*
 }
 int nvgCreateImage(NVGcontext*, const char*, int) { return 0; }
 int nvgCreateImageRGBA(NVGcontext*, int, int, int, const unsigned char*) { return 0; }
+int nvgCreateImageMem(NVGcontext*, int, const unsigned char*, int) { return 0; }
 void nvgImageSize(NVGcontext*, int, int* w, int* h) {
     if (w != nullptr) *w = 0;
     if (h != nullptr) *h = 0;
