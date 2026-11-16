@@ -22,11 +22,10 @@ constexpr float kBannerBoxWidth = 170.f;
 } // namespace
 
 DownloadMenu::DownloadMenu(Assets* assets, BannerLookup banner_lookup, UpdatedCallback on_updated)
-    : MenuBase{"Download", menu::MenuFlag_None}
+    : MenuBase{"Community mods & games", menu::MenuFlag_None}
     , m_assets{assets}
     , m_banner_lookup{std::move(banner_lookup)}
     , m_on_updated{std::move(on_updated)} {
-    SetTitleSubHeading("Not installed");
 
     SetActions(
         std::make_pair(Button::A, Action{"Install", [this] {
@@ -207,7 +206,7 @@ void DownloadMenu::Draw(NVGcontext* vg, Theme* theme) {
     MenuBase::Draw(vg, theme);
 
     if (RowCount() == 0) {
-        const char* message = m_assets->games.empty() ? "No catalogue available" : "All games are installed";
+        const char* message = m_assets->games.empty() ? "No catalogue available" : "Everything is installed";
         gfx::drawText(vg, GetX() + GetW() / 2.f, GetY() + GetH() / 2.f, 36.f,
                       theme->GetColour(ThemeEntryID_TEXT_INFO), message,
                       NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);

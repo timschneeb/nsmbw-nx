@@ -31,7 +31,9 @@ void MenuBase::Draw(NVGcontext* vg, Theme* theme) {
 
     constexpr float header_left = 74.f;
     const auto text_w = SCREEN_WIDTH / 2 - 30;
-    const auto header_right = std::min<float>(text_w, status_content_left - 15.f);
+    const auto header_right = m_title_sub_heading.empty()
+                                  ? status_content_left - 15.f
+                                  : std::min<float>(text_w, status_content_left - 15.f);
     const auto header_width = std::max(0.f, header_right - header_left);
 
     float title_width = header_width;

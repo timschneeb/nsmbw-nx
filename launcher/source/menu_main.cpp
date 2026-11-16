@@ -921,7 +921,6 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
         const auto& [x, y, w, h] = v;
 
         const auto games = static_cast<s64>(m_rows.size());
-        const s64 download_index = games + (HasLauncherUpdate() ? 1 : 0);
         const bool launcher_row = HasLauncherUpdate() && i == games;
         const bool download_row = !launcher_row && i >= games;
 
@@ -960,8 +959,7 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
             meta = "v" + m_assets.launcher_version;
             meta_id = ThemeEntryID_TEXT_SELECTED;
         } else {
-            name = "Download games";
-            meta = std::to_string(m_download_count) + " available";
+            name = "Download community mods & games";
         }
 
         auto text_id = ThemeEntryID_TEXT;
@@ -969,7 +967,7 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
         if (selected) {
             text_id = ThemeEntryID_TEXT_SELECTED;
             gfx::drawRectOutline(vg, theme, 4.f, v);
-        } else if (i != RowCount() - 1 && i + 1 != download_index) {
+        } else if (i != RowCount() - 1) {
             gfx::drawRect(vg, Vec4{x, y + h, w, 1.f}, theme->GetColour(ThemeEntryID_LINE_SEPARATOR));
         }
 
@@ -987,8 +985,6 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
                 draw_h = static_cast<float>(banner.height) * scale;
             }
         } else if (download_row) {
-            gfx::drawRect(vg, Vec4{x + 15.f, y + 5.f, kBannerBoxWidth, banner_h},
-                          theme->GetColour(ThemeEntryID_SELECTED_BACKGROUND), 4.f);
             gfx::drawText(vg, x + 15.f + kBannerBoxWidth / 2.f, y + 5.f + banner_h / 2.f, 48.f,
                           theme->GetColour(ThemeEntryID_TEXT_SELECTED), "+",
                           NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);

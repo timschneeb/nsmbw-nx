@@ -25,7 +25,7 @@ public:
     void Draw(NVGcontext* vg, Theme* theme) override;
     void OnFocusGained() override;
 
-    auto GetShortTitle() const -> const char* override { return "Download"; }
+    auto GetShortTitle() const -> const char* override { return "Mods & games"; }
 
 #ifdef LAUNCHER_TEST
     auto TestRows() const -> const std::vector<GameEntry>& { return m_rows; }
