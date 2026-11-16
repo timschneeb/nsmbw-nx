@@ -765,6 +765,16 @@ void MainMenu::OpenOptions() {
         });
     }
 
+    sidebar->Add<SidebarEntryCallback>("Version info", [entry, sidebar_ptr] {
+        sidebar_ptr->SetPop();
+        std::string message = entry.name + "\n";
+        message += "Game version: " + (entry.version.empty() ? "unknown" : entry.version) + "\n";
+        message += "Recomp version: " +
+                   (entry.recomp_version.empty() ? "unknown" : entry.recomp_version) + "\n";
+        message += "Region: " + (entry.region.empty() ? "unknown" : entry.region);
+        App::Get().Push(std::make_unique<OptionBox>(message, "Close"));
+    });
+
     sidebar->Add<SidebarEntryCallback>("Verify files", [menu, entry, sidebar_ptr] {
         sidebar_ptr->SetPop();
         menu->StartVerify(entry);
@@ -965,7 +975,7 @@ void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
                         meta = "Needs game data";
                         meta_id = ThemeEntryID_ERROR;
                     } else {
-                        meta = entry.version;
+                        meta = entry.recomp_version.empty() ? entry.version : entry.recomp_version;
                     }
                     break;
             }

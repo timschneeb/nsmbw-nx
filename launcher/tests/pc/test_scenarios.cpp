@@ -809,6 +809,24 @@ void test_download_and_install(Harness& h) {
     expect(menu->TestRows()[0].state == GameState::Launch, "installed row is launchable");
     expect_eq(menu->m_download_count, s64(0), "download count is zero");
 
+    // Game options show the game and recomp versions.
+    select_row(*app, *menu, "alpha");
+    press(*app, Button::X);
+    {
+        auto* game_sidebar = dynamic_cast<Sidebar*>(app->TestTop());
+        expect(game_sidebar != nullptr && sidebar_has(*game_sidebar, "Version info"),
+               "version info entry");
+        if (game_sidebar != nullptr) {
+            expect(select_sidebar(*app, "Version info"), "version info selected");
+            const auto info = dialog_message(*app);
+            expect(info.find("Game version: 1.0.0") != std::string::npos,
+                   "version info game version");
+            expect(info.find("Recomp version: 1.0.0") != std::string::npos,
+                   "version info recomp version");
+            close_dialog(*app);
+        }
+    }
+
     // A new remote game appears after reopening the page.
     h.AddGame("gamma", "Gamma", "1.0.0", "Studio C");
     select_row(*app, *menu, menu->TestRowCount() - 1);
