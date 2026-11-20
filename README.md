@@ -123,13 +123,6 @@ page.
 `/switch/nsmbw/games/`, downloads the catalogue, installs Newer, checks for updates and chainloads
 the selected game. The games are separate NROs, which allows you to create direct forwarders for them using an app like Sphaira.
 
-- **Download community mods & games:** install Newer and other catalogue entries.
-- **Updates:** a game row shows an **Update available** chip when its version differs and can perform the update for you.
-- **Display styles:** Detail, Banner Grid and Detail Grid, from Minus > Display style.
-- **Per-game icons and banners:** installed NRO icons are read from the NRO; banners come from the
-  catalogue.
-- **Shader Status:** the in-game Display settings toggle the top-left shader compilation notice.
-
 ## Performance and overclocking
 
 > [!NOTE]
