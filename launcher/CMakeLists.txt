@@ -127,6 +127,7 @@ add_executable(launcher
     source/http.cpp
     source/install.cpp
     source/paths.cpp
+    source/settings.cpp
     source/sha.cpp
     source/romfs.cpp
     source/menu_main.cpp
@@ -139,6 +140,7 @@ add_executable(launcher
     source/ui/progress_box.cpp
     source/ui/option_box.cpp
     source/ui/sidebar.cpp
+    source/ui/popup_list.cpp
 )
 
 target_include_directories(launcher PRIVATE

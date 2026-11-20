@@ -989,7 +989,7 @@ void test_updates(Harness& h) {
     expect_eq(dialog_message(*app), std::string("Files verified for Alpha."), "verify after reinstall");
     close_dialog(*app);
 
-    // Same version, different size is an update.
+    // Same version, different size is not an update: detection is version only.
     {
         std::ofstream file(h.Src() / "alpha.nro", std::ios::binary | std::ios::app);
         file.put('\0');
@@ -997,11 +997,13 @@ void test_updates(Harness& h) {
     select_row(*app, *menu, menu->TestRowCount() - 1);
     press(*app, Button::A);
     press(*app, Button::B);
-    expect(menu->TestRows()[0].state == GameState::Update, "size mismatch marks the row stale");
+    expect(menu->TestRows()[0].state == GameState::Launch, "size change is not an update");
     select_row(*app, *menu, 0);
     press(*app, Button::A);
-    expect(app->IsQuitting(), "size mismatch row launches");
-    update_via_options(*app, "Alpha");
+    expect(app->IsQuitting(), "size change row launches");
+    // Y does nothing when the selected row is not updatable.
+    press(*app, Button::Y);
+    expect(dialog_of(*app) == nullptr, "Y ignores a current row");
 
     // Changing only the game version triggers an update and records it separately.
     h.SetGameVersion("alpha", "1.1.0");
@@ -1012,7 +1014,12 @@ void test_updates(Harness& h) {
     select_row(*app, *menu, 0);
     press(*app, Button::A);
     expect(app->IsQuitting(), "game version row launches");
-    update_via_options(*app, "Alpha");
+    // Y starts the same update prompt as Game options.
+    press(*app, Button::Y);
+    expect(dialog_message(*app).find("Update Alpha?") == 0, "Y starts the update");
+    confirm_dialog(*app);
+    expect_eq(dialog_message(*app), std::string("Installed Alpha."), "Y update message");
+    close_dialog(*app);
     {
         const Installed installed = ReadInstalled((fs::path(GamesDirectory()) / "alpha").string());
         expect_eq(installed.nro.game_version, std::string("1.1.0"), "game version updated");
@@ -1376,7 +1383,7 @@ void test_settings_and_base(Harness& h) {
     auto* settings = dynamic_cast<Sidebar*>(app->TestTop());
     expect(settings != nullptr, "settings without local catalogue");
     if (settings != nullptr) {
-        expect_eq(settings->ItemCount(), size_t(3), "three settings entries");
+        expect_eq(settings->ItemCount(), size_t(5), "five settings entries");
         expect(!sidebar_has(*settings, "Clear local catalogue"), "no clear-local entry");
         press(*app, Button::B);
     }

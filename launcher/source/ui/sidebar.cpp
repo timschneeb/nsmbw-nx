@@ -1,6 +1,8 @@
 #include "ui/sidebar.hpp"
 
+#include "app.hpp"
 #include "ui/nvg_util.hpp"
+#include "ui/popup_list.hpp"
 
 #include <algorithm>
 
@@ -133,6 +135,55 @@ SidebarEntryCallback::SidebarEntryCallback(const std::string& title, const Callb
 void SidebarEntryCallback::Draw(NVGcontext* vg, Theme* theme, const Vec4& root_pos, bool left) {
     SidebarEntryBase::Draw(vg, theme, root_pos, left);
     SidebarEntryBase::DrawEntry(vg, theme, m_title, {}, false);
+}
+
+SidebarEntryBool::SidebarEntryBool(const std::string& title, bool option, const Callback& cb,
+                                   const std::string& info, const std::string& true_str,
+                                   const std::string& false_str)
+    : SidebarEntryBase{title, info}
+    , m_option{option}
+    , m_callback{cb}
+    , m_true_str{true_str}
+    , m_false_str{false_str} {
+    SetAction(Button::A, Action{"OK", [this] {
+        m_option ^= 1;
+        if (m_callback) {
+            m_callback(m_option);
+        }
+    }});
+}
+
+void SidebarEntryBool::Draw(NVGcontext* vg, Theme* theme, const Vec4& root_pos, bool left) {
+    SidebarEntryBase::Draw(vg, theme, root_pos, left);
+    SidebarEntryBase::DrawEntry(vg, theme, m_title, m_option ? m_true_str : m_false_str, m_option);
+}
+
+SidebarEntryArray::SidebarEntryArray(const std::string& title, const Items& items,
+                                     const Callback& cb, s64 index, const std::string& info)
+    : SidebarEntryBase{title, info}
+    , m_items{items}
+    , m_callback{cb}
+    , m_index{index} {
+    m_list_callback = [this] {
+        auto list = std::make_unique<PopupList>(m_title, m_items, [this](std::optional<s64> op_idx) {
+            if (op_idx) {
+                m_index = *op_idx;
+                if (m_callback) {
+                    m_callback(m_index);
+                }
+            }
+        }, m_index);
+        App::Get().Push(std::move(list));
+    };
+
+    SetAction(Button::A, Action{"OK", [this] {
+        m_list_callback();
+    }});
+}
+
+void SidebarEntryArray::Draw(NVGcontext* vg, Theme* theme, const Vec4& root_pos, bool left) {
+    SidebarEntryBase::Draw(vg, theme, root_pos, left);
+    SidebarEntryBase::DrawEntry(vg, theme, m_title, m_items[m_index], true);
 }
 
 Sidebar::Sidebar(const std::string& title, Side side, float width)

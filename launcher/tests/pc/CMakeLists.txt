@@ -45,6 +45,7 @@ add_executable(launcher_pc_tests
     test_main.cpp
     test_shim.cpp
     ../../source/paths.cpp
+    ../../source/settings.cpp
     ../../source/log.cpp
     ../../source/sha.cpp
     ../../source/http.cpp
@@ -83,6 +84,7 @@ add_executable(launcher_ui_tests
     nvg_stubs.cpp
     test_shim.cpp
     ../../source/paths.cpp
+    ../../source/settings.cpp
     ../../source/log.cpp
     ../../source/sha.cpp
     ../../source/http.cpp
@@ -99,6 +101,7 @@ add_executable(launcher_ui_tests
     ../../source/ui/menus/menu_download.cpp
     ../../source/ui/option_box.cpp
     ../../source/ui/sidebar.cpp
+    ../../source/ui/popup_list.cpp
 )
 
 target_include_directories(launcher_ui_tests PRIVATE
@@ -129,6 +132,7 @@ add_executable(launcher_network_tests
     test_http_server.cpp
     test_shim.cpp
     ../../source/paths.cpp
+    ../../source/settings.cpp
     ../../source/log.cpp
     ../../source/sha.cpp
     ../../source/http.cpp
@@ -168,6 +172,7 @@ add_executable(launcher_scenario_tests
     nvg_stubs.cpp
     test_shim.cpp
     ../../source/paths.cpp
+    ../../source/settings.cpp
     ../../source/log.cpp
     ../../source/sha.cpp
     ../../source/http.cpp
@@ -184,6 +189,7 @@ add_executable(launcher_scenario_tests
     ../../source/ui/menus/menu_download.cpp
     ../../source/ui/option_box.cpp
     ../../source/ui/sidebar.cpp
+    ../../source/ui/popup_list.cpp
 )
 
 target_include_directories(launcher_scenario_tests PRIVATE
@@ -232,6 +238,7 @@ add_executable(launcher_render
     basedata_stub.cpp
     test_shim.cpp
     ../../source/paths.cpp
+    ../../source/settings.cpp
     ../../source/log.cpp
     ../../source/sha.cpp
     ../../source/http.cpp
@@ -248,6 +255,7 @@ add_executable(launcher_render
     ../../source/ui/menus/menu_download.cpp
     ../../source/ui/option_box.cpp
     ../../source/ui/sidebar.cpp
+    ../../source/ui/popup_list.cpp
 )
 
 target_include_directories(launcher_render PRIVATE
@@ -285,6 +293,7 @@ add_executable(launcher_viewer
     basedata_stub.cpp
     test_shim.cpp
     ../../source/paths.cpp
+    ../../source/settings.cpp
     ../../source/log.cpp
     ../../source/sha.cpp
     ../../source/http.cpp
@@ -301,6 +310,7 @@ add_executable(launcher_viewer
     ../../source/ui/menus/menu_download.cpp
     ../../source/ui/option_box.cpp
     ../../source/ui/sidebar.cpp
+    ../../source/ui/popup_list.cpp
 )
 
 target_include_directories(launcher_viewer PRIVATE

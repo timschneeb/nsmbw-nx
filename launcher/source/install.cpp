@@ -318,12 +318,10 @@ Result Obtain(const Component& component, const std::string& dest, ui::ProgressB
 
 auto NeedsNro(const GameEntry& entry, const AssetsGame& catalog, bool force) -> bool {
     const Installed installed = ReadInstalled(entry.dir);
-    if (force || StaleNro(catalog.nro, installed.nro) ||
-        (!Exists(entry.nro_path) && catalog.nro.Valid()) ||
-        (Exists(entry.nro_path) && !IsValidNro(entry.nro_path))) {
-        return true;
-    }
-    return catalog.nro.size > 0 && FileSize(entry.nro_path) != catalog.nro.size;
+    // Version only: a locally rebuilt NRO with the same version must not look stale.
+    return force || StaleNro(catalog.nro, installed.nro) ||
+           (!Exists(entry.nro_path) && catalog.nro.Valid()) ||
+           (Exists(entry.nro_path) && !IsValidNro(entry.nro_path));
 }
 
 auto NeedsRomfs(const GameEntry& entry, const AssetsGame& catalog, bool force) -> bool {
@@ -332,13 +330,8 @@ auto NeedsRomfs(const GameEntry& entry, const AssetsGame& catalog, bool force) -
     }
 
     const Installed installed = ReadInstalled(entry.dir);
-    if (force || StaleRomfs(catalog.romfs, installed.romfs)) {
-        return true;
-    }
-    if (installed.romfs.size > 0 && FileSize(entry.romfs_path) != installed.romfs.size) {
-        return true;
-    }
-    return catalog.romfs.image_size > 0 && FileSize(entry.romfs_path) != catalog.romfs.image_size;
+    // Version only: bump the catalogue's game_version when the image changes.
+    return force || StaleRomfs(catalog.romfs, installed.romfs);
 }
 
 auto RequiredFreeSpace(const GameEntry& entry, const AssetsGame& catalog, bool nro, bool romfs) -> s64 {

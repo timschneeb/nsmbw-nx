@@ -17,7 +17,7 @@ List::List(s64 row, s64 page, const Vec4& pos, const Vec4& v, const Vec2& pad)
 }
 
 auto List::ClampX(float x, s64 count) const -> float {
-    const float x_max = count * GetMaxX();
+    const float x_max = static_cast<float>(std::max<s64>(0, count - m_page)) * GetMaxX();
     return std::clamp(x, 0.F, x_max);
 }
 
@@ -33,6 +33,23 @@ auto List::ClampY(float y, s64 count) const -> float {
     }
 
     return std::clamp(y, 0.F, y_max);
+}
+
+void List::ScrollToIndex(s64 index, s64 count) {
+    m_y_prog = 0;
+    if (count <= 0) {
+        m_yoff = 0;
+        return;
+    }
+
+    const s64 row = std::max<s64>(1, m_row);
+    const s64 visible = std::max<s64>(1, m_page / row);
+    const s64 active = index / row;
+    const s64 rows = (count + row - 1) / row;
+    const s64 last = std::max<s64>(0, rows - visible);
+    const s64 start = std::clamp<s64>(active - visible + 1, 0, last);
+    const float step = m_layout == Layout::GRID ? GetMaxY() : GetMaxX();
+    m_yoff = static_cast<float>(start) * step;
 }
 
 void List::OnUpdate(Controller* controller, TouchInfo* touch, s64 index, s64 count, const TouchCallback& callback) {

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <iterator>
 #include <utility>
 
 extern "C" const unsigned char nsmbw_logo_png[];
@@ -27,6 +28,16 @@ constexpr float kRowHeight = 102.f;
 constexpr s64 kRowsPerPage = 5;
 constexpr float kBannerBoxWidth = 240.f;
 
+constexpr DisplayStyle kDisplayStyles[] = {
+    DisplayStyle::Detail,
+    DisplayStyle::BannerGrid,
+    DisplayStyle::GridDetail,
+};
+
+auto StyleUsesIcons(DisplayStyle style) -> bool {
+    return style == DisplayStyle::GridDetail;
+}
+
 auto BannerPath(const std::string& id, const Banner& banner) -> std::string {
     std::error_code ec;
     if (!banner.path.empty() && std::filesystem::is_regular_file(banner.path, ec)) {
@@ -35,11 +46,73 @@ auto BannerPath(const std::string& id, const Banner& banner) -> std::string {
     return (std::filesystem::path(BannersDirectory()) / (id + ".png")).string();
 }
 
+void DrawContainedImage(NVGcontext* vg, int image, int width, int height, const Vec4& box,
+                        float rounded, float padding = 0.f) {
+    if (image <= 0 || width <= 0 || height <= 0) {
+        return;
+    }
+    const float available_w = std::max(1.f, box.w - padding * 2.f);
+    const float available_h = std::max(1.f, box.h - padding * 2.f);
+    const float scale = std::min(available_w / static_cast<float>(width),
+                                 available_h / static_cast<float>(height));
+    const float draw_w = static_cast<float>(width) * scale;
+    const float draw_h = static_cast<float>(height) * scale;
+    gfx::drawImage(vg, box.x + (box.w - draw_w) / 2.f, box.y + (box.h - draw_h) / 2.f,
+                   draw_w, draw_h, image, rounded);
+}
+
+void DrawUpdateIcon(NVGcontext* vg, Theme* theme, const Vec4& box) {
+    gfx::drawRect(vg, box, theme->GetColour(ThemeEntryID_HIGHLIGHT_1), 14.f);
+    const float cx = box.x + box.w / 2.f;
+    const float top = box.y + box.h * 0.28f;
+    const float bottom = box.y + box.h * 0.72f;
+    const float wing = box.h * 0.18f;
+    nvgBeginPath(vg);
+    nvgMoveTo(vg, cx, bottom);
+    nvgLineTo(vg, cx, top);
+    nvgMoveTo(vg, cx - wing, top + wing);
+    nvgLineTo(vg, cx, top);
+    nvgLineTo(vg, cx + wing, top + wing);
+    nvgStrokeColor(vg, theme->GetColour(ThemeEntryID_TEXT));
+    nvgStrokeWidth(vg, std::max(2.f, box.h * 0.07f));
+    nvgLineCap(vg, NVG_ROUND);
+    nvgLineJoin(vg, NVG_ROUND);
+    nvgStroke(vg);
+}
+
+void DrawDownloadIcon(NVGcontext* vg, Theme* theme, const Vec4& box) {
+    gfx::drawRect(vg, box, theme->GetColour(ThemeEntryID_HIGHLIGHT_1), 14.f);
+    gfx::drawText(vg, box.x + box.w / 2.f, box.y + box.h / 2.f, box.h * 0.55f,
+                  theme->GetColour(ThemeEntryID_TEXT), "+", NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+}
+
+void DrawUpdateBadge(NVGcontext* vg, Theme* theme, const Vec4& box) {
+    float bounds[4]{};
+    nvgFontSize(vg, 12.f);
+    gfx::textBounds(vg, 0.f, 0.f, bounds, "Update");
+    const float width = std::max(52.f, bounds[2] - bounds[0] + 16.f);
+    const float height = 20.f;
+    const float x = box.x + box.w - width - 6.f;
+    const float y = box.y + 6.f;
+    gfx::drawRect(vg, Vec4{x, y, width, height}, theme->GetColour(ThemeEntryID_HIGHLIGHT_1),
+                  height / 2.f);
+    gfx::drawText(vg, x + width / 2.f, y + height / 2.f, 12.f,
+                  theme->GetColour(ThemeEntryID_TEXT), "Update",
+                  NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+}
+
+// Keep the selection stroke inside the cell so the list clip cannot cut its
+// top and bottom edges.
+void DrawSelection(NVGcontext* vg, Theme* theme, const Vec4& v) {
+    gfx::drawRect(vg, v, theme->GetColour(ThemeEntryID_SELECTED_BACKGROUND));
+    constexpr float inset = 4.f;
+    gfx::drawRectOutline(vg, theme, 4.f,
+                         Vec4{v.x + inset, v.y + inset, v.w - inset * 2.f, v.h - inset * 2.f});
+}
+
 } // namespace
 
 MainMenu::MainMenu() : MenuBase{"Games", menu::MenuFlag_None} {
-    SetTitleSubHeading("Select a game");
-
     SetActions(
         std::make_pair(Button::A, Action{"Launch", [this] {
             Activate(m_index);
@@ -49,6 +122,9 @@ MainMenu::MainMenu() : MenuBase{"Games", menu::MenuFlag_None} {
         }}),
         std::make_pair(Button::X, Action{"Game options", [this] {
             OpenOptions();
+        }}),
+        std::make_pair(Button::Y, Action{"Update", [this] {
+            UpdateSelected();
         }}),
         std::make_pair(Button::SELECT, Action{"Settings", [this] {
             OpenLauncherOptions();
@@ -61,12 +137,11 @@ MainMenu::MainMenu() : MenuBase{"Games", menu::MenuFlag_None} {
     }
     log_write("[menu] banner image %d\n", m_fallback_banner);
 
+    m_settings = ReadSettings();
     LoadLocalAssets(m_assets);
     Rebuild();
     RefreshBanners();
-
-    const Vec4 v{75.f, GetY() + 1.f + 42.f, 1220.f - 45.f * 2.f, kRowHeight};
-    m_list = std::make_unique<List>(1, kRowsPerPage, GetPos(), v);
+    ApplyDisplayStyle();
 }
 
 MainMenu::~MainMenu() {
@@ -75,6 +150,12 @@ MainMenu::~MainMenu() {
             (void)id;
             if (banner.image > 0) {
                 nvgDeleteImage(App::GetVg(), banner.image);
+            }
+        }
+        for (const auto& [id, icon] : m_icons) {
+            (void)id;
+            if (icon.image > 0) {
+                nvgDeleteImage(App::GetVg(), icon.image);
             }
         }
         for (int image : m_banner_discard_pending) {
@@ -98,8 +179,9 @@ auto MainMenu::HasLauncherUpdate() const -> bool {
 }
 
 auto MainMenu::RowCount() const -> s64 {
-    // Installed games, the optional launcher update, and the always present download entry.
-    return static_cast<s64>(m_rows.size()) + (HasLauncherUpdate() ? 1 : 0) + 1;
+    // Installed games, the optional launcher update, and the optional download entry.
+    return static_cast<s64>(m_rows.size()) + (HasLauncherUpdate() ? 1 : 0) +
+           (m_settings.show_download_row ? 1 : 0);
 }
 
 void MainMenu::Rebuild() {
@@ -121,9 +203,11 @@ void MainMenu::Rebuild() {
         }
         return a.name < b.name;
     });
-    m_index = std::clamp<s64>(m_index, 0, RowCount() - 1);
+
+    m_index = RowCount() > 0 ? std::clamp<s64>(m_index, 0, RowCount() - 1) : 0;
     m_scroll_name.Reset();
     m_scroll_author.Reset();
+    RefreshIcons();
     UpdateFooter();
     log_write("[menu] %zu installed game(s), %lld available\n", m_rows.size(),
               static_cast<long long>(m_download_count));
@@ -198,6 +282,404 @@ auto MainMenu::BannerFor(const GameEntry& entry) const -> BannerImage {
     return BannerImage{m_fallback_banner, kLogoWidth, kLogoHeight};
 }
 
+auto MainMenu::IconFor(const GameEntry& entry) const -> const IconImage* {
+    const auto it = m_icons.find(entry.id);
+    return it == m_icons.end() ? nullptr : &it->second;
+}
+
+void MainMenu::RefreshIcons() {
+    if (!StyleUsesIcons(m_settings.display_style)) {
+        if (App::GetVg() != nullptr) {
+            for (const auto& [id, icon] : m_icons) {
+                (void)id;
+                if (icon.image > 0) {
+                    m_banner_discard_pending.push_back(icon.image);
+                }
+            }
+        }
+        m_icons.clear();
+        return;
+    }
+
+    if (App::GetVg() == nullptr) {
+        return;
+    }
+
+    std::map<std::string, IconImage> next;
+    for (const auto& entry : m_rows) {
+        if (!entry.installed) {
+            continue;
+        }
+
+        std::error_code ec;
+        const auto file_size = static_cast<long long>(
+            std::filesystem::file_size(entry.nro_path, ec));
+        if (ec) {
+            continue;
+        }
+        std::error_code time_ec;
+        const auto stamp = std::filesystem::last_write_time(entry.nro_path, time_ec);
+        const auto mtime = time_ec ? 0LL : static_cast<long long>(stamp.time_since_epoch().count());
+
+        const auto current = m_icons.find(entry.id);
+        if (current != m_icons.end() && current->second.file_size == file_size &&
+            current->second.mtime == mtime) {
+            next[entry.id] = current->second;
+            continue;
+        }
+
+        std::vector<u8> data;
+        if (R_FAILED(ReadNroIcon(entry.nro_path, data))) {
+            log_write("[menu] no icon for %s\n", entry.id.c_str());
+            continue;
+        }
+        const int image = nvgCreateImageMem(App::GetVg(), 0, data.data(),
+                                            static_cast<int>(data.size()));
+        if (image <= 0) {
+            log_write("[menu] cannot decode icon for %s\n", entry.id.c_str());
+            continue;
+        }
+        int width = 0;
+        int height = 0;
+        nvgImageSize(App::GetVg(), image, &width, &height);
+        if (width <= 0 || height <= 0) {
+            nvgDeleteImage(App::GetVg(), image);
+            continue;
+        }
+        if (current != m_icons.end() && current->second.image > 0) {
+            m_banner_discard_pending.push_back(current->second.image);
+        }
+        next[entry.id] = IconImage{image, width, height, file_size, mtime};
+    }
+
+    for (const auto& [id, icon] : m_icons) {
+        if (next.contains(id)) {
+            continue;
+        }
+        if (icon.image > 0) {
+            m_banner_discard_pending.push_back(icon.image);
+        }
+    }
+
+    m_icons = std::move(next);
+}
+
+void MainMenu::ApplyDisplayStyle() {
+    m_index = RowCount() > 0 ? std::clamp<s64>(m_index, 0, RowCount() - 1) : 0;
+    m_scroll_name.Reset();
+    m_scroll_author.Reset();
+
+    const float x = 75.f;
+    const float list_top = GetY() + 1.f + 8.f;
+    const float list_h = GetY() + GetH() - list_top;
+    const float width = 1220.f - 45.f * 2.f;
+
+    auto make_list = [&](s64 row, s64 page, const Vec2& pad, const Vec4& v) {
+        const float block_h = static_cast<float>(page) / static_cast<float>(row) *
+                                  (v.h + pad.y) - pad.y;
+        const Vec4 pos{GetX(), list_top + (list_h - block_h) / 2.f, GetW(), block_h};
+        Vec4 cell = v;
+        cell.y = pos.y;
+        m_list = std::make_unique<List>(row, page, pos, cell, pad);
+        m_list->SetScrollBarPos(pos.x + pos.w, pos.y, block_h);
+    };
+
+    switch (m_settings.display_style) {
+        case DisplayStyle::BannerGrid: {
+            const Vec2 pad{25.f, 25.f};
+            const Vec4 v{x, 0.f, 360.f, 242.f};
+            make_list(3, 6, pad, v);
+            break;
+        }
+        case DisplayStyle::GridDetail: {
+            const Vec2 pad{10.f, 10.f};
+            const Vec4 v{x, 0.f, 370.f, 163.f};
+            make_list(3, 9, pad, v);
+            break;
+        }
+        case DisplayStyle::Detail:
+        default: {
+            const Vec4 v{x, 0.f, width, kRowHeight};
+            make_list(1, kRowsPerPage, {}, v);
+            break;
+        }
+    }
+
+    m_list->ScrollToIndex(m_index, RowCount());
+    RefreshIcons();
+    UpdateFooter();
+}
+
+void MainMenu::SetDisplayStyle(DisplayStyle style) {
+    if (m_settings.display_style == style) {
+        return;
+    }
+    m_settings.display_style = style;
+    WriteSettings(m_settings);
+    ApplyDisplayStyle();
+}
+
+void MainMenu::SetShowDownloadRow(bool show) {
+    if (m_settings.show_download_row == show) {
+        return;
+    }
+    m_settings.show_download_row = show;
+    WriteSettings(m_settings);
+    ApplyDisplayStyle();
+}
+
+auto MainMenu::DescribeRow(s64 index) const -> RowVisual {
+    RowVisual row;
+
+    const bool short_labels = m_settings.display_style == DisplayStyle::GridDetail;
+    const auto games = static_cast<s64>(m_rows.size());
+    const bool launcher_row = HasLauncherUpdate() && index == games;
+    const bool download_row = m_settings.show_download_row &&
+                              index == games + (HasLauncherUpdate() ? 1 : 0);
+
+    row.game = index >= 0 && index < games;
+    row.launcher = launcher_row;
+    row.download = download_row;
+
+    if (row.game) {
+        const GameEntry& entry = m_rows[static_cast<size_t>(index)];
+        row.name = entry.name;
+        row.subtitle = entry.author;
+        switch (entry.state) {
+            case GameState::Install:
+                row.meta = "Install";
+                row.meta_id = ThemeEntryID_TEXT_SELECTED;
+                break;
+            case GameState::Update:
+                row.update_pill = true;
+                row.meta = "Update available";
+                row.meta_id = ThemeEntryID_TEXT;
+                break;
+            case GameState::Launch:
+                if (!entry.nro_valid) {
+                    row.meta = "Invalid NRO";
+                    row.meta_id = ThemeEntryID_ERROR;
+                } else if (!entry.base_ready) {
+                    row.meta = "Needs game data";
+                    row.meta_id = ThemeEntryID_ERROR;
+                } else {
+                    row.meta = entry.recomp_version.empty() ? entry.version : entry.recomp_version;
+                }
+                break;
+        }
+    } else if (launcher_row) {
+        row.name = short_labels ? "Launcher update" : "Install launcher update";
+        row.subtitle = "v" + LauncherVersion() + " -> v" + m_assets.launcher_version;
+        row.update_pill = true;
+        row.meta = "Update available";
+        row.meta_id = ThemeEntryID_TEXT;
+    } else if (download_row) {
+        row.name = short_labels ? "Download games" : "Download community mods & games";
+    }
+
+    return row;
+}
+
+void MainMenu::DrawDetailRow(NVGcontext* vg, Theme* theme, const Vec4& v, s64 index) {
+    const auto& [x, y, w, h] = v;
+    const RowVisual row = DescribeRow(index);
+
+    auto text_id = ThemeEntryID_TEXT;
+    const bool selected = m_index == index;
+    if (selected) {
+        text_id = ThemeEntryID_TEXT_SELECTED;
+        DrawSelection(vg, theme, v);
+    } else if (index != RowCount() - 1) {
+        gfx::drawRect(vg, Vec4{x, y + h, w, 1.f}, theme->GetColour(ThemeEntryID_LINE_SEPARATOR));
+    }
+
+    const float banner_h = h - 10.f;
+    float draw_w = 0.f;
+    float draw_h = 0.f;
+    int image = m_fallback_banner;
+    if (row.game) {
+        const auto banner = BannerFor(m_rows[static_cast<size_t>(index)]);
+        image = banner.image;
+        if (banner.width > 0 && banner.height > 0) {
+            const float scale = std::min(kBannerBoxWidth / static_cast<float>(banner.width),
+                                         banner_h / static_cast<float>(banner.height));
+            draw_w = static_cast<float>(banner.width) * scale;
+            draw_h = static_cast<float>(banner.height) * scale;
+        }
+    } else if (row.launcher) {
+        const float icon_size = 56.f;
+        const Vec4 box{x + 15.f + (kBannerBoxWidth - icon_size) / 2.f,
+                       y + 5.f + (banner_h - icon_size) / 2.f, icon_size, icon_size};
+        DrawUpdateIcon(vg, theme, box);
+    } else if (row.download) {
+        const auto plus_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT;
+        gfx::drawText(vg, x + 15.f + kBannerBoxWidth / 2.f, y + 5.f + banner_h / 2.f, 48.f,
+                      theme->GetColour(plus_id), "+", NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    }
+
+    if (row.game) {
+        if (draw_w <= 0.f || draw_h <= 0.f) {
+            draw_w = banner_h * static_cast<float>(kLogoWidth) / static_cast<float>(kLogoHeight);
+            draw_h = banner_h;
+        }
+        const float banner_x = x + 15.f + (kBannerBoxWidth - draw_w) / 2.f;
+        const float banner_y = y + 5.f + (banner_h - draw_h) / 2.f;
+        gfx::drawImage(vg, banner_x, banner_y, draw_w, draw_h, image, 2.f);
+    }
+
+    const float text_x = x + 15.f + kBannerBoxWidth + 15.f;
+    const float text_w = w - (text_x - x) - 220.f;
+    if (row.subtitle.empty()) {
+        m_scroll_name.Draw(vg, selected, text_x, y + (h / 2.f), text_w, 20.f,
+                           NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
+                           theme->GetColour(text_id), row.name);
+    } else {
+        const auto author_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT_INFO;
+        m_scroll_name.Draw(vg, selected, text_x, y + (h / 2.f) - 13.f, text_w, 20.f,
+                           NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
+                           theme->GetColour(text_id), row.name);
+        m_scroll_author.Draw(vg, selected, text_x, y + (h / 2.f) + 13.f, text_w, 16.f,
+                             NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
+                             theme->GetColour(author_id), row.subtitle);
+    }
+
+    if (row.update_pill) {
+        float bounds[4]{};
+        nvgFontSize(vg, 16.f);
+        gfx::textBounds(vg, 0, 0, bounds, row.meta.c_str());
+        const float pill_w = std::max(78.f, bounds[2] - bounds[0] + 24.f);
+        const float pill_h = 26.f;
+        const float pill_x = x + w - 15.f - pill_w;
+        const float pill_y = y + (h - pill_h) / 2.f;
+        gfx::drawRect(vg, Vec4{pill_x, pill_y, pill_w, pill_h},
+                      theme->GetColour(ThemeEntryID_HIGHLIGHT_1), pill_h / 2.f);
+        gfx::drawText(vg, pill_x + pill_w / 2.f, pill_y + pill_h / 2.f, 16.f,
+                      theme->GetColour(ThemeEntryID_TEXT), row.meta.c_str(),
+                      NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    } else {
+        gfx::drawText(vg, x + w - 15.f, y + (h / 2.f), 16.f,
+                      theme->GetColour(row.meta_id), row.meta.c_str(),
+                      NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+    }
+}
+
+void MainMenu::DrawBannerGridTile(NVGcontext* vg, Theme* theme, const Vec4& v, s64 index) {
+    const auto& [x, y, w, h] = v;
+    const RowVisual row = DescribeRow(index);
+    const bool selected = m_index == index;
+    if (selected) {
+        DrawSelection(vg, theme, v);
+    }
+
+    constexpr float pad = 14.f;
+    const float art_w = w - pad * 2.f;
+    const float banner_h = art_w * static_cast<float>(kLogoHeight) / static_cast<float>(kLogoWidth);
+    const Vec4 art{x + pad, y + pad, art_w, banner_h};
+    if (row.game) {
+        const auto banner = BannerFor(m_rows[static_cast<size_t>(index)]);
+        DrawContainedImage(vg, banner.image, banner.width, banner.height, art, 10.f);
+    } else {
+        const Vec4 box{art.x + (art.w - 100.f) / 2.f, art.y + (art.h - 100.f) / 2.f, 100.f, 100.f};
+        if (row.launcher) {
+            DrawUpdateIcon(vg, theme, box);
+        } else if (row.download) {
+            DrawDownloadIcon(vg, theme, box);
+        }
+    }
+
+    if (row.update_pill) {
+        DrawUpdateBadge(vg, theme, art);
+    }
+
+    const auto name_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT;
+    const float text_x = x + pad + 6.f;
+    const float text_w = w - pad * 2.f - 12.f;
+    const float lower_y = y + pad + banner_h;
+    const float lower_h = h - pad - lower_y + y;
+    if (row.subtitle.empty()) {
+        m_scroll_name.Draw(vg, selected, text_x, lower_y + lower_h / 2.f, text_w, 18.f,
+                           NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
+                           theme->GetColour(name_id), row.name);
+    } else {
+        const auto info_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT_INFO;
+        m_scroll_name.Draw(vg, selected, text_x, lower_y + 24.f, text_w, 18.f,
+                           NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
+                           theme->GetColour(name_id), row.name);
+        m_scroll_author.Draw(vg, selected, text_x, lower_y + 50.f, text_w, 14.f,
+                             NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
+                             theme->GetColour(info_id), row.subtitle);
+    }
+}
+
+void MainMenu::DrawGridDetailTile(NVGcontext* vg, Theme* theme, const Vec4& v, s64 index) {
+    const auto& [x, y, w, h] = v;
+    const RowVisual row = DescribeRow(index);
+    const bool selected = m_index == index;
+    if (selected) {
+        DrawSelection(vg, theme, v);
+    }
+
+    const float icon_size = 100.f;
+    const Vec4 box{x + 15.f, y + (h - icon_size) / 2.f, icon_size, icon_size};
+    int image = 0;
+    int image_w = 0;
+    int image_h = 0;
+    if (row.game) {
+        if (const auto* icon = IconFor(m_rows[static_cast<size_t>(index)]); icon != nullptr) {
+            image = icon->image;
+            image_w = icon->width;
+            image_h = icon->height;
+        }
+    }
+
+    if (row.game) {
+        gfx::drawRect(vg, box, theme->GetColour(ThemeEntryID_HIGHLIGHT_1), 10.f);
+        if (image > 0) {
+            DrawContainedImage(vg, image, image_w, image_h, box, 10.f);
+        } else {
+            DrawContainedImage(vg, m_fallback_banner, kLogoWidth, kLogoHeight, box, 10.f, 6.f);
+        }
+    } else if (row.launcher) {
+        DrawUpdateIcon(vg, theme, box);
+    } else if (row.download) {
+        DrawDownloadIcon(vg, theme, box);
+    }
+
+    const float text_x = x + 130.f;
+    const float text_w = w - (text_x - x) - 15.f;
+    const auto name_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT;
+    const auto info_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT_INFO;
+    const bool single_line = row.subtitle.empty() && row.meta.empty();
+    const float name_y = single_line ? y + (h / 2.f) : y + 40.f;
+    m_scroll_name.Draw(vg, selected, text_x, name_y, text_w, 19.f,
+                       NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
+                       theme->GetColour(name_id), row.name);
+    if (!row.subtitle.empty()) {
+        m_scroll_author.Draw(vg, selected, text_x, y + 78.f, text_w, 15.f,
+                             NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
+                             theme->GetColour(info_id), row.subtitle);
+    }
+    if (!row.meta.empty()) {
+        if (row.update_pill) {
+            float bounds[4]{};
+            nvgFontSize(vg, 14.f);
+            gfx::textBounds(vg, 0.f, 0.f, bounds, row.meta.c_str());
+            const float pill_w = std::max(70.f, bounds[2] - bounds[0] + 20.f);
+            const float pill_h = 24.f;
+            const float pill_y = y + 116.f - pill_h / 2.f;
+            gfx::drawRect(vg, Vec4{text_x, pill_y, pill_w, pill_h},
+                          theme->GetColour(ThemeEntryID_HIGHLIGHT_1), pill_h / 2.f);
+            gfx::drawText(vg, text_x + pill_w / 2.f, pill_y + pill_h / 2.f, 14.f,
+                          theme->GetColour(ThemeEntryID_TEXT), row.meta.c_str(),
+                          NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+        } else {
+            const auto meta_id = selected ? ThemeEntryID_TEXT_SELECTED : row.meta_id;
+            gfx::drawText(vg, text_x, y + 116.f, 15.f, theme->GetColour(meta_id),
+                          row.meta.c_str(), NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+        }
+    }
+}
+
 void MainMenu::OnFocusGained() {
     MenuBase::OnFocusGained();
     Rebuild();
@@ -241,7 +723,7 @@ void MainMenu::ShowDialogLater(std::function<void()> dialog) {
 }
 
 void MainMenu::Activate(s64 index) {
-    if (index < 0) {
+    if (index < 0 || index >= RowCount()) {
         return;
     }
 
@@ -471,6 +953,29 @@ void MainMenu::ShowUpdateAllConfirmation() {
         [menu](std::optional<s64> choice) {
             if (choice && *choice) {
                 menu->StartUpdateAll();
+            }
+        }));
+}
+
+void MainMenu::UpdateSelected() {
+    if (m_index < 0 || m_index >= static_cast<s64>(m_rows.size())) {
+        return;
+    }
+    const GameEntry entry = m_rows[static_cast<size_t>(m_index)];
+    if (entry.state != GameState::Update) {
+        return;
+    }
+    const auto catalog = m_assets.games.find(entry.id);
+    if (catalog == m_assets.games.end()) {
+        ShowError("No download is available for " + entry.name + ".");
+        return;
+    }
+    const AssetsGame game = catalog->second;
+    App::Get().Push(std::make_unique<OptionBox>(
+        InstallPromptMessage(entry, game, "Update"), "Cancel", "Update", 1,
+        [this, entry, game](std::optional<s64> choice) {
+            if (choice && *choice) {
+                StartInstall(entry, game, false);
             }
         }));
 }
@@ -821,6 +1326,27 @@ void MainMenu::OpenLauncherOptions() {
         menu->CheckLauncherUpdate();
     });
 
+    SidebarEntryArray::Items styles;
+    for (const auto style : kDisplayStyles) {
+        styles.emplace_back(DisplayStyleName(style));
+    }
+    sidebar->Add<SidebarEntryArray>(
+        "Display style", styles,
+        [menu](s64& index) {
+            if (index >= 0 && index < static_cast<s64>(std::size(kDisplayStyles))) {
+                menu->SetDisplayStyle(kDisplayStyles[index]);
+            }
+        },
+        static_cast<s64>(menu->m_settings.display_style),
+        "Choose the layout of the game list.");
+
+    sidebar->Add<SidebarEntryBool>(
+        "Download row", menu->m_settings.show_download_row,
+        [menu](bool& value) {
+            menu->SetShowDownloadRow(value);
+        },
+        "Show the Download community mods & games row.");
+
     const auto local_catalogue = std::filesystem::path(RootDirectory()) / "assets.local.json";
     std::error_code local_ec;
     if (std::filesystem::is_regular_file(local_catalogue, local_ec)) {
@@ -879,6 +1405,19 @@ void MainMenu::OpenLauncherOptions() {
 }
 
 void MainMenu::UpdateFooter() {
+    if (RowCount() == 0) {
+        if (auto it = m_actions.find(Button::A); it != m_actions.end()) {
+            it->second.m_hint.clear();
+        }
+        if (auto it = m_actions.find(Button::X); it != m_actions.end()) {
+            it->second.m_hint.clear();
+        }
+        if (auto it = m_actions.find(Button::Y); it != m_actions.end()) {
+            it->second.m_hint.clear();
+        }
+        return;
+    }
+
     std::string hint = "Launch";
     const auto games = static_cast<s64>(m_rows.size());
     if (m_index >= 0 && m_index < games) {
@@ -895,6 +1434,11 @@ void MainMenu::UpdateFooter() {
     }
     if (auto it = m_actions.find(Button::X); it != m_actions.end()) {
         it->second.m_hint = (m_index >= 0 && m_index < games) ? "Game options" : "";
+    }
+    if (auto it = m_actions.find(Button::Y); it != m_actions.end()) {
+        const bool updatable = m_index >= 0 && m_index < games &&
+                               m_rows[static_cast<size_t>(m_index)].state == GameState::Update;
+        it->second.m_hint = updatable ? "Update" : "";
     }
 }
 
@@ -929,143 +1473,27 @@ void MainMenu::Update(Controller* controller, TouchInfo* touch) {
 void MainMenu::Draw(NVGcontext* vg, Theme* theme) {
     MenuBase::Draw(vg, theme);
 
-    m_list->Draw(vg, theme, RowCount(), [this](NVGcontext* vg, Theme* theme, const Vec4& v, s64 i) {
-        const auto& [x, y, w, h] = v;
-
-        const auto games = static_cast<s64>(m_rows.size());
-        const bool launcher_row = HasLauncherUpdate() && i == games;
-        const bool download_row = !launcher_row && i >= games;
-
-        std::string name;
-        std::string subtitle;
-        std::string meta;
-        auto meta_id = ThemeEntryID_TEXT_INFO;
-        bool update_pill = false;
-
-        if (i < games) {
-            const GameEntry& entry = m_rows[static_cast<size_t>(i)];
-            name = entry.name;
-            subtitle = entry.author;
-            switch (entry.state) {
-                case GameState::Install:
-                    meta = "Install";
-                    meta_id = ThemeEntryID_TEXT_SELECTED;
-                    break;
-                case GameState::Update:
-                    update_pill = true;
-                    meta = "Update available";
-                    meta_id = ThemeEntryID_TEXT;
-                    break;
-                case GameState::Launch:
-                    if (!entry.nro_valid) {
-                        meta = "Invalid NRO";
-                        meta_id = ThemeEntryID_ERROR;
-                    } else if (!entry.base_ready) {
-                        meta = "Needs game data";
-                        meta_id = ThemeEntryID_ERROR;
-                    } else {
-                        meta = entry.recomp_version.empty() ? entry.version : entry.recomp_version;
-                    }
-                    break;
-            }
-        } else if (launcher_row) {
-            name = "Install launcher update";
-            subtitle = "v" + LauncherVersion() + " -> v" + m_assets.launcher_version;
-            update_pill = true;
-            meta = "Update available";
-            meta_id = ThemeEntryID_TEXT;
-        } else {
-            name = "Download community mods & games";
-        }
-
-        auto text_id = ThemeEntryID_TEXT;
-        const auto selected = m_index == i;
-        if (selected) {
-            text_id = ThemeEntryID_TEXT_SELECTED;
-            gfx::drawRectOutline(vg, theme, 4.f, v);
-        } else if (i != RowCount() - 1) {
-            gfx::drawRect(vg, Vec4{x, y + h, w, 1.f}, theme->GetColour(ThemeEntryID_LINE_SEPARATOR));
-        }
-        const float banner_h = h - 10.f;
-        float draw_w = 0.f;
-        float draw_h = 0.f;
-        int image = m_fallback_banner;
-        if (i < games) {
-            const auto banner = BannerFor(m_rows[static_cast<size_t>(i)]);
-            image = banner.image;
-            if (banner.width > 0 && banner.height > 0) {
-                const float scale = std::min(kBannerBoxWidth / static_cast<float>(banner.width),
-                                             banner_h / static_cast<float>(banner.height));
-                draw_w = static_cast<float>(banner.width) * scale;
-                draw_h = static_cast<float>(banner.height) * scale;
-            }
-        } else if (launcher_row) {
-            const float icon_size = 56.f;
-            const float icon_x = x + 15.f + (kBannerBoxWidth - icon_size) / 2.f;
-            const float icon_y = y + 5.f + (banner_h - icon_size) / 2.f;
-            gfx::drawRect(vg, Vec4{icon_x, icon_y, icon_size, icon_size},
-                          theme->GetColour(ThemeEntryID_HIGHLIGHT_1), 14.f);
-            const float cx = icon_x + icon_size / 2.f;
-            const float top = icon_y + icon_size * 0.30f;
-            const float bottom = icon_y + icon_size * 0.70f;
-            nvgBeginPath(vg);
-            nvgMoveTo(vg, cx, bottom);
-            nvgLineTo(vg, cx, top);
-            nvgMoveTo(vg, cx - icon_size * 0.18f, top + icon_size * 0.18f);
-            nvgLineTo(vg, cx, top);
-            nvgLineTo(vg, cx + icon_size * 0.18f, top + icon_size * 0.18f);
-            nvgStrokeColor(vg, theme->GetColour(ThemeEntryID_TEXT));
-            nvgStrokeWidth(vg, 4.f);
-            nvgLineCap(vg, NVG_ROUND);
-            nvgLineJoin(vg, NVG_ROUND);
-            nvgStroke(vg);
-        } else if (download_row) {
-            const auto plus_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT;
-            gfx::drawText(vg, x + 15.f + kBannerBoxWidth / 2.f, y + 5.f + banner_h / 2.f, 48.f,
-                          theme->GetColour(plus_id), "+", NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-        }
-        if (i < games) {
-            if (draw_w <= 0.f || draw_h <= 0.f) {
-                draw_w = banner_h * static_cast<float>(kLogoWidth) / static_cast<float>(kLogoHeight);
-                draw_h = banner_h;
-            }
-            const float banner_x = x + 15.f + (kBannerBoxWidth - draw_w) / 2.f;
-            const float banner_y = y + 5.f + (banner_h - draw_h) / 2.f;
-            gfx::drawImage(vg, banner_x, banner_y, draw_w, draw_h, image, 2.f);
-        }
-
-        const float text_x = x + 15.f + kBannerBoxWidth + 15.f;
-        const float text_w = w - (text_x - x) - 220.f;
-        if (subtitle.empty()) {
-            m_scroll_name.Draw(vg, selected, text_x, y + (h / 2.f), text_w, 20.f,
-                               NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE, theme->GetColour(text_id), name);
-        } else {
-            const auto author_id = selected ? ThemeEntryID_TEXT_SELECTED : ThemeEntryID_TEXT_INFO;
-            m_scroll_name.Draw(vg, selected, text_x, y + (h / 2.f) - 13.f, text_w, 20.f,
-                               NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE, theme->GetColour(text_id), name);
-            m_scroll_author.Draw(vg, selected, text_x, y + (h / 2.f) + 13.f, text_w, 16.f,
-                                 NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE,
-                                 theme->GetColour(author_id), subtitle);
-        }
-
-        if (update_pill) {
-            float bounds[4]{};
-            nvgFontSize(vg, 16.f);
-            gfx::textBounds(vg, 0, 0, bounds, meta.c_str());
-            const float pill_w = std::max(78.f, bounds[2] - bounds[0] + 24.f);
-            const float pill_h = 26.f;
-            const float pill_x = x + w - 15.f - pill_w;
-            const float pill_y = y + (h - pill_h) / 2.f;
-            gfx::drawRect(vg, Vec4{pill_x, pill_y, pill_w, pill_h},
-                          theme->GetColour(ThemeEntryID_HIGHLIGHT_1), pill_h / 2.f);
-            gfx::drawText(vg, pill_x + pill_w / 2.f, pill_y + pill_h / 2.f, 16.f,
-                          theme->GetColour(ThemeEntryID_TEXT), meta.c_str(),
-                          NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-        } else {
-            gfx::drawText(vg, x + w - 15.f, y + (h / 2.f), 16.f, theme->GetColour(meta_id),
-                          meta.c_str(), NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
+    m_list->Draw(vg, theme, RowCount(), [this](NVGcontext* vg, Theme* theme, const Vec4& v,
+                                               s64 index) {
+        switch (m_settings.display_style) {
+            case DisplayStyle::BannerGrid:
+                DrawBannerGridTile(vg, theme, v, index);
+                break;
+            case DisplayStyle::GridDetail:
+                DrawGridDetailTile(vg, theme, v, index);
+                break;
+            case DisplayStyle::Detail:
+            default:
+                DrawDetailRow(vg, theme, v, index);
+                break;
         }
     });
+
+    if (RowCount() == 0) {
+        gfx::drawText(vg, SCREEN_WIDTH / 2.f, (GetY() + GetH()) / 2.f, 24.f,
+                      theme->GetColour(ThemeEntryID_TEXT_INFO), "No games installed",
+                      NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    }
 }
 
 } // namespace launcher::ui

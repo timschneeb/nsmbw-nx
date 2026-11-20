@@ -2,6 +2,7 @@
 #include "games.hpp"
 #include "install.hpp"
 #include "paths.hpp"
+#include "settings.hpp"
 #include "sha.hpp"
 #include "test_fixtures.hpp"
 #include "ui/progress_box.hpp"
@@ -53,8 +54,56 @@ int main() {
 
     SetRootDirectory((root / "launcher.nro").string().c_str());
 
+    // Settings default when the file is missing, then round-trip and corrupt fallback.
+    {
+        const LauncherSettings defaults = ReadSettings();
+        expect(defaults.display_style == DisplayStyle::Detail, "default display style");
+        expect(defaults.show_download_row, "download row shown by default");
+
+        LauncherSettings saved;
+        saved.display_style = DisplayStyle::GridDetail;
+        saved.show_download_row = false;
+        WriteSettings(saved);
+        const LauncherSettings loaded = ReadSettings();
+        expect(loaded.display_style == DisplayStyle::GridDetail, "display style round-trip");
+        expect(!loaded.show_download_row, "download row round-trip");
+
+        for (const auto style : {DisplayStyle::BannerGrid, DisplayStyle::GridDetail}) {
+            saved.display_style = style;
+            WriteSettings(saved);
+            expect(ReadSettings().display_style == style, "new display style round-trip");
+        }
+
+        std::ofstream(root / "settings.json", std::ios::trunc)
+            << "{\"display_style\":\"grid\",\"show_download_row\":false}\n";
+        const LauncherSettings removed = ReadSettings();
+        expect(removed.display_style == DisplayStyle::Detail,
+               "removed display style falls back to detail");
+        expect(!removed.show_download_row, "removed display style keeps download row");
+
+        std::ofstream(root / "settings.json", std::ios::trunc) << "{broken";
+        const LauncherSettings corrupt = ReadSettings();
+        expect(corrupt.display_style == DisplayStyle::Detail, "corrupt settings use defaults");
+        expect(corrupt.show_download_row, "corrupt settings keep download row");
+    }
+
     const fs::path nro = root / "src" / "source.nro";
     test::WriteFakeNro(nro, "1.0.0");
+
+    // The NRO icon is stored in the asset section, next to the NACP.
+    {
+        const std::vector<unsigned char> icon = {0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4};
+        const fs::path icon_nro = root / "src" / "icon.nro";
+        test::WriteFakeNro(icon_nro, "1.0.0", '\0', 0, icon);
+        std::vector<u8> read;
+        expect(R_SUCCEEDED(ReadNroIcon(icon_nro.string(), read)), "read nro icon");
+        expect(read.size() == icon.size() &&
+                   std::equal(read.begin(), read.end(), icon.begin()),
+               "nro icon bytes");
+        std::string version;
+        expect(R_SUCCEEDED(ReadNroVersion(icon_nro.string(), version)) && version == "1.0.0",
+               "version still reads next to an icon");
+    }
 
     test::WriteCatalogue(root / "assets.json",
                          {test::GameJson("test", "Test Game", "Test Author", nro)}, "1.0.0");

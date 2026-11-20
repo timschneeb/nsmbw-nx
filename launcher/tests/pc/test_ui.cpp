@@ -4,6 +4,7 @@
 #include "sha.hpp"
 #include "test_fixtures.hpp"
 #include "ui/option_box.hpp"
+#include "ui/popup_list.hpp"
 #include "ui/sidebar.hpp"
 
 #include "switch.h"
@@ -18,6 +19,7 @@
 namespace fs = std::filesystem;
 using namespace launcher;
 using launcher::ui::OptionBox;
+using launcher::ui::PopupList;
 using launcher::ui::Sidebar;
 
 namespace {
@@ -45,6 +47,38 @@ auto sidebar_item(const Sidebar& sidebar, const std::string& title) -> bool {
         }
     }
     return false;
+}
+
+auto select_sidebar(App& app, Sidebar& sidebar, const std::string& title) -> bool {
+    s64 target = -1;
+    for (size_t i = 0; i < sidebar.ItemCount(); ++i) {
+        if (sidebar.ItemTitle(i) == title) {
+            target = static_cast<s64>(i);
+            break;
+        }
+    }
+    if (target < 0) {
+        return false;
+    }
+    for (int guard = 0; guard < 32 && sidebar.TestIndex() > target; ++guard) {
+        press(app, Button::UP);
+    }
+    for (int guard = 0; guard < 32 && sidebar.TestIndex() < target; ++guard) {
+        press(app, Button::DOWN);
+    }
+    press(app, Button::A);
+    return true;
+}
+
+auto select_popup(App& app, PopupList& popup, s64 index) -> bool {
+    for (int guard = 0; guard < 32 && popup.TestIndex() > index; ++guard) {
+        press(app, Button::UP);
+    }
+    for (int guard = 0; guard < 32 && popup.TestIndex() < index; ++guard) {
+        press(app, Button::DOWN);
+    }
+    press(app, Button::A);
+    return true;
 }
 
 auto message(App& app) -> std::string {
@@ -147,15 +181,15 @@ int main() {
         expect(sidebar->Title() == "Settings", "settings title");
         expect(sidebar_item(*sidebar, "Update all"), "update all entry");
         expect(sidebar_item(*sidebar, "Check launcher update"), "check launcher entry");
+        expect(sidebar_item(*sidebar, "Display style"), "display style entry");
+        expect(sidebar_item(*sidebar, "Download row"), "download row entry");
         expect(sidebar_item(*sidebar, "About"), "about entry");
         expect(!sidebar_item(*sidebar, "Base game data"), "base data entry removed");
         expect(!sidebar_item(*sidebar, "Clear cached catalogue"), "cached entry removed");
     }
 
     // About content.
-    press(app, Button::DOWN);
-    press(app, Button::DOWN);
-    press(app, Button::A);
+    expect(select_sidebar(app, *sidebar, "About"), "about selected");
     {
         const auto text = message(app);
         expect(text.find("Credits: timschneeb, WitherBlitz, WiiCompiled, Aurora, Sphaira") != std::string::npos,
@@ -168,9 +202,7 @@ int main() {
     press(app, Button::B);
 
     // Update all refreshes the catalogue and reports through a dialog.
-    press(app, Button::UP);
-    press(app, Button::UP);
-    press(app, Button::A);
+    expect(select_sidebar(app, *sidebar, "Update all"), "update all selected");
     {
         const auto text = message(app);
         expect(text.find("Update 1 game?") != std::string::npos,
@@ -201,6 +233,61 @@ int main() {
         expect(text.find("Update") == 0, "update prompt shown");
         press(app, Button::B);
     }
+
+    // Display styles and the optional Download row.
+    press(app, Button::B);
+    press(app, Button::SELECT);
+    sidebar = dynamic_cast<Sidebar*>(app.TestTop());
+    expect(sidebar != nullptr && sidebar_item(*sidebar, "Display style"),
+           "display style entry");
+    expect(sidebar != nullptr && sidebar_item(*sidebar, "Download row"),
+           "download row entry");
+    expect(sidebar != nullptr && select_sidebar(app, *sidebar, "Display style"),
+           "display style selected");
+    auto* popup = dynamic_cast<PopupList*>(app.TestTop());
+    expect(popup != nullptr, "display style popup");
+    if (popup != nullptr) {
+        expect(popup->ItemCount() == 3, "three display styles");
+        expect(select_popup(app, *popup, 1), "banner grid selected");
+    }
+    expect(menu->TestDisplayStyle() == DisplayStyle::BannerGrid, "banner grid applied");
+    expect(menu->m_list->GetRow() == 3, "banner grid columns");
+    expect(menu->m_list->GetPage() == 6, "banner grid page size");
+    expect(menu->TestRowCount() == 3, "download row still counted");
+    expect(test::ReadFile(root / "settings.json").find("\"banner_grid\"") != std::string::npos,
+           "banner grid saved");
+
+    // The settings sidebar stays open after the popup closes.
+    sidebar = dynamic_cast<Sidebar*>(app.TestTop());
+    expect(sidebar != nullptr, "settings after banner grid");
+    if (sidebar != nullptr) {
+        expect(select_sidebar(app, *sidebar, "Display style"), "display style for grid detail");
+    }
+    popup = dynamic_cast<PopupList*>(app.TestTop());
+    if (popup != nullptr) {
+        expect(select_popup(app, *popup, 2), "grid detail selected");
+    }
+    expect(menu->TestDisplayStyle() == DisplayStyle::GridDetail, "grid detail applied");
+    expect(menu->m_list->GetRow() == 3, "grid detail columns");
+    expect(menu->m_list->GetPage() == 9, "grid detail page size");
+
+    // The bool entry toggles in place and keeps settings open.
+    sidebar = dynamic_cast<Sidebar*>(app.TestTop());
+    expect(sidebar != nullptr, "settings after grid detail");
+    if (sidebar != nullptr) {
+        expect(select_sidebar(app, *sidebar, "Download row"), "hide download row");
+    }
+    expect(!menu->TestShowDownloadRow(), "download row hidden");
+    expect(menu->TestRowCount() == 2, "download row removed");
+
+    sidebar = dynamic_cast<Sidebar*>(app.TestTop());
+    expect(sidebar != nullptr, "settings after hiding download");
+    if (sidebar != nullptr) {
+        expect(select_sidebar(app, *sidebar, "Download row"), "show download row");
+    }
+    expect(menu->TestShowDownloadRow(), "download row shown again");
+    expect(menu->TestRowCount() == 3, "download row back");
+    press(app, Button::B);
 
     if (g_failures != 0) {
         std::cerr << g_failures << " UI test(s) failed\n";

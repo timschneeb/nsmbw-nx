@@ -3,6 +3,7 @@
 #include "assets.hpp"
 #include "basedata.hpp"
 #include "games.hpp"
+#include "settings.hpp"
 #include "ui/banner.hpp"
 #include "ui/list.hpp"
 #include "ui/menus/menu_base.hpp"
@@ -28,8 +29,36 @@ public:
     auto GetShortTitle() const -> const char* override { return "Games"; }
 
 private:
+    struct RowVisual {
+        std::string name;
+        std::string subtitle;
+        std::string meta;
+        ThemeEntryID meta_id{ThemeEntryID_TEXT_INFO};
+        bool update_pill{};
+        bool game{};
+        bool launcher{};
+        bool download{};
+    };
+
+    struct IconImage {
+        int image{};
+        int width{};
+        int height{};
+        long long file_size{};
+        long long mtime{};
+    };
+
     void RefreshBanners();
+    void RefreshIcons();
     void Rebuild();
+    void ApplyDisplayStyle();
+    void SetDisplayStyle(DisplayStyle style);
+    void SetShowDownloadRow(bool show);
+    auto DescribeRow(s64 index) const -> RowVisual;
+    auto IconFor(const GameEntry& entry) const -> const IconImage*;
+    void DrawDetailRow(NVGcontext* vg, Theme* theme, const Vec4& v, s64 index);
+    void DrawBannerGridTile(NVGcontext* vg, Theme* theme, const Vec4& v, s64 index);
+    void DrawGridDetailTile(NVGcontext* vg, Theme* theme, const Vec4& v, s64 index);
     void Activate(s64 index);
     void StartInstall(const GameEntry& entry, const AssetsGame& catalog, bool force = false);
     void StartRemove(const GameEntry& entry, bool keep_data);
@@ -40,6 +69,7 @@ private:
     void ConfirmInstall(const GameEntry& entry, const AssetsGame& catalog, bool force,
                         const std::string& action, const std::function<void()>& on_confirm = {});
     void CheckGameUpdate(const GameEntry& entry);
+    void UpdateSelected();
     void CheckLauncherUpdate();
     void FetchCatalogue(const std::string& title,
                         const std::function<void(Result, bool)>& done);
@@ -66,9 +96,12 @@ public:
     auto TestRows() const -> const std::vector<GameEntry>& { return m_rows; }
     auto TestIndex() const -> s64 { return m_index; }
     auto TestRowCount() const -> s64 { return RowCount(); }
+    auto TestDisplayStyle() const -> DisplayStyle { return m_settings.display_style; }
+    auto TestShowDownloadRow() const -> bool { return m_settings.show_download_row; }
 #endif
 
     Assets m_assets;
+    LauncherSettings m_settings;
     std::vector<GameEntry> m_rows;
     std::unique_ptr<List> m_list;
     ScrollingText m_scroll_name;
@@ -79,6 +112,7 @@ public:
     bool m_base_ready{};
     int m_fallback_banner{};
     std::map<std::string, BannerImage> m_banners;
+    std::map<std::string, IconImage> m_icons;
     std::vector<int> m_banner_discard_pending;
     std::vector<int> m_banner_discard_ready;
     std::string m_pending_message;

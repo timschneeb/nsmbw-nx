@@ -19,6 +19,9 @@ struct List final : Object {
 
     void Draw(NVGcontext* vg, Theme* theme, s64 count, const Callback& callback) const;
 
+    // Reveals the selected row or column, used after changing the layout.
+    void ScrollToIndex(s64 index, s64 count);
+
     auto SetScrollBarPos(float x, float y, float h) {
         m_scrollbar.x = x;
         m_scrollbar.y = y;

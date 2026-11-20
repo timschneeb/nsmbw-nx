@@ -47,6 +47,7 @@ cmake -S runtime -B build-switch-newer -DMKW_GENERATED_DIR="$PWD/generated-newer
   assets.local.json   (optional local catalogue override)
   assets.cache.json   (last downloaded catalogue)
   usage.json          (launch order for the main screen)
+  settings.json       (display style and Download row preference)
   cacert.pem          (written from the embedded bundle)
   banners/<id>.png
   discs/
@@ -66,8 +67,8 @@ cmake -S runtime -B build-switch-newer -DMKW_GENERATED_DIR="$PWD/generated-newer
 
 A game folder without `installed.json` is a manual install. Its version is read from the NRO's NACP,
 it is launched as-is, and it becomes managed the first time it is updated. `installed.json` records
-each component's version, sha256 and size; a size mismatch marks the game as Update so Reinstall is
-offered.
+each component's version, sha256 and size; version or region differences mark the game as Update, so
+locally rebuilt NROs with the same version are not treated as stale.
 
 The base game data is extracted once into `discs/SMNE01/` and shared by the base game and every
 mod. Mods do not copy it: they only need their own NRO plus their RomFS image. Newer stores all of

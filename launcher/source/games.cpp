@@ -26,12 +26,6 @@ auto IsFile(const fs::path& path) -> bool {
     return fs::is_regular_file(path, ec) && !ec;
 }
 
-auto FileSize(const fs::path& path) -> s64 {
-    std::error_code ec;
-    const auto size = fs::file_size(path, ec);
-    return ec ? -1 : static_cast<s64>(size);
-}
-
 auto DefaultName(const std::string& id) -> std::string {
     if (id == "vanilla") {
         return "New Super Mario Bros. Wii";
@@ -292,16 +286,6 @@ auto ScanGames(const Assets& assets) -> std::vector<GameEntry> {
                             nro_stale = true;
                         }
                     }
-                    // The catalogue size is authoritative for manual installs too: the release ZIP
-                    // ships game.nro without installed.json.
-                    if (catalog->second.nro.size > 0 &&
-                        FileSize(entry.nro_path) != catalog->second.nro.size) {
-                        nro_stale = true;
-                    }
-                    if (!entry.manual && installed.nro.size > 0 &&
-                        FileSize(entry.nro_path) != installed.nro.size) {
-                        nro_stale = true;
-                    }
                 }
 
                 bool romfs_stale = false;
@@ -318,16 +302,6 @@ auto ScanGames(const Assets& assets) -> std::vector<GameEntry> {
                              catalog->second.romfs.region != installed.romfs.region)) {
                             romfs_stale = true;
                         }
-                        if (installed.romfs.size > 0 &&
-                            FileSize(entry.romfs_path) != installed.romfs.size) {
-                            romfs_stale = true;
-                        }
-                    }
-                    // A manual install has no recorded component versions. A correct image
-                    // size is the best available proof that it is current.
-                    if (catalog->second.romfs.image_size > 0 &&
-                        FileSize(entry.romfs_path) != catalog->second.romfs.image_size) {
-                        romfs_stale = true;
                     }
                 }
                 entry.state = (nro_stale || romfs_stale) ? GameState::Update : GameState::Launch;
@@ -515,18 +489,29 @@ Result ReadNroVersion(const std::string& path, std::string& version) {
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     }
 
+    // elf2nro writes the asset header at the absolute NRO size. Some packers
+    // include the 0x10 byte prefix, so try both offsets.
+    long asset_offset = -1;
     NroAssetHeader asset{};
-    std::fseek(file, static_cast<long>(header.size), SEEK_SET);
+    const long candidates[] = {static_cast<long>(header.size),
+                               static_cast<long>(base + static_cast<long>(header.size))};
+    for (const long offset : candidates) {
+        std::fseek(file, offset, SEEK_SET);
+        if (std::fread(&asset, 1, sizeof(asset), file) == sizeof(asset) &&
+            asset.magic == NROASSETHEADER_MAGIC) {
+            asset_offset = offset;
+            break;
+        }
+    }
+
     constexpr size_t kDisplayVersionEnd = offsetof(NacpStruct, display_version) + 0x10;
-    if (std::fread(&asset, 1, sizeof(asset), file) != sizeof(asset) ||
-        asset.magic != NROASSETHEADER_MAGIC ||
-        asset.nacp.offset == 0 || asset.nacp.size < kDisplayVersionEnd) {
+    if (asset_offset < 0 || asset.nacp.offset == 0 || asset.nacp.size < kDisplayVersionEnd) {
         std::fclose(file);
         return MAKERESULT(Module_Libnx, LibnxError_NotFound);
     }
 
     NacpStruct nacp{};
-    std::fseek(file, static_cast<long>(header.size + asset.nacp.offset), SEEK_SET);
+    std::fseek(file, asset_offset + static_cast<long>(asset.nacp.offset), SEEK_SET);
     if (std::fread(&nacp, 1, kDisplayVersionEnd, file) != kDisplayVersionEnd) {
         std::fclose(file);
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
@@ -534,6 +519,67 @@ Result ReadNroVersion(const std::string& path, std::string& version) {
     std::fclose(file);
 
     version.assign(nacp.display_version, strnlen(nacp.display_version, sizeof(nacp.display_version)));
+    return 0;
+}
+
+Result ReadNroIcon(const std::string& path, std::vector<u8>& icon) {
+    icon.clear();
+
+    FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) {
+        return MAKERESULT(Module_Libnx, LibnxError_NotFound);
+    }
+
+    u8 prefix[0x14]{};
+    if (std::fread(prefix, 1, sizeof(prefix), file) != sizeof(prefix)) {
+        std::fclose(file);
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    }
+
+    const long base = std::memcmp(prefix, "NRO0", 4) == 0
+                          ? 0
+                          : (std::memcmp(prefix + 0x10, "NRO0", 4) == 0 ? 0x10 : -1);
+    if (base < 0) {
+        std::fclose(file);
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    }
+
+    NroHeader header{};
+    std::fseek(file, base, SEEK_SET);
+    if (std::fread(&header, 1, sizeof(header), file) != sizeof(header) ||
+        header.magic != NROHEADER_MAGIC) {
+        std::fclose(file);
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    }
+
+    long asset_offset = -1;
+    NroAssetHeader asset{};
+    const long candidates[] = {static_cast<long>(header.size),
+                               static_cast<long>(base + static_cast<long>(header.size))};
+    for (const long offset : candidates) {
+        std::fseek(file, offset, SEEK_SET);
+        if (std::fread(&asset, 1, sizeof(asset), file) == sizeof(asset) &&
+            asset.magic == NROASSETHEADER_MAGIC) {
+            asset_offset = offset;
+            break;
+        }
+    }
+
+    constexpr u64 kMaxIconSize = 1024 * 1024;
+    if (asset_offset < 0 || asset.icon.offset == 0 || asset.icon.size == 0 ||
+        asset.icon.size > kMaxIconSize) {
+        std::fclose(file);
+        return MAKERESULT(Module_Libnx, LibnxError_NotFound);
+    }
+
+    icon.resize(static_cast<size_t>(asset.icon.size));
+    std::fseek(file, asset_offset + static_cast<long>(asset.icon.offset), SEEK_SET);
+    if (std::fread(icon.data(), 1, icon.size(), file) != icon.size()) {
+        icon.clear();
+        std::fclose(file);
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    }
+    std::fclose(file);
     return 0;
 }
 

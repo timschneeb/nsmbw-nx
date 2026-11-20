@@ -39,6 +39,8 @@ Covered:
 - RomFS downloads
 - launcher update over HTTP and failed-update rollback
 - main menu rows, authors and footer labels
+- display styles, the Download row toggle and persisted settings
+- NRO icon extraction and grid/compact rendering
 - X hidden on non-game rows
 - `Update` vs `Check for updates`
 - Settings entries and removal of Base game data / cached catalogue

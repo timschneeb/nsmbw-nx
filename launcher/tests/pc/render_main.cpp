@@ -127,9 +127,7 @@ int main() {
 
     // About.
     press(app, Button::SELECT);
-    press(app, Button::DOWN);
-    press(app, Button::DOWN);
-    press(app, Button::A);
+    select_sidebar(app, "About");
     shot(app, "about");
     press(app, Button::B);
     press(app, Button::B);
@@ -176,6 +174,30 @@ int main() {
     select_main(app, 3);
     press(app, Button::A);
     shot(app, "download-error");
+
+    // Display styles. Close the error dialog and the download menu first.
+    press(app, Button::B);
+    press(app, Button::B);
+    press(app, Button::SELECT);
+    shot(app, "settings-style");
+    select_sidebar(app, "Display style");
+    shot(app, "display-styles");
+    press(app, Button::DOWN); // Banner Grid
+    press(app, Button::A);
+    press(app, Button::B); // close settings
+    shot(app, "style-banner-grid");
+
+    press(app, Button::SELECT);
+    select_sidebar(app, "Display style");
+    press(app, Button::DOWN); // Detail Grid
+    press(app, Button::A);
+    press(app, Button::B); // close settings
+    shot(app, "style-detail-grid");
+
+    press(app, Button::SELECT);
+    select_sidebar(app, "Download row");
+    press(app, Button::B); // close settings
+    shot(app, "style-detail-grid-no-download");
 
     return 0;
 }

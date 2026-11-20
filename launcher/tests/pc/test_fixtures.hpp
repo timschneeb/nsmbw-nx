@@ -27,13 +27,16 @@ inline void WriteFile(const std::filesystem::path& path, const std::string& data
 }
 
 inline void WriteFakeNro(const std::filesystem::path& path, const std::string& version,
-                         char marker = '\0', size_t padding = 0) {
+                         char marker = '\0', size_t padding = 0,
+                         const std::vector<unsigned char>& icon = {}) {
     NroHeader header{};
     header.magic = NROHEADER_MAGIC;
     header.size = sizeof(NroHeader);
     NroAssetHeader asset{};
     asset.magic = NROASSETHEADER_MAGIC;
-    asset.nacp.offset = sizeof(NroAssetHeader);
+    asset.icon.offset = sizeof(NroAssetHeader);
+    asset.icon.size = icon.size();
+    asset.nacp.offset = sizeof(NroAssetHeader) + icon.size();
     asset.nacp.size = offsetof(NacpStruct, display_version) + 0x10;
     NacpStruct nacp{};
     std::snprintf(nacp.display_version, sizeof(nacp.display_version), "%s", version.c_str());
@@ -44,6 +47,10 @@ inline void WriteFakeNro(const std::filesystem::path& path, const std::string& v
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     file.write(reinterpret_cast<const char*>(&header), sizeof(header));
     file.write(reinterpret_cast<const char*>(&asset), sizeof(asset));
+    if (!icon.empty()) {
+        file.write(reinterpret_cast<const char*>(icon.data()),
+                   static_cast<std::streamsize>(icon.size()));
+    }
     file.write(reinterpret_cast<const char*>(&nacp), sizeof(nacp));
     if (padding > 0) {
         std::vector<char> zeros(padding, '\0');

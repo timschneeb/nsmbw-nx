@@ -54,6 +54,8 @@ auto ScanGames(const Assets& assets) -> std::vector<GameEntry>;
 auto IsValidNro(const std::string& path) -> bool;
 // Reads the NRO's NACP display version, which is the recomp build version.
 auto ReadNroVersion(const std::string& path, std::string& version) -> Result;
+// Reads the icon embedded in the NRO asset section.
+auto ReadNroIcon(const std::string& path, std::vector<u8>& icon) -> Result;
 // Removes the managed game files. With keep_data, saves, settings and disc images stay.
 Result RemoveGame(const std::string& dir, const std::string& id, bool keep_data);
 // Records a launch so the main list can sort by most recently used.

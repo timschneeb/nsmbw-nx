@@ -11,7 +11,7 @@
 
 namespace launcher::ui {
 
-// Vendored from sphaira, reduced to callback entries.
+// Vendored from sphaira, reduced to the entry types used by this launcher.
 class SidebarEntryBase : public Widget {
 public:
     explicit SidebarEntryBase(const std::string& title, const std::string& info);
@@ -22,6 +22,8 @@ public:
     auto OnFocusLost() noexcept -> void override;
 
     auto Title() const -> const std::string& { return m_title; }
+
+    void SetTitle(const std::string& title) { m_title = title; }
 
     void DrawEntry(NVGcontext* vg, Theme* theme, const std::string& left, const std::string& right, bool use_selected);
 
@@ -46,6 +48,41 @@ public:
 private:
     const Callback m_callback;
     const bool m_pop_on_click;
+};
+
+class SidebarEntryBool final : public SidebarEntryBase {
+public:
+    using Callback = std::function<void(bool&)>;
+
+public:
+    explicit SidebarEntryBool(const std::string& title, bool option, const Callback& cb,
+                              const std::string& info = "", const std::string& true_str = "On",
+                              const std::string& false_str = "Off");
+    void Draw(NVGcontext* vg, Theme* theme, const Vec4& root_pos, bool left) override;
+
+private:
+    bool m_option;
+    Callback m_callback;
+    const std::string m_true_str;
+    const std::string m_false_str;
+};
+
+class SidebarEntryArray final : public SidebarEntryBase {
+public:
+    using Items = std::vector<std::string>;
+    using ListCallback = std::function<void()>;
+    using Callback = std::function<void(s64& index)>;
+
+public:
+    explicit SidebarEntryArray(const std::string& title, const Items& items, const Callback& cb,
+                               s64 index = 0, const std::string& info = "");
+    void Draw(NVGcontext* vg, Theme* theme, const Vec4& root_pos, bool left) override;
+
+private:
+    const Items m_items;
+    const Callback m_callback;
+    s64 m_index;
+    ListCallback m_list_callback{};
 };
 
 class Sidebar : public Widget {
