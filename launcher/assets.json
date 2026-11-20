@@ -1,22 +1,22 @@
 {
   "schema": 1,
-  "recomp_version": "0.0.21",
+  "recomp_version": "1.0.0",
   "launcher": {
-    "version": "0.0.21",
+    "version": "1.0.0",
     "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/launcher.nro",
-    "sha256": "e32953eac1a5b51807fad726a1f57c7d34243f1b1f06ff0164ea929beb9dc3c4",
-    "size": 2527999
+    "sha256": "3d271b01f9f185e14b242277dcbadd3a3f435ad3f36b3a1ac88fdc11438825a9",
+    "size": 2568959
   },
   "games": {
     "vanilla": {
       "name": "New Super Mario Bros. Wii",
       "components": {
         "nro": {
-          "recomp_version": "0.0.21",
+          "recomp_version": "1.0.0",
           "game_version": "1.0.0",
           "region": "U",
-          "sha256": "745af37641c75bb9bb42313bbaa71de56a262ecec2a8763663f18c672ef08fba",
-          "size": 94151511,
+          "sha256": "07d5d46073aa4519a9a336de8b3315a4e45d6276fa03209db19de81a9b962055",
+          "size": 95236655,
           "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/vanilla-game.nro"
         }
       },
@@ -26,11 +26,11 @@
       "name": "Newer Super Mario Bros. Wii",
       "components": {
         "nro": {
-          "recomp_version": "0.0.21",
+          "recomp_version": "1.0.0",
           "game_version": "1.30",
           "region": "U",
-          "sha256": "8ad757145bb00b391d6770e565987f414eb0feff3ef04a26ba149259e3761dec",
-          "size": 100336471,
+          "sha256": "9ae7039aba160b20c3e37d5514520f2111c38b86faed14d2a4b30b43cf42bf71",
+          "size": 100957989,
           "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-game.nro"
         },
         "romfs": {
