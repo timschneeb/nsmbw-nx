@@ -97,20 +97,17 @@ page.
 
 1. Download the Switch ZIP from the Releases page.
 2. Copy the ZIP contents onto the SD card of your Switch.
-   * This creates `/switch/nsmbw/launcher.nro`, `/switch/nsmbw/assets.json` and
-     `/switch/nsmbw/games/vanilla/game.nro`.
-   * Mods live next to it as `/switch/nsmbw/games/<id>/`, with one `game.nro` per game.
+   * This creates a new folder at `/switch/nsmbw/.
 3. Copy your disc image into `/switch/nsmbw/`, next to `launcher.nro`. The launcher extracts the
-   base game to `/switch/nsmbw/discs/SMNE01/` on first start.
-4. Open `switch/nsmbw/launcher.nro` from hbmenu. If you installed a home menu forwarder, use that
-   instead.
-5. Open the `Download games` row to fetch the catalogue and install mods such as Newer. Press Minus
+   base game to on first start.
+4. Open 'NSMBW Launcher' in the hbmenu.
+5. Optional: Open the `Download community mods & games` row to fetch the catalogue and install mods such as Newer. Press Minus
    to open Settings for Update all and Check launcher update. Newer reuses `discs/SMNE01` and keeps
    its data in `games/newersmbw/data/`.
-6. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking).
+6. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking). The NewerSMBW mod has performance issues in some later levels, so a high overclock and FPS limit is needed in some parts. This will be fixed in the future.
 
 > [!NOTE]
-> The first boot will take about 10 minutes. It will extract the disc image and compile shaders for the first time.
+> The first boot will take about 5-10 minutes. It will extract the disc image and compile shaders for the first time.
 > Subsequent boots will preload shaders in the background (~1-2 minutes) while the game is running. This may slightly impact performance during this time.
 >
 > The game crashed or shows something wrong? Open an issue with your device, what you did, and the log from `/switch/nsmbw/games/vanilla/data/Logs`.
@@ -119,18 +116,16 @@ page.
 
 <p align="center">
   <img src="docs/screenshots/switch-launcher.jpg" alt="The NSMBW launcher on Nintendo Switch" width="800">
-  <br><sub>The launcher with installed games, version numbers and the Download row.</sub>
+  <br><sub>The launcher with installed games and version numbers</sub>
 </p>
 
-`switch/nsmbw/launcher.nro` is the entry point. It lists installed games under
+`/switch/nsmbw/launcher.nro` is the entry point. It lists installed games under
 `/switch/nsmbw/games/`, downloads the catalogue, installs Newer, checks for updates and chainloads
-the selected game.
+the selected game. The games are separate NROs, which allows you to create direct forwarders for them using an app like Sphaira.
 
-- **Download games:** install Newer and other catalogue entries.
-- **Updates:** a game row shows an **Update available** chip when its version or region differs. X
-  opens game options; Minus opens Settings with **Update all** and **Check launcher update**.
+- **Download community mods & games:** install Newer and other catalogue entries.
+- **Updates:** a game row shows an **Update available** chip when its version differs and can perform the update for you.
 - **Display styles:** Detail, Banner Grid and Detail Grid, from Minus > Display style.
-- **Download row:** show or hide the Download row in the same Settings menu.
 - **Per-game icons and banners:** installed NRO icons are read from the NRO; banners come from the
   catalogue.
 - **Shader Status:** the in-game Display settings toggle the top-left shader compilation notice.
@@ -150,6 +145,10 @@ Because of that, the game will request a moderate CPU overclock of 1581MHz by de
 As mentioned above, I recommend overclocking the CPU to 1581MHz, if you want to play the game at stable 60fps at 1x resolution (480p). It also handles 1.5x resolution (HD) at 60fps quite well, though you may need to increase CPU/GPU clock rates if you encounter slow-down.
 
 It is also possible to render the game at 30fps by enabling 'Battery saver' in the settings. This avoids the need for overclocking completely, as the game will run just fine with 1.5 resolution at stock CPU clock speeds! 
+
+### Newer SMBW
+
+The information above applies to the base game, because as of now, I have mainly worked on optimizations for the base game. The Newer SMBW mod has some later levels with significant slowdown, due to custom animated objects that seem to waste a huge amount of CPU time. It might be needed to overclock or use the 30fps limit (Battery saver) to workaround this for now. NewerSMBW performance will be improved in the future.
 
 <!--## Controls
 
