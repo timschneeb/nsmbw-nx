@@ -103,7 +103,7 @@ page.
 4. Open 'NSMBW Launcher' in the hbmenu.
 5. Optional: Open the `Download community mods & games` row to fetch the catalogue and install mods
    such as Newer. Press Minus to open Settings for Update all and Check launcher update. Newer reuses
-   `discs/SMNE01` and keeps its data in `games/newersmbw/data/`.
+   `discs/SMNE01` and keeps its data in `games/newersmbw/data/`. [Mods can also be manually installed.](https://github.com/timschneeb/nsmbw-nx-modules/#manual-installation)
 6. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking). The NewerSMBW mod has performance issues in some later levels, so a high overclock and FPS limit is needed in some parts. This will be fixed in the future.
 
 > [!NOTE]
