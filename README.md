@@ -124,8 +124,6 @@ page.
 the selected game. The games are separate NROs, which allows you to create direct forwarders for them using an app like Sphaira.
 
 - **Download community mods & games:** install Newer and other catalogue entries.
-- **Automatic checks:** the catalogue refreshes in the background on startup, so update chips and
-  the launcher update row appear without opening a menu.
 - **Updates:** a game row shows an **Update available** chip when its version differs and can perform the update for you.
 - **Display styles:** Detail, Banner Grid and Detail Grid, from Minus > Display style.
 - **Per-game icons and banners:** installed NRO icons are read from the NRO; banners come from the
