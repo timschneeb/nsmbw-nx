@@ -1817,7 +1817,7 @@ int RuntimeMain(int argc, char** argv) {
     const AppletType type = appletGetAppletType();
     if (type != AppletType_Application && type != AppletType_SystemApplication) {
         ShowFatalText(
-            "Launch this game using hbmenu launched with full memory access. Start any game title on the "
+            "Launch this game from hbmenu with full memory access. Start any game title on the "
             "home menu while holding R.\n\nFor easier access, you can also use Sphaira to create a home "
             "menu forwarder for this game.");
         return 0;
