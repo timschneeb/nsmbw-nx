@@ -781,6 +781,7 @@ static void seed_pipeline_cache() {
   bool readFailed = false;
   uint32_t mergedRows = 0;
   uint32_t skippedRows = 0;
+  int64_t rowsBefore = 0;
   {
     sqlite::Transaction tx(g_pipelineCacheDb, Log, true);
     if (!tx) {
@@ -789,6 +790,13 @@ static void seed_pipeline_cache() {
       pipeline_cache_abort();
       return;
     }
+
+    sqlite::exec(g_pipelineCacheDb, "SELECT COUNT(*) FROM pipeline_cache",
+                 [&rowsBefore](int argc, char** argv, char**) {
+                   if (argc > 0 && argv[0] != nullptr) {
+                     rowsBefore = std::strtoll(argv[0], nullptr, 10);
+                   }
+                 });
 
     while ((ret = sqlite3_step(seedStmt)) == SQLITE_ROW) {
       const auto typeValue = sqlite3_column_int(seedStmt, 0);
@@ -844,6 +852,20 @@ static void seed_pipeline_cache() {
           }
           sqlite3_finalize(stampStmt);
         }
+      }
+      // A grown recipe set invalidates the "prewarm drained" marker: the new recipes were never
+      // built, so the next boot must gate and warm them instead of compiling them on demand.
+      int64_t rowsAfter = 0;
+      sqlite::exec(g_pipelineCacheDb, "SELECT COUNT(*) FROM pipeline_cache",
+                   [&rowsAfter](int argc, char** argv, char**) {
+                     if (argc > 0 && argv[0] != nullptr) {
+                       rowsAfter = std::strtoll(argv[0], nullptr, 10);
+                     }
+                   });
+      if (rowsAfter > rowsBefore) {
+        sqlite::exec(g_pipelineCacheDb, "DELETE FROM aurora_boot;");
+        Log.info("Pipeline cache seed added {} recipes; clearing the boot prewarm marker",
+                 static_cast<long long>(rowsAfter - rowsBefore));
       }
       tx.commit();
     }

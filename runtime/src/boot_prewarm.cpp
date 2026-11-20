@@ -39,9 +39,26 @@ constexpr uint32_t kBootShaderNoticeThreshold = 100;
 // The queue must stay empty this long before the guest is released, so a momentary dip between
 // prewarm and first-frame work cannot dismiss the screen early.
 constexpr auto kBootShaderDrainSettle = std::chrono::milliseconds(1500);
-// Safety valve only: the guest is gated on the pipelines, so this guards a wedged worker.
-constexpr auto kBootShaderWaitLimit = std::chrono::minutes(10);
+// Safety valve only: the gate has no wall-clock limit, so a wedged worker is caught by watching
+// for a queue that stops moving instead of by the total prewarm time.
+constexpr auto kBootShaderStallLimit = std::chrono::minutes(2);
 Clock::time_point g_bootShaderDrainStart{};
+uint32_t g_bootShaderLastQueued = UINT32_MAX;
+Clock::time_point g_bootShaderProgressAt{};
+
+// True once the queue has made no progress for kBootShaderStallLimit. Both the overlay gate and
+// the Switch splash tick share this tracker.
+bool BootShaderStalled(uint32_t queued, Clock::time_point now) noexcept {
+    if (queued == 0) {
+        return false;
+    }
+    if (queued != g_bootShaderLastQueued) {
+        g_bootShaderLastQueued = queued;
+        g_bootShaderProgressAt = now;
+        return false;
+    }
+    return g_bootShaderProgressAt != Clock::time_point{} && now - g_bootShaderProgressAt > kBootShaderStallLimit;
+}
 
 #if defined(__SWITCH__)
 // The parsed WGSL/Tint programs are the largest reclaimable set. While the prewarm is still
@@ -94,6 +111,8 @@ void ResetBootShaderState() noexcept {
     g_bootShaderNotice = false;
     g_bootShaderWaitStart = {};
     g_bootShaderDrainStart = {};
+    g_bootShaderLastQueued = UINT32_MAX;
+    g_bootShaderProgressAt = {};
     // The boot screen is only for the first run that builds the pipeline cache. Once the prewarm
     // has drained on this cache, boot straight into the game and compile anything new in the
     // background.
@@ -134,7 +153,12 @@ void UpdateBootShaderState() noexcept {
     }
     const bool drained = g_bootShaderDrainStart != Clock::time_point{} &&
                          now - g_bootShaderDrainStart > kBootShaderDrainSettle;
-    if (drained || now - g_bootShaderWaitStart > kBootShaderWaitLimit) {
+    const bool stalled = BootShaderStalled(queued, now);
+    if (stalled) {
+        RT_LOGF(RT_TAG_RUNTIME, "[boot] shader prewarm stalled with %u pipelines queued; starting the game\n",
+                queued);
+        MarkBootShadersReady();
+    } else if (drained) {
         g_bootShadersReady.store(true, std::memory_order_release);
     }
     if (BootShadersPending()) {
@@ -149,7 +173,6 @@ void TickBootPrewarmOnSplash() noexcept {
     if (!BootShadersPending()) {
         return;
     }
-    static Clock::time_point start{};
     static Clock::time_point lastDraw{};
     static Clock::time_point doneAt{};
     static uint32_t total = 0;
@@ -159,7 +182,6 @@ void TickBootPrewarmOnSplash() noexcept {
     if (!started) {
         started = true;
         total = aurora_get_queued_pipeline_count();
-        start = now;
         // Background priority: the boot splash redraws on the guest thread while the prewarm
         // runs, and a boosted worker would starve those updates.
         aurora_prewarm_allow();
@@ -184,7 +206,13 @@ void TickBootPrewarmOnSplash() noexcept {
         // The parsed Tint programs dominate the live set. Releasing them as the prewarm runs keeps
         // the arena near the retained pipeline size instead of growing to the whole heap.
         MaybeReleaseShaderModulesOnPressure();
-        if (!aurora_boot_pipelines_pending() || now - start > std::chrono::minutes(10)) {
+        const uint32_t remaining = aurora_get_queued_pipeline_count();
+        const bool drained = !aurora_boot_pipelines_pending();
+        const bool stalled = BootShaderStalled(remaining, now);
+        if (stalled) {
+            RT_LOGF(RT_TAG_RUNTIME, "[boot] shader prewarm stalled with %u pipelines queued\n", remaining);
+        }
+        if (drained || stalled) {
             // The compiled pipelines stay in g_pipelines. Releasing the shader module cache drops
             // the last external refs, so Dawn frees the parsed Tint programs instead of holding
             // them for the whole session.
@@ -197,7 +225,8 @@ void TickBootPrewarmOnSplash() noexcept {
                         before >> 20, NsmbwMallocFreeBytes() >> 20);
             }
             doneAt = now;
-            NsmbwBootSplashSetProgress(1.0f, "Shaders ready, starting game...");
+            NsmbwBootSplashSetProgress(1.0f, stalled ? "Shader prewarm stalled, starting game..."
+                                                     : "Shaders ready, starting game...");
         }
         return;
     }

@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -41,6 +42,27 @@ static std::mutex cache_mutex;
 #if defined(AURORA_CACHE_USE_ZSTD)
 static std::vector<uint8_t> compress_buffer;
 #endif
+
+// Dawn calls the store callback once per blob, several times per pipeline. A transaction per blob
+// made the boot prewarm SD-bound: with a rollback journal each commit creates, fsyncs and deletes
+// a journal file on the card. Buffer the rows, like the pipeline cache writer does for recipes, and
+// commit them in batches.
+constexpr size_t StoreBatchRows = 64;
+constexpr size_t StoreBatchBytes = 8u << 20;
+constexpr auto StoreBatchAge = std::chrono::milliseconds(500);
+struct PendingStore {
+  XXH128_hash_t key;
+  std::vector<uint8_t> value;
+  size_t valueSize;
+  int compressed;
+  int64_t day;
+};
+static std::vector<PendingStore> g_pendingStores;
+static size_t g_pendingStoreBytes = 0;
+static std::chrono::steady_clock::time_point g_pendingStoreSince{};
+
+// Caller holds cache_mutex. Defined below; the load path flushes an overdue batch.
+static void flush_stores();
 
 // Schema 3 added last_used (whole days since the Unix epoch) so stale blobs can be
 // pruned: config-version bumps and driver updates change every Dawn cache key, and
@@ -160,7 +182,7 @@ static bool open_cache_db(const std::string& file) {
     }
     return false;
   }
-  if (sqlite::exec(db, "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;") != SQLITE_OK) {
+  if (sqlite::exec(db, "PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL;") != SQLITE_OK) {
     Log.error("Failed to set pragmas: {}", sqlite3_errmsg(db));
     sqlite3_close(db);
     db = nullptr;
@@ -192,7 +214,7 @@ static void remove_cache_files(const std::string& path) {
   }
 }
 
-// Journal-only recovery: journal_mode=DELETE with synchronous=FULL already rolls back a crash
+// Journal-only recovery: journal_mode=DELETE with synchronous=NORMAL already rolls back a crash
 // mid-write, so a failed open or quick_check means the file itself is unusable. Delete it and
 // start from an empty schema; the caller then forces a blocking shader rebuild.
 static bool recover_cache() {
@@ -348,6 +370,11 @@ size_t load_from_cache(void const* key, size_t keySize, void* value, size_t valu
     return 0;
   }
 
+  // Do not let a partial batch sit in memory for a whole session.
+  if (!g_pendingStores.empty() && std::chrono::steady_clock::now() - g_pendingStoreSince >= StoreBatchAge) {
+    flush_stores();
+  }
+
   sqlite::Transaction tx(db, Log);
   if (!tx) {
     Log.error("Failed to open load transaction");
@@ -442,10 +469,16 @@ size_t load_from_cache(void const* key, size_t keySize, void* value, size_t valu
   return foundSize;
 }
 
-void store_to_cache(void const* key, size_t keySize, void const* value, size_t valueSize, void*) {
-  std::lock_guard lock(cache_mutex);
-
-  if (!cache_init()) {
+// Caller holds cache_mutex. Writes every buffered blob in one transaction.
+static void flush_stores() {
+  if (g_pendingStores.empty()) {
+    return;
+  }
+  std::vector<PendingStore> pending;
+  pending.swap(g_pendingStores);
+  g_pendingStoreBytes = 0;
+  g_pendingStoreSince = {};
+  if (db == nullptr || store_stmt == nullptr) {
     return;
   }
 
@@ -455,9 +488,36 @@ void store_to_cache(void const* key, size_t keySize, void const* value, size_t v
     return;
   }
 
-  const void* storedValue = value;
-  sqlite3_uint64 storedValueSize = valueSize;
-  int compressed = 0;
+  for (const auto& entry : pending) {
+    check(sqlite3_bind_blob64(store_stmt, 1, &entry.key, sizeof(entry.key), SQLITE_TRANSIENT));
+    check(sqlite3_bind_blob64(store_stmt, 2, entry.value.data(), entry.value.size(), SQLITE_TRANSIENT));
+    check(sqlite3_bind_int64(store_stmt, 3, static_cast<sqlite3_int64>(entry.valueSize)));
+    check(sqlite3_bind_int(store_stmt, 4, entry.compressed));
+    check(sqlite3_bind_int64(store_stmt, 5, entry.day));
+    if (sqlite3_step(store_stmt) != SQLITE_DONE) {
+      Log.error("Failed to insert row: {}", sqlite3_errmsg(db));
+      check(sqlite3_reset(store_stmt));
+      continue;
+    }
+    check(sqlite3_reset(store_stmt));
+  }
+
+  tx.commit();
+}
+
+void store_to_cache(void const* key, size_t keySize, void const* value, size_t valueSize, void*) {
+  std::lock_guard lock(cache_mutex);
+
+  if (!cache_init()) {
+    return;
+  }
+
+  PendingStore entry{
+      .key = XXH128(key, keySize, 0),
+      .valueSize = valueSize,
+      .compressed = 0,
+      .day = days_now(),
+  };
 #if defined(AURORA_CACHE_USE_ZSTD)
   const auto bound = ZSTD_compressBound(valueSize);
   if (ZSTD_isError(bound)) {
@@ -476,33 +536,28 @@ void store_to_cache(void const* key, size_t keySize, void const* value, size_t v
   }
 
   if (compressRet < valueSize) {
-    storedValue = compress_buffer.data();
-    storedValueSize = compressRet;
-    compressed = 1;
+    entry.value.assign(compress_buffer.begin(), compress_buffer.begin() + static_cast<ptrdiff_t>(compressRet));
+    entry.compressed = 1;
+  } else {
+    const auto* bytes = static_cast<const uint8_t*>(value);
+    entry.value.assign(bytes, bytes + valueSize);
   }
+#else
+  const auto* bytes = static_cast<const uint8_t*>(value);
+  entry.value.assign(bytes, bytes + valueSize);
 #endif
 
-  const auto keyHash = XXH128(key, keySize, 0);
-  check(sqlite3_bind_blob64(store_stmt, 1, &keyHash, sizeof(keyHash), SQLITE_TRANSIENT));
-  check(
-      sqlite3_bind_blob64(store_stmt, 2, storedValue, storedValueSize, compressed ? SQLITE_STATIC : SQLITE_TRANSIENT));
-  check(sqlite3_bind_int64(store_stmt, 3, static_cast<sqlite3_int64>(valueSize)));
-  check(sqlite3_bind_int(store_stmt, 4, compressed));
-  check(sqlite3_bind_int64(store_stmt, 5, days_now()));
   g_stores.fetch_add(1, std::memory_order_relaxed);
-
-  const auto ret = sqlite3_step(store_stmt);
-  if (ret != SQLITE_DONE) {
-    // Error or something
-    Log.error("Failed to insert row: {}", sqlite3_errmsg(db));
-    return;
+  g_pendingStoreBytes += entry.value.size();
+  const auto now = std::chrono::steady_clock::now();
+  if (g_pendingStores.empty()) {
+    g_pendingStoreSince = now;
   }
-
-  check(sqlite3_reset(store_stmt));
-  check(sqlite3_bind_null(store_stmt, 2));
-  check(sqlite3_bind_null(store_stmt, 4));
-
-  tx.commit();
+  g_pendingStores.emplace_back(std::move(entry));
+  if (g_pendingStores.size() >= StoreBatchRows || g_pendingStoreBytes >= StoreBatchBytes ||
+      now - g_pendingStoreSince >= StoreBatchAge) {
+    flush_stores();
+  }
 }
 
 void cache_shutdown() {
@@ -510,6 +565,7 @@ void cache_shutdown() {
 #if defined(AURORA_CACHE_USE_ZSTD)
   compress_buffer.clear();
 #endif
+  flush_stores();
   flush_touches();
   check(sqlite3_finalize(load_stmt));
   check(sqlite3_finalize(store_stmt));
