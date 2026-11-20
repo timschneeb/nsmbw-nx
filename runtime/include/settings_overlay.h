@@ -41,6 +41,10 @@ void ReleaseControllers() noexcept;
 // default. Saved to Config.toml ([video] frame_graph; the old show_fps also turns it on).
 void SetFrameGraph(bool show) noexcept;
 bool FrameGraph() noexcept;
+// The top-left "N shaders compiling" notice while pipelines are still being built. On by default,
+// saved to Config.toml ([video] shader_overlay).
+void SetShaderOverlay(bool show) noexcept;
+bool ShaderOverlay() noexcept;
 // The Performance Monitor's size in percent, 5-200 (50 is the graph's original size), its text
 // included. `save` writes Config.toml (a slider being dragged saves when it is let go).
 void SetFrameGraphSize(int percent, bool save) noexcept;

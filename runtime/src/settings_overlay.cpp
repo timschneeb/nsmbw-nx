@@ -129,6 +129,8 @@ bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 // The Performance Monitor (FPS counter and frametime graph in one), off unless turned on. Configs
 // from before it had the two apart; either one on turns it on.
 bool g_frameGraph = RuntimeConfigFile::FrameGraph(false) || RuntimeConfigFile::ShowFps(false);
+// The top-left "N shaders compiling" notice while the prewarm or first-use builds are outstanding.
+bool g_shaderOverlay = RuntimeConfigFile::ShaderOverlay(true);
 bool g_touchControls = RuntimeConfigFile::TouchControls(true);
 int g_frameGraphSize = std::clamp(static_cast<int>(RuntimeConfigFile::FrameGraphSize(50)), 5, 200);
 std::atomic<bool> g_vsync{RuntimeConfigFile::VSync(false)};
@@ -1509,6 +1511,9 @@ void DrawFpsOverlay() {
 }
 
 void DrawShaderCompilationStatus() {
+    if (!g_shaderOverlay) {
+        return;
+    }
     const uint32_t queuedPipelines = aurora_get_queued_pipeline_count();
     if (queuedPipelines == 0 || StartupScreenVisible()) {
         return;
@@ -2071,6 +2076,11 @@ void SetFrameGraph(bool show) noexcept {
     RuntimeConfigFile::SetShowFps(false);  // the old FPS-only switch would turn it back on
 }
 
+void SetShaderOverlay(bool show) noexcept {
+    g_shaderOverlay = show;
+    RuntimeConfigFile::SetShaderOverlay(show);
+}
+
 void SetFrameGraphSize(int percent, bool save) noexcept {
     g_frameGraphSize = std::clamp(percent, 5, 200);
     if (save) {
@@ -2374,6 +2384,10 @@ const char* RunningGraphicsApi() noexcept {
 
 bool FrameGraph() noexcept {
     return g_frameGraph;
+}
+
+bool ShaderOverlay() noexcept {
+    return g_shaderOverlay;
 }
 
 void SetRenderScale(float scale) noexcept {

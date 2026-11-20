@@ -1656,7 +1656,8 @@ constexpr int kVideoResolution = 1, kVideoAspect = 2;  // Display
 constexpr int kVideoFullscreen = kFullscreenRow ? 3 : -1;
 constexpr int kVideoVSync = kVSyncRow ? (kFullscreenRow ? 4 : 3) : -1;
 constexpr int kVideoGraph = 3 + (kFullscreenRow ? 1 : 0) + (kVSyncRow ? 1 : 0);
-constexpr int kDisplayLast = kVideoGraph;  // the window closes from its prompt line, not an OK button
+constexpr int kVideoShaderStatus = kVideoGraph + 1;
+constexpr int kDisplayLast = kVideoShaderStatus;  // the window closes from its prompt line, not an OK button
 constexpr int kVideoRenderer = 1, kVideoCoins = 2, kVideoDepthBlur = 3, kVideoBatterySaver = 4;  // Graphics
 constexpr int kVideoInterpolation = 5;
 constexpr int kGraphicsLast = kVideoInterpolation;
@@ -2499,6 +2500,7 @@ void DrawDisplayTab(const Canvas& c) {
             ColumnCursor(c, y, rowH);
         }
     }
+    rows.AddToggle("Shader Status", settings_overlay::ShaderOverlay(), kVideoShaderStatus);
     const int32_t aspect = settings_overlay::Aspect();
     const char* resolutionNote = scaleIndex >= 0 && scales[static_cast<size_t>(scaleIndex)] <= 0.0f
                                      ? "The screen's own resolution."
@@ -2519,6 +2521,7 @@ void DrawDisplayTab(const Canvas& c) {
     const char* note = g_ui.cursor == 0                  ? TabHelp()
                        : g_ui.cursor == kVideoFullscreen ? fullscreenNote
                        : g_ui.cursor == kVideoGraph ? "Shows the FPS and each frame's time at the top right; left and right set its size."
+                       : g_ui.cursor == kVideoShaderStatus ? "Shows how many shaders are still compiling at the top left."
                        : g_ui.cursor == kVideoVSync ? "No tearing: frames wait for the display, the game keeps its pace."
                        : g_ui.cursor == kVideoAspect ? aspectNote
                                                      : resolutionNote;
@@ -3029,6 +3032,9 @@ void HandleSettingsInput(bool left, bool right, bool up, bool down, bool confirm
             g_settingsChanged = true;
         } else if ((confirm || left || right) && cursor == kVideoVSync) {
             settings_overlay::SetVSync(!settings_overlay::VSync());
+            g_settingsChanged = true;
+        } else if (confirm && cursor == kVideoShaderStatus) {
+            settings_overlay::SetShaderOverlay(!settings_overlay::ShaderOverlay());
             g_settingsChanged = true;
         }
         return;

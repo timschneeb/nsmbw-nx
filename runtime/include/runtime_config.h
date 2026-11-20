@@ -56,6 +56,8 @@ struct RuntimeUserConfig {
     std::optional<bool> showFps;
     std::optional<bool> spinningCoins;  // NSMBW: [video] spinning_coins, animated tiles
     std::optional<bool> frameGraph;     // NSMBW: [video] frame_graph, frame times under the FPS counter
+    // NSMBW: [video] shader_overlay, the top-left "N shaders compiling" notice
+    std::optional<bool> shaderOverlay;
     std::optional<bool> touchControls;  // NSMBW: [video] touch_controls, written by the Android app
     std::optional<uint32_t> frameGraphSize;  // NSMBW: [video] frame_graph_size, percent (5-200; 50 = the original size)
     std::optional<bool> vsync;          // NSMBW: [video] vsync, presents wait for the display (Windows)
@@ -524,6 +526,7 @@ inline void EnsureConfigFile() {
               "skip_unready_pipelines = true\n"
               "disable_copy_filter = true\n"
               "show_fps = false\n"
+              "shader_overlay = true\n"
               "# Dolphin-style custom textures. When enabled, the renderer indexes\n"
               "# texture_replacements/ next to this file at startup and substitutes\n"
               "# any tex1_<W>x<H>_<hash>[_<tlut hash>]_<format>.dds or .png it finds\n"
@@ -740,6 +743,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
     config.spinningCoins = FindConfigValue<bool>(document, "video", "spinning_coins");
     config.frameGraph = FindConfigValue<bool>(document, "video", "frame_graph");
+    config.shaderOverlay = FindConfigValue<bool>(document, "video", "shader_overlay");
     config.frameGraphSize = FindConfigUint(document, "video", "frame_graph_size");
     config.touchControls = FindConfigValue<bool>(document, "video", "touch_controls");
     config.vsync = FindConfigValue<bool>(document, "video", "vsync");
@@ -1175,6 +1179,15 @@ inline bool SetFrameGraphSize(uint32_t value) {
 inline bool SetFrameGraph(bool value) {
     Mutable().frameGraph = value;
     return WriteSetting("video", "frame_graph", value ? "true" : "false");
+}
+
+inline bool ShaderOverlay(bool fallback = true) {
+    return Get().shaderOverlay.value_or(fallback);
+}
+
+inline bool SetShaderOverlay(bool value) {
+    Mutable().shaderOverlay = value;
+    return WriteSetting("video", "shader_overlay", value ? "true" : "false");
 }
 
 inline bool VSync(bool fallback = false) {
