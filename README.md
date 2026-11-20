@@ -11,7 +11,7 @@ A native port of New Super Mario Bros. Wii for the Nintendo Switch made with
 static recompilation. 
 This version has been specifically optimized for the Nintendo Switch and runs well at stock CPU clock speed, though a moderate overclock is recommended for stable 60fps in heavier levels.
 
-<!-- Newer Super Mario Bros. Wii runs on it too. -->
+Newer Super Mario Bros. Wii is supported too. It installs from the launcher and shares the base disc.
 
 > [!NOTE]
 > **This port is directly based on [WitherBlitz](https://github.com/WitherBlitz)'s NSMBW recomp for PC and Android: https://github.com/WitherBlitz/NSMB-Wii-Recompilation**
@@ -19,15 +19,17 @@ This version has been specifically optimized for the Nintendo Switch and runs we
 > Consider checking out the upstream repository for more information and give it a star!
 
 > [!IMPORTANT]
-> There are no game files in this project or its releases: no disc image, no levels, music,
-> graphics or sounds. You need your own copy of **New Super Mario Bros. Wii (USA, `SMNE01`,
-> revision 1)** (`.iso`, `.ciso`, `.wbfs`, `.wia`, `.rvz`) and put it alongside `launcher.nro` in the launcher folder.
+> There are no Nintendo game files in this project or its releases: no disc image, no Nintendo
+> levels, music, graphics or sounds. You need your own copy of **New Super Mario Bros. Wii (USA,
+> `SMNE01`, revision 1)** (`.iso`, `.ciso`, `.wbfs`, `.wia`, `.rvz`) in `/switch/nsmbw/`, next to
+> `launcher.nro`. The optional Newer pack contains community-made assets from the Newer Team, not
+> Nintendo files.
 
 **[I just want to play](#quick-start)**
 
 <p align="center">
-  <img src="docs/screenshots/android-title.webp" alt="New Super Mario Bros. Wii running natively on an Android phone, with the on-screen Wii Remote controls" width="800">
-  <br><sub>Running natively on Android at 60 fps, with the on-screen sideways Wii Remote.</sub>
+  <img src="docs/screenshots/switch-game.jpg" alt="New Super Mario Bros. Wii running natively on Nintendo Switch" width="800">
+  <br><sub>Running natively on Nintendo Switch.</sub>
 </p>
 
 ---
@@ -37,6 +39,7 @@ This version has been specifically optimized for the Nintendo Switch and runs we
 - [Features](#features)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+- [Launcher](#launcher)
 - [Performance and overclocking](#performance-and-overclocking)
 - [Building from source](#building-from-source)
 - [AI usage](#ai-usage)
@@ -47,9 +50,13 @@ This version has been specifically optimized for the Nintendo Switch and runs we
 
 ## Features
 
-Quick summary:
-
-* HD texture pack support (can be downloaded in-game)
+* Launcher with the game catalogue, downloads, per-game updates and Update all
+* Newer Super Mario Bros. Wii installed from the launcher, sharing the base disc
+* Display styles: Detail, Banner Grid and Detail Grid
+* Per-game home menu icons and launcher banners
+* Version-only update detection with **Update available** chips
+* Shader cache preload, with a toggleable Shader Status overlay
+* HD texture pack support (downloadable in-game)
 * Custom render resolutions: 0.5x to 4x the Wii's 480 lines (240p to 1920p)
 * Touch screen support in menus and on the world map
 * Battery saver: render at 30fps instead of 60fps
@@ -63,283 +70,16 @@ Quick summary:
   * Infinite Lives cheat
   * Power-Up cheat
 
-<details>
-<summary>Full feature list from upstream</summary>
-  
-Everything the port does, grouped.
-
-### 📦 Platforms and downloads
-
-- **Android** phones and tablets: arm64, Android 9 or newer. Vulkan, or OpenGL ES 3.1 where the
-  phone's Vulkan driver is too old. Runs on older ARMv8 CPUs too.
-- **Windows** 10 and 11, 64-bit: Direct3D 12, Vulkan or Direct3D 11.
-- **Linux** x86-64: Vulkan, glibc 2.35 or newer, X11 and Wayland.
-- **Older PC processors** (no AVX2, older than Intel Haswell or AMD Excavator): the download's
-  `compat` programs start by themselves. Same game, math done the long way, still plays LAN games with
-  everyone else.
-- **Newer Super Mario Bros. Wii** comes in the same downloads: its own program on Windows and Linux,
-  and a support module the Android app downloads for you.
-- **Native code throughout:** the game's PowerPC code is translated ahead of time to ARM64 and
-  x86-64. Graphics go through [aurora](https://github.com/encounter/aurora) and Dawn.
-
-### 🖥️ Display and graphics
-
-- **Aspect ratios:** Original 4:3, 16:9, 16:10 and Ultrawide. Switching between 4:3 and widescreen
-  takes effect after a restart.
-- **Real ultrawide:** on screens wider than 16:9 (ultrawide monitors, most phones) the game really
-  draws wider. Levels, the title screen, the opening, the world map and the menus show more to the
-  sides instead of stretching, and enemies appear at the real edges of your screen.
-  - Rooms narrower than your screen, like the castle boss arenas, sit in the middle, so bosses move
-    exactly as in 16:9.
-  - The Items screen's models stay on their cards.
-  - LAN games always play in 16:9, so every device sees the same thing.
-- **Resolution:** 0.5x to 4x the Wii's 480 lines (240p to 1920p), or **Native**, your screen's own
-  resolution.
-- **Renderer:** Automatic, or pick one yourself. Windows: Direct3D 12, Vulkan, Direct3D 11. Android:
-  Vulkan, falling back to OpenGL ES.
-- **Fullscreen** (Windows and Linux): On/Off in Settings, or **F11**. On is a borderless window
-  covering the screen.
-- **V-Sync** (Windows and Android): no tearing, and the game's clock follows the display's refresh,
-  so frames never pile up. Off by default on Windows, on by default on Android.
-- **Frame Interpolation** (*experimental*): Off, 120, 180, 240 or 300 FPS, for screens above 60 Hz.
-  With Battery Saver on, 60 turns its 30 FPS back into 60 smooth frames.
-- **Battery Saver:** the game keeps running at full speed but shows 30 FPS, so the GPU does half the
-  work. It pauses during LAN play.
-- **Spinning Coins:** animated coins and blocks, updated on the GPU. On by default.
-- **Depth Blur:** turn off the blur and heat haze of desert, beach, water, lava and Bowser areas.
-- **Performance Monitor:** the FPS counter and a frametime graph, sized from 5% to 200%. With
-  V-Sync on, the graph shows how many screen refreshes each frame stayed up.
-- **Fewer shader hitches:** the GPU driver's shader cache is saved, and NSMBW's own list of about 1,800
-  shaders is built once, the first time you start a new version ("Compiling shaders").
-- **Older GPUs:**
-  - Direct3D 11 for GPUs without Vulkan or Direct3D 12 (like Intel HD 2000/2500/4000).
-  - Fixes for Intel GPUs on Direct3D 11. Tested on an HD 4600 at 60 fps; other Intel GPUs get the
-    same fixes but haven't been tested.
-  - **Graphics Compatibility** (Android): fixes for phone GPUs that scramble the game's models (Adreno
-    needs them), automatic by default.
-- **GPU Driver** (Android, Snapdragon phones): import a driver zip such as Turnip to use instead of the
-  phone's own. If it stops the game from starting, it goes back to Default by itself.
-
-### ⚡ Performance
-
-- **60 fps** on every device in the [tested devices](#tested-devices) table that's supported.
-- **Faster game thread (0.5.0):** the game's own work per frame dropped by about 20–24% on a slower
-  Android device we measured, in courses and on the world map, and a little on desktops too.
-- **Graphics on a second CPU core**, like Dolphin's dual-core mode: up to half again as many frames
-  where the CPU held the game back. On with 4 or more cores, and it helps two- and three-thread CPUs too.
-- **No waiting on the disk:** on Windows, and on phones with 3 GB of memory or more, the game files are
-  read into memory in the background.
-- **Smoother scene changes:** effects load natively, shared textures are reused, and big ones are
-  decoded on several cores.
-- **Cheaper math:** the Wii's exact float rounding takes a fast path that gives the same bits.
-- **Windows:** the game runs at above-normal priority and opts out of Windows' power-saving slowdown.
-- **Drop reports:** every frame over 20 ms is written to the log with where the time went.
-
-### 🎮 Controls
-
-- **Keyboard and mouse** (a Wii Remote held sideways):
-  - Every key can be changed in the Keybinds tab, and any control can use a **mouse button** (right
-    click is Down by default).
-  - **Combination bindings:** 2 or 3 keys or buttons pressed together for one control.
-  - **Space Smart Spin** (on by default): Space in the air spins, like shaking the remote. Wall jumps,
-    swimming and Yoshi's flutter keep using 2, and near the ground it's your next jump.
-  - **Mouse as Gyro** (off by default): move the mouse to tilt; move it quickly left and right to
-    shake.
-  - **Key prompts:** the game's on-screen prompts show the keys you bound and follow your changes.
-- **Controllers:**
-  - Work as a sideways Wii Remote, on PC and Android.
-  - Every button can be rebound in the Controller tab or F10's controller setup, combinations too.
-  - **Tilt Left / Tilt Right can be rebound (0.5.0):** a trigger, a stick or a button. On a trigger or
-    stick, how far you press sets how far the remote tilts.
-  - **Button prompts** in the Xbox layout.
-  - **Motion sensors:** on a controller that has them, tilt and shake use the controller (*untested on
-    a real controller*).
-  - Plugging one in or out no longer freezes the game on Windows. On Android a controller that
-    reconnects works again, a real controller always comes before a stickless TV remote, and controllers
-    that report themselves as keyboards work as controllers.
-- **Touch** (Android):
-  - An on-screen sideways Wii Remote (D-pad, 1, 2, A, Shake, + and -) with adjustable opacity and
-    vibration.
-  - **Layout editor:** move, add and delete buttons (any Wii Remote button, plus the Power-Up button),
-    and save layouts as profiles that survive updates.
-  - It hides when you use a controller; tap the screen to bring it back. A Touch Controls switch is in
-    the game's Controls tab.
-- **Tilt and shake:** turn the phone like a steering wheel to tilt (gyroscope and accelerometer), jolt
-  it to shake. **Reverse Tilt** (on by default, all devices) makes tilting platforms go the way you tilt.
-- **Rumble:** the Wii Remote's rumble reaches controllers, real Wii Remotes and phones.
-- **Real Wii Remotes:**
-  - A Wii Remote connected through your PC's own Bluetooth works like a controller.
-  - **Bluetooth passthrough (0.5.0, *experimental*, off by default, Windows and Linux):** the game's own
-    Wii Remote code drives real remotes through a spare USB Bluetooth adapter, speaker included. *Not
-    yet tried with real hardware.* See [Real Wii Remotes over Bluetooth](#real-wii-remotes-over-bluetooth-experimental).
-
-### 👆 Tap or click the menus
-
-- Tap (Android) or click (PC) the game's own menus: the title screen, Select a File, Select Players,
-  the character select, the LAN menus, the pause and **+** menus, Save / Don't Save windows, the Star
-  Coins screen and Select a World's islands.
-- **World map:** tap a level, Toad house, tower or castle and the player walks there along the paths;
-  tap the one you're on to play it. The Menu / Select World / View Map / Items buttons can be tapped.
-- A tap skips the title screen's idle movie and demos.
-- A **Back** button on the file select returns to the title screen (shown when you use touch or a
-  mouse).
-- The on-screen remote hides on the menus and comes back for the game.
-
-<!-- ### 👥 Multiplayer and LAN
-
-- **Couch:** the normal local multiplayer, up to 4 players on one device.
-- **LAN play:** up to 4 players on any mix of phones and PCs. Every device runs the game and only the
-  players' inputs travel, in lockstep.
-  - A **Couch / LAN** button at the top right of the file select, in the game's own style.
-  - **Create Room** (choose how many are playing) or **Join** from a list that fills itself.
-  - **Direct Connection:** join a host by typing its address.
-  - **Over the internet with [Tailscale](https://tailscale.com)**, phones included. Devices find and
-    remember each other. It works, but can be unstable.
-  - If a player drops, the others get a message instead of a frozen game, and the host keeps the
-    progress.
-- See [LAN and Tailscale multiplayer](#lan-and-tailscale-multiplayer). -->
-
-### 🍄 Gameplay options
-
-- **Pick your character in single player:** Mario, Luigi, Blue Toad or Yellow Toad, remembered per save
-  file. Uses mkwcat's "Player 1 Can Change Character" code.
-- **Autosave after every level:** clearing a course saves your file as soon as you're back on the
-  world map.
-- **Exit Course** from the pause menu in courses you haven't cleared yet (not the map's ambush fights).
-- **Gameplay tab:**
-  - **No Time Limit** (also hides the timer).
-  - **Infinite Lives.**
-  - **Power-Up:** gives player 1 any power-up, the Star included (and the Hammer Suit in Newer).
-  - Infinite Lives and Power-Up ask first, then mark that save "Cheated" on the file select.
-  - **Cheat Button** (Android): an on-screen button that gives you the chosen power-up.
-  - These keep the game's own rules in LAN play.
-
-### ⚙️ Settings window
-
-- **Laid out for 16:9 (0.5.0):** nearly full screen over the pause menu's see-through dark fill, with
-  big tabs, rows and buttons, and dropdowns for Resolution, Aspect Ratio and Frame Interpolation. With
-  a 4:3 picture it fits inside the picture.
-- **Opens from** the gear on the file select, **Settings** in the world map's **+** menu and in a
-  level's pause menu (built from the game's own disc art, with its animations).
-- **Tabs:** Display, Graphics, Audio, Keybinds (Controller with a controller, Controls on touch),
-  Gameplay, Language and Mods.
-- **Audio:** Master, Music, Sound Effects and Menu Sounds sliders. Drag them, or move them 5% at a time.
-  Each device in a LAN game sets its own.
-- A one-line explanation under every option.
-- **F10** on PC opens the settings bar too: controller setup, LAN devices and more.
-- Everything you change is saved and restored next launch.
-
-### 🧩 Mods
-
-- **HD Texture Pack (0.5.0):** Bighead's NSMBW HD Texture Pack v2.81, made by Bighead, razius, jaco8,
-  CDAMJC and Amon1995, from **Settings > Mods**.
-  - Downloads from the pack's own links (this project never hosts it), checks it, unpacks it and turns
-    it on. About 23 MB to download, 38 MB on disk.
-  - Turn it on and off while you play. The first time each HD texture shows up costs a moment.
-  - On Android, the app downloads it. For the original game only.
-- **Other games and mods:** saves are kept per game, so a modded disc can sit beside the original (see
-  [Installing](#installing)).
-
-### 🌟 Newer Super Mario Bros. Wii
-
-- Plays your own **Newer v1.30 (USA, `SMNE03`)**.
-- **Windows and Linux (0.5.0):** its own `NewerSMBW` program in the download, with a compat copy, its
-  own `game-newer` folder, settings and saves. It asks for your Newer disc image or extracted folder at
-  the first start.
-- **Android:** the **Newer Super Mario Bros. Wii** tab on the start menu downloads its support module
-  and imports your Newer disc image, extracted folder or a zip of it. Since 0.5.0 the module is built
-  for Android 9 and up, like the app.
-- Newer keeps its own settings, saves and logs apart from the base game's.
-- On Newer's world map the figure stays Mario, whichever character you pick.
-
-### 🌍 Languages
-
-- **English, Español, Français:** Nintendo's own translations from the USA disc. A change applies the
-  next time the game starts.
-- **Italiano:** the start menu and the game's menus, with the accented letters the disc's fonts lack.
-  The game's own text comes from your own European disc:
-  - **PC:** copy its `files/EU/ItaEU` into your game folder (`DATA/files/EU/ItaEU`); the strap screen,
-    Course Clear and Game Over layouts work too. Steps:
-    [`BUILDING.md`](projects/nsmbw/BUILDING.md#italian-language-pack-layouts).
-  - **Android:** the start menu's language button imports a language pack.
-- Android's start screen has its own **Language** button, the same setting as the game's.
-
-### 💾 Saves and updates
-
-- **Your data stays put:** settings, saves and caches live in `Documents\MarioWiiSaveData` (Windows) or
-  `~/.local/share/WiiCompiled` (Linux), so a new version extracted anywhere carries on. Saves made on
-  Windows load on Linux.
-- **Saves per game:** a mod or Newer never touches the original game's saves.
-- **Update button** (Windows, Linux, Android): when a new release is out, an orange **Update** button
-  shows on the file select. It downloads the release, checks it against GitHub's checksum, installs it
-  and restarts, keeping saves, settings and game files.
-- **Android:** **Check for Updates** on the start menu, and **Auto Update** (off by default), which
-  also checks when you come back to the app.
-- **Game checks:** only USA `SMNE01` revision 1 is accepted. Modded or repacked discs are named clearly,
-  and a folder missing any of the disc's files says "The folder doesn't include all required files."
-  instead of crashing.
-- **PC game picker:** at the first start, **Open ISO** (`.iso` or `.wbfs`, extracted once) or **Open
-  Extracted Disc Folder**.
-
-<!-- ### 📱 Android extras
-
-- **Leaving the app pauses the game,** after writing a Quick Save as a backup, so if Android closes the
-  app you continue from that level. Coming back normally removes the backup.
-- **Sleeping the phone** freezes the game in memory: nothing runs, nothing plays.
-- **Import** an extracted folder, a zip of it, or a Wii `.iso` straight on the phone.
-- **Skip Start Menu:** open straight into the game.
-- **Back gesture** in the game: Start Menu, Leave LAN Game or Quit.
-- **Xiaomi Mode:** fixes the black screen on Xiaomi, Redmi and POCO phones. On by default only there.
-- **Download Logs (For Github Reports):** a zip of recent logs, your settings and the phone's model,
-  ready for an issue. No saves or game files.
-- **Settings** on the start menu: display, controls, touch layout and more, kept in step with the game's
-  own Settings window.
-- **Help** shows the setup steps again.
--->
-
-</details>
-
-<!--## Tested devices
-
-| Device | Chipset | GPU | Android | Result |
-| --- | --- | --- | --- | --- |
-| Samsung Galaxy S26 Ultra (SM-S948U) | Qualcomm Snapdragon 8 Elite Gen 5 for Galaxy (SM8850) | Adreno 840 | 16 | 60 fps, LAN play |
-| T-Mobile REVVL 7 5G (TMRV075G) | Qualcomm Snapdragon 6 Gen 1 (SM6450) | Adreno 710 | 14 | 60 fps, LAN play |
-| Google Pixel 3 XL | Qualcomm Snapdragon 845 (SDM845) | Adreno 630 | 12 | 60 fps (thanks to v0.2.2 performance), LAN play |
-| LG V30+ (LS998) | Qualcomm Snapdragon 835 (MSM8998) | Adreno 540 | 8.0 | Not supported: needs Android 9 or newer |
-| Windows 10 PC | AMD Ryzen 5 5600G | NVIDIA GeForce RTX 5070 | - | 60 fps, LAN play with the phones |
-| Windows PC | AMD Ryzen 7 5700X3D | NVIDIA GeForce RTX 5070 Ti | - | 60 fps, LAN play |
-| Windows PC | Intel Core i5-4440 | Intel HD Graphics 4600 (integrated) | - | 60 fps, LAN play |
-
-Linux was run on Ubuntu 26.04 and Fedora 44 up to version 0.2.2, both under WSL with software
-rendering: it booted, played with sound, and computed the same frames as Windows for LAN play. Reports
-from real Linux PCs and the Steam Deck are welcome.
-
-> [!WARNING]
-> **Untested on Mali GPUs** (most phones with MediaTek, Samsung Exynos or Google Tensor chips).
-> Adreno GPUs needed workarounds for their shader compilers (Display > Graphics Compatibility); Mali
-> may need its own. If you try one, please open an issue with what you see.
-
-### Not tested yet
-
-If you can try any of these, an issue with what you saw helps a lot.
-
-- **Mali GPUs** (above).
-- **The Linux programs of recent versions:** we haven't run them ourselves since 0.2.2. The Linux disc
-  picker (Open ISO / Open Extracted Disc Folder) hasn't been seen on a real Linux desktop.
-- **Bluetooth passthrough** with a real adapter and real Wii Remotes. It's experimental and off by
-  default.
-- **Controller motion sensors** on a real controller.
-- **Intel GPUs on Direct3D 11** other than the HD 4600.
-- **Newer Super Mario Bros. Wii** hasn't been played all the way through.-->
-
 ## Requirements
 
+- A Nintendo Switch with homebrew support (Atmosphere and hbmenu).
+- An SD card with enough free space for the disc extraction and game data.
 - Your own **USA `SMNE01` revision 1** copy of New Super Mario Bros. Wii.
-<!-- - For Newer: your own **Newer Super Mario Bros. Wii v1.30 (USA, `SMNE03`)**. -->
+- Network access for the catalogue, Newer and updates.
 
 Only the USA disc, revision 1 works currently. Other regions and revisions put the game's code at other
-addresses, so the app checks the disc and refuses anything else.
+addresses, so the app checks the disc and refuses anything else. Newer does not need a Newer disc: the
+launcher downloads its pack and uses the base game's disc.
 
 > [!NOTE]
 > Dumping your own disc is your responsibility, and links to
@@ -362,10 +102,11 @@ page.
    * Mods live next to it as `/switch/nsmbw/games/<id>/`, with one `game.nro` per game.
 3. Copy your disc image into `/switch/nsmbw/`, next to `launcher.nro`. The launcher extracts the
    base game to `/switch/nsmbw/discs/SMNE01/` on first start.
-4. Start the launcher from the home menu forwarder and pick a game.
+4. Open `switch/nsmbw/launcher.nro` from hbmenu. If you installed a home menu forwarder, use that
+   instead.
 5. Open the `Download games` row to fetch the catalogue and install mods such as Newer. Press Minus
-   for Update all and Check launcher update. Newer reuses `discs/SMNE01` and keeps its data in
-   `games/newersmbw/data/`.
+   to open Settings for Update all and Check launcher update. Newer reuses `discs/SMNE01` and keeps
+   its data in `games/newersmbw/data/`.
 6. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking).
 
 > [!NOTE]
@@ -374,32 +115,30 @@ page.
 >
 > The game crashed or shows something wrong? Open an issue with your device, what you did, and the log from `/switch/nsmbw/games/vanilla/data/Logs`.
 
-<!-- **Newer Super Mario Bros. Wii**
-- **Windows / Linux:** run `NewerSMBW.exe` (`./NewerSMBW`) from the same folder and choose your Newer
-  v1.30 disc image or extracted folder.
-- **Android:** open the **Newer Super Mario Bros. Wii** tab on the start menu, download the support
-  module there, and import your Newer v1.30.
+## Launcher
 
+<p align="center">
+  <img src="docs/screenshots/switch-launcher.jpg" alt="The NSMBW launcher on Nintendo Switch" width="800">
+  <br><sub>The launcher with installed games, version numbers and the Download row.</sub>
+</p>
 
-- **Newer Super Mario Bros. Wii:**
-  - **Windows and Linux:** run `NewerSMBW.exe` (`./NewerSMBW`) from the same folder. The first start
-    asks for your own Newer v1.30 (USA, `SMNE03`), or put its extracted folder next to it named
-    `game-newer`. Newer keeps its own settings and saves: `Documents\NewerWiiSaveData` on Windows, a
-    `NewerWiiSaveData` folder inside the base game's data folder on Linux. If you built Newer from
-    source and kept its game in a `game` folder, rename that folder to `game-newer`.
-  - **Android:** open the Newer tab on the start menu, download its support module there, and import
-    your own Newer v1.30 (its disc image, the folder Dolphin's Extract Entire Disc makes, or a zip of
-    that folder). `NSMBW-0.5.0-newer-android-arm64.zip` on the Releases page is that module; the app
-    downloads it for you.
-- **Another game, such as a mod:** saves are kept per game. Extract a second copy of the release and
-  put that game's extracted folder next to its `NSMBW.exe`, named `game`. That copy plays it with
-  saves of its own, and the first copy keeps playing the original.
--->
+`switch/nsmbw/launcher.nro` is the entry point. It lists installed games under
+`/switch/nsmbw/games/`, downloads the catalogue, installs Newer, checks for updates and chainloads
+the selected game.
+
+- **Download games:** install Newer and other catalogue entries.
+- **Updates:** a game row shows an **Update available** chip when its version or region differs. X
+  opens game options; Minus opens Settings with **Update all** and **Check launcher update**.
+- **Display styles:** Detail, Banner Grid and Detail Grid, from Minus > Display style.
+- **Download row:** show or hide the Download row in the same Settings menu.
+- **Per-game icons and banners:** installed NRO icons are read from the NRO; banners come from the
+  catalogue.
+- **Shader Status:** the in-game Display settings toggle the top-left shader compilation notice.
 
 ## Performance and overclocking
 
 > [!NOTE]
-> TL;DR: **CPU overclock of 1581Hz is recommended for guaranteed 60fps** at 1x resolution. Higher resolutions will also run well but may need further CPU/GPU overclocking.
+> TL;DR: **CPU overclock of 1581MHz is recommended for guaranteed 60fps** at 1x resolution. Higher resolutions will also run well but may need further CPU/GPU overclocking.
 > 
 > **If you don't want to overclock, you can always enable 'Battery saver' to render at 30fps.** It greatly improves performance and even runs 1.5x resolution (HD) at stable 30fps at stock CPU clock speeds.
 
@@ -410,7 +149,7 @@ Because of that, the game will request a moderate CPU overclock of 1581MHz by de
 
 As mentioned above, I recommend overclocking the CPU to 1581MHz, if you want to play the game at stable 60fps at 1x resolution (480p). It also handles 1.5x resolution (HD) at 60fps quite well, though you may need to increase CPU/GPU clock rates if you encounter slow-down.
 
-It is also possible to render the game at 30fps by enabling 'Battery saver' in the settings. This avoids the need over overclocking completely, as the game will run just fine with 1.5 resolution at stock CPU clock speeds! 
+It is also possible to render the game at 30fps by enabling 'Battery saver' in the settings. This avoids the need for overclocking completely, as the game will run just fine with 1.5 resolution at stock CPU clock speeds! 
 
 <!--## Controls
 
@@ -510,13 +249,14 @@ game's `Logs` folder.-->
 
 Owning the game is still required even if you compile everything yourself.
 
-You'll need: .NET 8 SDK, CMake, Ninja, LLVM/Clang (LLVM-MinGW for Windows, the Android NDK for
-Android) and Python 3. The full steps, from Dolphin's extraction to the APK and the exe, Newer and the
-Italian language files included, are in [`projects/nsmbw/BUILDING.md`](projects/nsmbw/BUILDING.md).
+You'll need devkitPro (devkitA64 and switch-tools), CMake, Ninja and Python 3. The runtime also needs
+the generated translation folders.
 
+- The launcher: [`launcher/README.md`](launcher/README.md).
+- The runtime and Newer: [`projects/nsmbw/BUILDING.md`](projects/nsmbw/BUILDING.md).
+- Release packaging: [`launcher/tools/package_release.py`](launcher/tools/package_release.py).
 - The NSMBW project: [`projects/nsmbw`](projects/nsmbw) (translator config, function map, tools).
 - The runtime, retargeted from Mario Kart Wii to NSMBW: [`runtime`](runtime).
-- The Android app: [`android`](android).
 - WiiCompiled's own README, for the translator and the runtime it comes from:
   [`docs/WiiCompiled-README.md`](docs/WiiCompiled-README.md).
 
