@@ -89,13 +89,13 @@ launcher downloads its pack and uses the base game's disc.
 
 ## Quick start
 
-Get everything from the [Releases](https://github.com/timschneeb/nsmbw-nx/releases/latest)
+Get the ZIP file from the [Releases](https://github.com/timschneeb/nsmbw-nx/releases/latest)
 page.
 
 > [!NOTE]
 > Accepted Wii disc image formats: `.iso`, `.ciso`, `.wbfs`, `.wia`, `.rvz`
 
-1. Download the Switch ZIP from the Releases page.
+1. Download the Switch ZIP from the [Releases](https://github.com/timschneeb/nsmbw-nx/releases/latest) page.
 2. Copy the ZIP contents onto the SD card of your Switch.
    * This creates a new folder at `/switch/nsmbw/`.
 3. Copy your disc image into `/switch/nsmbw/`, next to `launcher.nro`. The launcher extracts the
