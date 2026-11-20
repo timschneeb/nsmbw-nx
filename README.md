@@ -97,13 +97,13 @@ page.
 
 1. Download the Switch ZIP from the Releases page.
 2. Copy the ZIP contents onto the SD card of your Switch.
-   * This creates a new folder at `/switch/nsmbw/.
+   * This creates a new folder at `/switch/nsmbw/`.
 3. Copy your disc image into `/switch/nsmbw/`, next to `launcher.nro`. The launcher extracts the
-   base game to on first start.
+   base game to `/switch/nsmbw/discs/SMNE01/` on first start.
 4. Open 'NSMBW Launcher' in the hbmenu.
-5. Optional: Open the `Download community mods & games` row to fetch the catalogue and install mods such as Newer. Press Minus
-   to open Settings for Update all and Check launcher update. Newer reuses `discs/SMNE01` and keeps
-   its data in `games/newersmbw/data/`.
+5. Optional: Open the `Download community mods & games` row to fetch the catalogue and install mods
+   such as Newer. Press Minus to open Settings for Update all and Check launcher update. Newer reuses
+   `discs/SMNE01` and keeps its data in `games/newersmbw/data/`.
 6. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking). The NewerSMBW mod has performance issues in some later levels, so a high overclock and FPS limit is needed in some parts. This will be fixed in the future.
 
 > [!NOTE]
