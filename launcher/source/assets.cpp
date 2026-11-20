@@ -10,9 +10,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace launcher {
@@ -21,6 +24,8 @@ namespace fs = std::filesystem;
 
 constexpr size_t kMaxCatalogSize = 4 * 1024 * 1024;
 constexpr size_t kMaxBannerSize = 8 * 1024 * 1024;
+
+std::mutex g_fetch_mutex;
 
 auto Lowercase(std::string value) -> std::string {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -292,6 +297,15 @@ auto LoadLocalAssets(Assets& out) -> Result {
 }
 
 Result FetchRemoteAssets(Assets& out, const std::function<bool()>& canceled) {
+    // A silent startup refresh can overlap a user-initiated fetch. Keep the cache and banner
+    // writes serialized, but do not block shutdown or cancellation on the other fetch.
+    std::unique_lock<std::mutex> fetch_lock(g_fetch_mutex, std::defer_lock);
+    while (!fetch_lock.try_lock()) {
+        if (canceled && canceled()) {
+            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
     const auto base = fs::path(RootDirectory());
     std::vector<u8> data;
 

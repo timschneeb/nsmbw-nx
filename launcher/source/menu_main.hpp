@@ -9,10 +9,13 @@
 #include "ui/menus/menu_base.hpp"
 #include "ui/scrolling_text.hpp"
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <memory>
+#include <stop_token>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace launcher::ui {
@@ -73,6 +76,8 @@ private:
     void CheckLauncherUpdate();
     void FetchCatalogue(const std::string& title,
                         const std::function<void(Result, bool)>& done);
+    void StartSilentCatalogueRefresh();
+    void ApplySilentCatalogueRefresh();
     void ConfirmUpdateAll();
     void ShowUpdateAllConfirmation();
     void StartUpdateAll();
@@ -117,6 +122,11 @@ public:
     std::vector<int> m_banner_discard_ready;
     std::string m_pending_message;
     std::function<void()> m_pending_dialog;
+    std::thread m_refresh_thread{};
+    std::stop_source m_refresh_stop{};
+    std::shared_ptr<Assets> m_refresh_assets{};
+    std::atomic<bool> m_refresh_ready{};
+    Result m_refresh_result{};
 };
 
 } // namespace launcher::ui

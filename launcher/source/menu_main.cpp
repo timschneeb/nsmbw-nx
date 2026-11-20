@@ -142,9 +142,17 @@ MainMenu::MainMenu() : MenuBase{"Games", menu::MenuFlag_None} {
     Rebuild();
     RefreshBanners();
     ApplyDisplayStyle();
+#if defined(__SWITCH__)
+    StartSilentCatalogueRefresh();
+#endif
 }
 
 MainMenu::~MainMenu() {
+    m_refresh_stop.request_stop();
+    if (m_refresh_thread.joinable()) {
+        m_refresh_thread.join();
+    }
+
     if (App::GetVg() != nullptr) {
         for (const auto& [id, banner] : m_banners) {
             (void)id;
@@ -898,6 +906,42 @@ void MainMenu::FetchCatalogue(const std::string& title,
         }));
 }
 
+void MainMenu::StartSilentCatalogueRefresh() {
+    auto fetched = std::make_shared<Assets>();
+    m_refresh_assets = fetched;
+    log_write("[menu] refreshing catalogue in the background\n");
+    m_refresh_thread = std::thread([this, fetched] {
+#ifdef __SWITCH__
+        // Keep the fetch off the core that renders the list.
+        svcSetThreadCoreMask(threadGetCurHandle(), 2, 1u << 2);
+#endif
+        const Result rc = FetchRemoteAssets(*fetched, [this] {
+            return m_refresh_stop.stop_requested();
+        });
+        m_refresh_result = rc;
+        m_refresh_ready.store(true, std::memory_order_release);
+    });
+}
+
+void MainMenu::ApplySilentCatalogueRefresh() {
+    if (!m_refresh_ready.exchange(false, std::memory_order_acquire)) {
+        return;
+    }
+    if (m_refresh_thread.joinable()) {
+        m_refresh_thread.join();
+    }
+    if (R_SUCCEEDED(m_refresh_result) && m_refresh_assets && !m_refresh_assets->games.empty()) {
+        m_assets = std::move(*m_refresh_assets);
+        RefreshBanners();
+        Rebuild();
+        log_write("[menu] background catalogue refreshed\n");
+    } else if (R_FAILED(m_refresh_result)) {
+        log_write("[menu] background catalogue refresh failed 0x%08X\n",
+                  static_cast<unsigned>(m_refresh_result));
+    }
+    m_refresh_assets.reset();
+}
+
 void MainMenu::ConfirmUpdateAll() {
     FetchCatalogue("Update all", [this](Result rc, bool canceled) {
         if (canceled) {
@@ -1443,6 +1487,8 @@ void MainMenu::UpdateFooter() {
 }
 
 void MainMenu::Update(Controller* controller, TouchInfo* touch) {
+    ApplySilentCatalogueRefresh();
+
     // Textures from a refresh are released two frames later, after the last draw that used them.
     if (!m_banner_discard_ready.empty() && App::GetVg() != nullptr) {
         for (int image : m_banner_discard_ready) {
