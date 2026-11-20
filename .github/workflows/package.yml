@@ -9,7 +9,7 @@ name: Package installers
 on:
   push:
     tags:
-      - '*'
+      - 'v0.*'
   workflow_dispatch:
 
 permissions:
