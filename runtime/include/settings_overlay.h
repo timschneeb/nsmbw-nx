@@ -21,6 +21,9 @@ bool BootShaderNoticeActive() noexcept;
 void ResetBootShaderState() noexcept;
 // Advances the startup screen and prewarm gate; call once per presented frame.
 void UpdateBootShaderState() noexcept;
+// Frees the parsed WGSL/Tint programs while the Switch heap is below its safe watermark. Also called
+// from the splash prewarm tick, where no overlay frame is drawn.
+void MaybeReleaseShaderModulesOnPressure() noexcept;
 // The Switch boot splash ran the first-boot prewarm: release the guest and retire the overlay's
 // startup screen, so only the boot splash showed the shader progress.
 void MarkBootShadersReady() noexcept;

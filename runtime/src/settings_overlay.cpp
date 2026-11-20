@@ -2528,7 +2528,7 @@ double ProcessCpuSeconds() noexcept {
 #endif
 }
 
-void DrawShaderLoading(uint32_t built, uint32_t total) {
+void DrawShaderLoading(uint32_t built, uint32_t total, const char* note = nullptr) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(viewport->Size, ImGuiCond_Always);
@@ -2565,6 +2565,13 @@ void DrawShaderLoading(uint32_t built, uint32_t total) {
         ImGui::SetCursorPos(ImVec2((viewport->Size.x - countSize.x) * 0.5f,
                                    barMax.y - viewport->Pos.y + countSize.y * 0.6f));
         ImGui::TextUnformatted(count);
+        if (note != nullptr) {
+            ImGui::SetWindowFontScale(1.1f * ui);
+            const ImVec2 noteSize = ImGui::CalcTextSize(note);
+            ImGui::SetCursorPos(ImVec2((viewport->Size.x - noteSize.x) * 0.5f,
+                                       barMax.y - viewport->Pos.y + countSize.y * 2.0f));
+            ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.3f, 1.0f), "%s", note);
+        }
     }
     ImGui::End();
     ImGui::PopStyleColor();
@@ -2588,6 +2595,43 @@ void RunShaderLoadingScreen() noexcept {
     const auto start = Clock::now();
     uint32_t total = 0;
     aurora_get_prewarm_progress(nullptr, &total);
+    // The blob cache was deleted, so these recipes have no cached parse result. Compile them all
+    // before the guest starts rather than trickling batches while it loads.
+    if (aurora_dawn_cache_was_reset()) {
+        constexpr const char* kNotice = "Shader database was corrupted; rebuilding shaders...";
+        constexpr auto kRebuildLimit = std::chrono::minutes(10);
+        uint32_t frames = 0;
+        auto lastRelease = start;
+        aurora_set_prewarm_boost(true);
+        aurora_prewarm_release(UINT32_MAX);
+        while (aurora_boot_pipelines_pending() && Clock::now() - start < kRebuildLimit) {
+            UpdateAuroraAndProcessEvents();
+            uint32_t built = 0;
+            uint32_t pendingTotal = 0;
+            aurora_get_prewarm_progress(&built, &pendingTotal);
+            if (BeginAuroraFrame()) {
+                aurora_wait_for_frame_worker();
+                DrawShaderLoading(built, pendingTotal, kNotice);
+                aurora_end_frame();
+                ++frames;
+            }
+            MaybeReleaseShaderModulesOnPressure();
+            const auto now = Clock::now();
+            if (now - lastRelease >= std::chrono::seconds(10)) {
+                lastRelease = now;
+                aurora_release_shader_modules_light();
+            }
+            SDL_Delay(16);
+        }
+        // The next frame begins now, so the game's first GX commands have a frame to go into.
+        UpdateAuroraAndProcessEvents();
+        if (BeginAuroraFrame()) {
+            g_auroraFrameActive.store(true, std::memory_order_release);
+        }
+        RT_LOGF(RT_TAG_RUNTIME, "shader rebuild after cache reset: %.1f s, %u frames\n",
+                seconds(Clock::now() - start), frames);
+        return;
+    }
     const double cores = std::max(2u, std::thread::hardware_concurrency());
     const double busyCores = std::max(1.0, cores - 0.8);
     constexpr uint32_t batch = 192;

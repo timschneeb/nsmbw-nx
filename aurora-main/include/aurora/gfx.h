@@ -96,6 +96,9 @@ uint32_t aurora_get_queued_pipeline_count();
 bool aurora_boot_pipelines_pending();
 // True once the boot prewarm has drained at least once on the current pipeline cache.
 bool aurora_boot_prewarm_compiled();
+// True when the Dawn blob cache was corrupt and had to be recreated empty. The embedder then
+// forces the blocking shader rebuild instead of skipping it.
+bool aurora_dawn_cache_was_reset();
 // Drops the parsed Tint programs cached by the shader module cache. Compiled pipelines keep their
 // shader modules, so this only releases the WGSL AST/IR and lets Dawn regenerate it on demand.
 void aurora_release_shader_modules();

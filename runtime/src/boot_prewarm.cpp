@@ -43,7 +43,43 @@ constexpr auto kBootShaderDrainSettle = std::chrono::milliseconds(1500);
 constexpr auto kBootShaderWaitLimit = std::chrono::minutes(10);
 Clock::time_point g_bootShaderDrainStart{};
 
+#if defined(__SWITCH__)
+// The parsed WGSL/Tint programs are the largest reclaimable set. While the prewarm is still
+// building variants they are dropped on a timer; afterwards only when the arena runs short.
+// Steady state outside the prewarm sits near 10 MiB, so only a drop below this is pressure.
+constexpr size_t kArenaFreeWatermark = 8u << 20;
+constexpr size_t kArenaCritical = 4u << 20;
+constexpr auto kHeapCheckInterval = std::chrono::seconds(1);
+constexpr auto kHeapReleaseCooldown = std::chrono::seconds(10);
+#endif
+
 } // namespace
+
+void MaybeReleaseShaderModulesOnPressure() noexcept {
+#if defined(__SWITCH__)
+    static Clock::time_point lastCheck{};
+    static Clock::time_point lastRelease{};
+    const auto now = Clock::now();
+    if (lastCheck != Clock::time_point{} && now - lastCheck < kHeapCheckInterval) {
+        return;
+    }
+    lastCheck = now;
+    const size_t freeBytes = NsmbwMallocFreeBytes();
+    const bool prewarm = aurora_boot_pipelines_pending();
+    if (!prewarm && freeBytes >= kArenaFreeWatermark) {
+        return;
+    }
+    // Under real pressure the cooldown must not starve the release.
+    if (freeBytes >= kArenaCritical && lastRelease != Clock::time_point{} &&
+        now - lastRelease < kHeapReleaseCooldown) {
+        return;
+    }
+    lastRelease = now;
+    aurora_release_shader_modules_light();
+    RT_LOGF(RT_TAG_RUNTIME, "[mem] arena free %zu MiB%s, released shader parse cache (%zu MiB now)\n",
+            freeBytes >> 20, prewarm ? " during prewarm" : "", NsmbwMallocFreeBytes() >> 20);
+#endif
+}
 
 bool BootShadersPending() noexcept { return !g_bootShadersReady.load(std::memory_order_acquire); }
 
@@ -62,6 +98,11 @@ void ResetBootShaderState() noexcept {
     // has drained on this cache, boot straight into the game and compile anything new in the
     // background.
     g_bootShaderFirstRun = !aurora_boot_prewarm_compiled();
+    if (aurora_dawn_cache_was_reset()) {
+        // The blob cache was deleted, so every prewarm recipe must be parsed from WGSL again.
+        // Run the full blocking warmup rather than letting it grow in the background.
+        g_bootShaderFirstRun = true;
+    }
     g_bootShaderSeenQueue = false;
     if (!g_bootShaderFirstRun) {
         g_bootShadersReady.store(true, std::memory_order_release);
@@ -71,6 +112,7 @@ void ResetBootShaderState() noexcept {
 }
 
 void UpdateBootShaderState() noexcept {
+    MaybeReleaseShaderModulesOnPressure();
     if (g_bootShadersReady.load(std::memory_order_relaxed)) {
         return;
     }
@@ -130,18 +172,18 @@ void TickBootPrewarmOnSplash() noexcept {
             const float done = total > 0
                                    ? 1.0f - static_cast<float>(remaining) / static_cast<float>(total)
                                    : 1.0f;
-            char status[64];
-            std::snprintf(status, sizeof(status), "Compiling shaders: %u remaining", remaining);
+            char status[96];
+            if (aurora_dawn_cache_was_reset()) {
+                std::snprintf(status, sizeof(status),
+                              "Shader database was corrupted; rebuilding: %u left", remaining);
+            } else {
+                std::snprintf(status, sizeof(status), "Compiling shaders: %u remaining", remaining);
+            }
             NsmbwBootSplashSetProgress(done, status);
         }
         // The parsed Tint programs dominate the live set. Releasing them as the prewarm runs keeps
         // the arena near the retained pipeline size instead of growing to the whole heap.
-        static Clock::time_point lastShaderRelease{};
-        if (lastShaderRelease == Clock::time_point{} ||
-            now - lastShaderRelease >= std::chrono::seconds(10)) {
-            lastShaderRelease = now;
-            aurora_release_shader_modules_light();
-        }
+        MaybeReleaseShaderModulesOnPressure();
         if (!aurora_boot_pipelines_pending() || now - start > std::chrono::minutes(10)) {
             // The compiled pipelines stay in g_pipelines. Releasing the shader module cache drops
             // the last external refs, so Dawn frees the parsed Tint programs instead of holding

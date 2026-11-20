@@ -4293,8 +4293,32 @@ struct DrawTimer {
     }
 };
 
+#if defined(MKW_PLATFORM_SWITCH)
+extern "C" size_t NsmbwMallocUsedBytes();
+extern "C" size_t NsmbwMallocArenaBytes();
+extern "C" size_t NsmbwMallocFreeBytes();
+#endif
+
 void Draw() {
     DrawTimer timer;
+#if defined(MKW_PLATFORM_SWITCH)
+    // Only with [debug] stats on ("light" or "full"): the line is one log write per 5 s in the
+    // guest's frame.
+    if (PerfStats::Enabled()) {
+        static double lastHeapLog = -100.0;
+        const double heapNow = ImGui::GetTime();
+        if (heapNow - lastHeapLog >= 5.0) {
+            lastHeapLog = heapNow;
+#if defined(NSMBW_MEMTRACE)
+            MemTracker::LogHistogram();
+#else
+            RT_LOGF(RT_TAG_RUNTIME, "heap: used %zu KiB, free %zu KiB, arena %zu KiB\n",
+                    NsmbwMallocUsedBytes() / 1024, NsmbwMallocFreeBytes() / 1024,
+                    NsmbwMallocArenaBytes() / 1024);
+#endif
+        }
+    }
+#endif
     // The game's button prompts as the input last used shows them (key_caps.h); every screen, LAN too.
     KeyCaps::Update();
     TestPad::Update();
@@ -4416,6 +4440,12 @@ void Draw() {
         Show(Screen::Settings);
     }
     if (scene == kSceneWorldMap) {
+        static bool wasMenuShown = false;
+        if (!g_ui.menuSettingsShown && wasMenuShown) {
+            g_menuLayout = MenuLayout{};
+            g_menuFocus = false;
+        }
+        wasMenuShown = g_ui.menuSettingsShown;
         if (!mapButton) {
             ApplyMenuLayout();
         }

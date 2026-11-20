@@ -726,6 +726,7 @@ static sqlite3* open_pipeline_cache_seed_db(const std::string& path) {
 }
 
 static void seed_pipeline_cache() {
+  Log.info("Pipeline cache: seeding from the bundled cache");
   if (g_pipelineCacheBroken || g_pipelineCacheDb == nullptr || g_pipelineCacheUpsertStmt == nullptr) {
     return;
   }
@@ -883,14 +884,48 @@ static bool prepare_pipeline_cache_db() {
     return false;
   }
 
-  // WAL needs mmap-backed shared memory, which Horizon does not provide.
-  ret = sqlite::exec(g_pipelineCacheDb, "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=NORMAL;");
+  // A disk rollback journal: SQLite recovers a crash mid-write on the next open.
+  ret = sqlite::exec(g_pipelineCacheDb, "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;");
   if (ret != SQLITE_OK) {
     Log.error("Failed to set pipeline cache pragmas: {}", sqlite3_errmsg(g_pipelineCacheDb));
     pipeline_cache_abort();
     return false;
   }
 
+  Log.info("Pipeline cache: checking integrity");
+  bool integrityOk = false;
+  const auto integrityRet = sqlite::exec(
+      g_pipelineCacheDb, "PRAGMA quick_check;",
+      [&integrityOk](int argc, char** argv, char**) {
+        if (argc > 0 && argv[0] != nullptr && std::strcmp(argv[0], "ok") == 0) {
+          integrityOk = true;
+        }
+      },
+      nullptr);
+  if (integrityRet != SQLITE_OK || !integrityOk) {
+    Log.error("Pipeline cache is malformed; recreating from the bundled seed");
+    sqlite3_close(g_pipelineCacheDb);
+    g_pipelineCacheDb = nullptr;
+    std::remove(path.c_str());
+    std::remove((path + "-journal").c_str());
+    std::remove((path + "-wal").c_str());
+    std::remove((path + "-shm").c_str());
+    ret = sqlite3_open_v2(path.c_str(), &g_pipelineCacheDb,
+                          SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, sdl_vfs_name());
+    if (ret != SQLITE_OK) {
+      Log.error("Failed to recreate pipeline cache database: {}", sqlite3_errmsg(g_pipelineCacheDb));
+      pipeline_cache_abort();
+      return false;
+    }
+    ret = sqlite::exec(g_pipelineCacheDb, "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;");
+    if (ret != SQLITE_OK) {
+      Log.error("Failed to set recreated pipeline cache pragmas: {}", sqlite3_errmsg(g_pipelineCacheDb));
+      pipeline_cache_abort();
+      return false;
+    }
+  }
+
+  Log.info("Pipeline cache: schema check");
   bool schemaFailed = false;
   {
     sqlite::Transaction tx(g_pipelineCacheDb, Log, true);
@@ -1166,14 +1201,15 @@ static void note_pipeline_queue_drained() {
   }
   mark_boot_prewarm_compiled();
   // Persist the monolithic Vulkan pipeline cache once after boot prewarm only; doing it on
-  // every drained burst stalls the device lock mid-race. Later first-use compiles are
-  // covered by the shutdown serialize. On Switch the serialize takes about a second and
-  // freezes the guest when the background prewarm drains, so it is shutdown-only there.
+  // every drained burst stalls the device lock mid-race. Later first-use compiles are covered
+  // by the shutdown serialize. On Switch this is opt-in: NVK took 25.8 s in PerformIdleTasks at
+  // the drain and still rebuilt every pipeline on the next boot, so it is pure cost there.
   static const bool serializeAtBootDrain = [] {
-#if defined(MKW_PLATFORM_SWITCH)
     const char* value = std::getenv("NSMBW_SERIALIZE_PREWARM");
+#if defined(MKW_PLATFORM_SWITCH)
     return value != nullptr && value[0] == '1';
 #else
+    (void)value;
     return true;
 #endif
   }();
@@ -1662,6 +1698,8 @@ uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipelin
 bool aurora_boot_pipelines_pending() { return aurora::gfx::boot_pipelines_pending(); }
 
 bool aurora_boot_prewarm_compiled() { return aurora::gfx::boot_prewarm_compiled(); }
+
+bool aurora_dawn_cache_was_reset() { return aurora::webgpu::dawn_cache_was_reset(); }
 
 void aurora_release_shader_modules() {
   aurora::gx::clear_shader_module_cache();

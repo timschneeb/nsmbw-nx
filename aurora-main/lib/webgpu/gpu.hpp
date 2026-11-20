@@ -126,6 +126,8 @@ void draw_clear(const wgpu::RenderPassEncoder& pass, bool clearColor, bool clear
 size_t load_from_cache(void const* key, size_t keySize, void* value, size_t valueSize, void* userdata);
 void store_to_cache(void const* key, size_t keySize, void const* value, size_t valueSize, void* userdata);
 void cache_shutdown();
+// True when the blob cache was corrupt and has been deleted and recreated empty.
+bool dawn_cache_was_reset() noexcept;
 
 struct BlobCacheStats {
   uint64_t lookups;

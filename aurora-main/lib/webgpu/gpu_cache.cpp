@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <mutex>
@@ -30,10 +31,12 @@ namespace aurora::webgpu {
 static Module Log("aurora::gpu::cache");
 
 static sqlite3* db;
+static std::filesystem::path g_cachePath;
 static sqlite3_stmt* load_stmt;
 static sqlite3_stmt* store_stmt;
 static sqlite3_stmt* touch_stmt;
 static bool cache_broken;
+static std::atomic_bool g_wasReset{false};
 static std::mutex cache_mutex;
 #if defined(AURORA_CACHE_USE_ZSTD)
 static std::vector<uint8_t> compress_buffer;
@@ -141,30 +144,111 @@ static void prune_stale_rows() {
   }
 }
 
+static std::filesystem::path cache_path() {
+  return fs_path_from_string(g_config.cachePath) / "dawn_cache.db";
+}
+
+static bool open_cache_db(const std::string& file) {
+  aurora::gfx::register_sdl_vfs();
+  const auto ret = sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                                   aurora::gfx::sdl_vfs_name());
+  if (ret != SQLITE_OK) {
+    Log.error("Failed to open database: {}", sqlite3_errmsg(db));
+    if (db != nullptr) {
+      sqlite3_close(db);
+      db = nullptr;
+    }
+    return false;
+  }
+  if (sqlite::exec(db, "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;") != SQLITE_OK) {
+    Log.error("Failed to set pragmas: {}", sqlite3_errmsg(db));
+    sqlite3_close(db);
+    db = nullptr;
+    return false;
+  }
+  return true;
+}
+
+static bool cache_integrity_ok() {
+  bool ok = false;
+  const auto ret = sqlite::exec(
+      db, "PRAGMA quick_check;",
+      [&ok](int argc, char** argv, char**) {
+        if (argc > 0 && argv[0] != nullptr && std::strcmp(argv[0], "ok") == 0) {
+          ok = true;
+        }
+      },
+      nullptr);
+  if (ret != SQLITE_OK) {
+    Log.error("Dawn cache integrity check failed: {}", sqlite3_errmsg(db));
+  }
+  return ret == SQLITE_OK && ok;
+}
+
+static void remove_cache_files(const std::string& path) {
+  std::remove(path.c_str());
+  for (const char* suffix : {"-journal", "-wal", "-shm"}) {
+    std::remove((path + suffix).c_str());
+  }
+}
+
+// Journal-only recovery: journal_mode=DELETE with synchronous=FULL already rolls back a crash
+// mid-write, so a failed open or quick_check means the file itself is unusable. Delete it and
+// start from an empty schema; the caller then forces a blocking shader rebuild.
+static bool recover_cache() {
+  const std::string path = cache_path().string();
+  if (db != nullptr) {
+    sqlite3_close(db);
+    db = nullptr;
+  }
+  remove_cache_files(path);
+  if (!open_cache_db(path)) {
+    return false;
+  }
+  if (!create_schema()) {
+    return false;
+  }
+  g_wasReset.store(true, std::memory_order_relaxed);
+  Log.warn("Dawn cache was corrupt; deleted and recreated empty");
+  return true;
+}
+
+// Older builds kept a 54 MB .bak and a .corrupt copy beside the database. Recovery no longer
+// reads them, so reclaim whatever an older install left behind.
+static void remove_legacy_backups(const std::string& path) {
+  for (const char* suffix : {".bak", ".bak.tmp", ".corrupt"}) {
+    const std::string file = path + suffix;
+    if (std::remove(file.c_str()) == 0) {
+      Log.info("Dawn cache: removed legacy {}", file);
+    }
+  }
+}
+
 static bool cache_init_core() {
   Log.debug("SQLite version {}", sqlite3_libversion());
 
-  const auto path = fs_path_from_string(g_config.cachePath) / "dawn_cache.db";
-  std::string file = fs_path_to_string(path);
+  g_cachePath = cache_path();
+  std::string file = fs_path_to_string(g_cachePath);
   Log.debug("Using dawn cache at {}", file);
-  aurora::gfx::register_sdl_vfs();
-  auto ret = sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
-                             aurora::gfx::sdl_vfs_name());
-  if (ret != SQLITE_OK) {
-    Log.error("Failed to open database: {}", sqlite3_errmsg(db));
-    return false;
+
+  if (!open_cache_db(file)) {
+    Log.error("Dawn cache open failed; attempting recovery");
+    if (!recover_cache()) {
+      return false;
+    }
+  } else if (!cache_integrity_ok()) {
+    Log.error("Dawn cache is malformed; attempting recovery");
+    if (!recover_cache()) {
+      return false;
+    }
   }
 
-  // MEMORY journal: WAL needs mmap-backed shared memory, which Horizon does not provide.
-  ret = sqlite::exec(db, "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=NORMAL;");
-  if (ret != SQLITE_OK) {
-    Log.error("Failed to set pragmas: {}", sqlite3_errmsg(db));
-    return false;
-  }
-
+  Log.info("Dawn cache: checking schema");
   switch (check_schema()) {
   case SchemaState::Match:
+    Log.info("Dawn cache: pruning stale rows");
     prune_stale_rows();
+    Log.info("Dawn cache: prune done");
     break;
   case SchemaState::Mismatch: {
     // Dropping the table would leave the freed pages inside the file, so a schema
@@ -172,24 +256,9 @@ static bool cache_init_core() {
     Log.info("Dawn cache schema changed; recreating '{}'", file);
     sqlite3_close(db);
     db = nullptr;
-    std::error_code ec;
-    std::filesystem::remove(path, ec);
-    auto wal = path;
-    wal += "-wal";
-    std::filesystem::remove(wal, ec);
-    auto shm = path;
-    shm += "-shm";
-    std::filesystem::remove(shm, ec);
-    aurora::gfx::register_sdl_vfs();
-    ret = sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
-                          aurora::gfx::sdl_vfs_name());
-    if (ret != SQLITE_OK) {
-      Log.error("Failed to recreate database: {}", sqlite3_errmsg(db));
-      return false;
-    }
-    ret = sqlite::exec(db, "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=NORMAL;");
-    if (ret != SQLITE_OK) {
-      Log.error("Failed to set pragmas: {}", sqlite3_errmsg(db));
+    remove_cache_files(g_cachePath.string());
+    if (!open_cache_db(file)) {
+      Log.error("Failed to recreate database");
       return false;
     }
     if (!create_schema()) {
@@ -201,8 +270,9 @@ static bool cache_init_core() {
     return false;
   }
 
-  ret = sqlite3_prepare_v3(db, "SELECT value, size, compressed, last_used FROM cache WHERE key = ?", -1,
-                           SQLITE_PREPARE_PERSISTENT, &load_stmt, nullptr);
+  Log.info("Dawn cache: schema ok, preparing statements");
+  int ret = sqlite3_prepare_v3(db, "SELECT value, size, compressed, last_used FROM cache WHERE key = ?", -1,
+                               SQLITE_PREPARE_PERSISTENT, &load_stmt, nullptr);
   if (ret != SQLITE_OK) {
     Log.error("Failed to prepare statement: {}", sqlite3_errmsg(db));
     return false;
@@ -222,6 +292,7 @@ static bool cache_init_core() {
     return false;
   }
 
+  remove_legacy_backups(file);
   return true;
 }
 
@@ -265,7 +336,7 @@ static bool cache_init() {
     return false;
   }
 
-  Log.debug("SQLite cache init succeeded");
+  Log.info("Dawn cache ready");
 
   return true;
 }
@@ -449,6 +520,8 @@ void cache_shutdown() {
   check(sqlite3_close(db));
   db = nullptr;
 }
+
+bool dawn_cache_was_reset() noexcept { return g_wasReset.load(std::memory_order_relaxed); }
 
 BlobCacheStats blob_cache_stats() noexcept {
   return BlobCacheStats{
