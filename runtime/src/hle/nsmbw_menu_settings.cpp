@@ -128,6 +128,14 @@ std::atomic<bool> g_reopen{false};         // the settings window closed: the pa
 bool g_reopening = false;                  // ... and is opening now, Settings selected
 uint32_t g_settingsPane = 0;               // the button's picture pane (P_SBBase_03)
 uint32_t g_settingsPaneWindow = 0;         // ... for this window
+std::atomic<bool> g_settingsLive{false};   // the loaded pause layout has the Settings pane
+std::atomic<bool> g_settingsTablePatched{false};  // the game's cursor table points at Settings
+// Pausewindow_c: PPaneRegister fills four pane pointers at +0x244. The pause window never reads
+// the fourth (the coin icon), so Settings takes that slot when the cursor table is extended.
+constexpr uint32_t kPanePointers = 0x244;
+constexpr uint32_t kSettingsSlot = kPanePointers + 3 * 4;
+// SelectCursorSetup indexes this sdata2 table with mNextButton (0 Continue, 1 Exit).
+constexpr uint32_t kCursorTableOffset = 21672;
 
 bool Active() {
     return MenuSettings::PauseButtonActive();
@@ -226,7 +234,10 @@ int Button(uint32_t value) {
 namespace MenuSettings {
 
 bool PauseButtonActive() noexcept {
-    return LayoutPatch::PauseButtonPatched();
+    // The live layout decides. create probes it before m_instance is published, so this cannot
+    // fall back to the boot-time patch flag: a patched archive the game did not load must not
+    // offer Settings.
+    return LayoutPatch::PauseButtonPatched() && g_settingsLive.load(std::memory_order_acquire);
 }
 
 bool TakeOpenRequest() noexcept {
@@ -254,9 +265,31 @@ void ReopenPauseWindow() noexcept {
 
 // The window's animation groups, with the Settings button's four after the game's eleven.
 extern "C" void PauseGroupRegister_800c90f0(CpuContext* ctx) {
-    const uint32_t window = Active() && ctx->gpr[6] == kWindowGroups ? Window() : 0;
-    const uint32_t group = window != 0 ? GroupName() : 0;
-    if (window == 0 || ctx->gpr[3] != window + kLayout || group == 0) {
+    // create's layout is built before this call, but Pausewindow_c::m_instance is published only
+    // after create returns. Derive the window from the layout pointer so the live tree can say
+    // whether the patch actually reached the archive the game loaded. Other layouts also use this
+    // function; only the pause window's 11-group call touches the pause state.
+    const uint32_t layout = ctx->gpr[3];
+    const bool groupCall = ctx->gpr[6] == kWindowGroups && layout >= 0x80000000u + kLayout &&
+                           layout < 0x81800000u;
+    const uint32_t window = groupCall ? layout - kLayout : 0;
+    bool pauseLayout = false;
+    if (groupCall) {
+        const uint32_t root = RootPane(window);
+        pauseLayout = root != 0 && FindPane(root, "N_pauseMenu_01") != 0 &&
+                      FindPane(root, "P_SBBase_00") != 0;
+    }
+    if (pauseLayout) {
+        g_settingsPane = 0;
+        g_settingsPaneWindow = 0;
+        g_settingsTablePatched.store(false, std::memory_order_release);
+        const uint32_t pane = LayoutPatch::PauseButtonPatched() ? SettingsPane(window) : 0;
+        g_settingsLive.store(pane != 0, std::memory_order_release);
+        RT_LOGF(RT_TAG_RUNTIME, "pause window: layout probe window=0x%08X pane=0x%08X\n",
+                window, pane);
+    }
+    const uint32_t group = Active() && pauseLayout ? GroupName() : 0;
+    if (!pauseLayout || group == 0) {
         func_800C90F0(ctx);
         return;
     }
@@ -284,9 +317,62 @@ extern "C" void PauseGroupRegister_800c90f0(CpuContext* ctx) {
     RT_LOGF(RT_TAG_RUNTIME, "pause window: Settings is one of its buttons\n");
 }
 
+// The archive patch adds P_SBBase_03, but Pausewindow_c::create only registers four pane pointers
+// and SelectCursorSetup indexes a two-entry table, so next=2 reads the float after it. PPaneRegister
+// runs after GroupRegister, so this is done lazily from the wrappers that can run afterwards: put
+// Settings in the unused fourth slot and point the table's third entry at it.
+void EnsureCursorTable(CpuContext* ctx, uint32_t window) {
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true)) {
+        RT_LOGF(RT_TAG_RUNTIME, "pause window: cursor table check window=0x%08X live=%d\n",
+                window, g_settingsLive.load(std::memory_order_acquire) ? 1 : 0);
+    }
+    if (window == 0 || g_settingsTablePatched.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!g_settingsLive.load(std::memory_order_acquire) && LayoutPatch::PauseButtonPatched() &&
+        g_settingsPaneWindow != window) {
+        // GroupRegister may have seen another 11-group layout first. Probe this window once.
+        g_settingsPane = 0;
+        g_settingsPaneWindow = 0;
+        g_settingsTablePatched.store(false, std::memory_order_release);
+        const uint32_t found = SettingsPane(window);
+        g_settingsLive.store(found != 0, std::memory_order_release);
+        RT_LOGF(RT_TAG_RUNTIME, "pause window: live layout probe window=0x%08X pane=0x%08X\n",
+                window, found);
+    }
+    if (!g_settingsLive.load(std::memory_order_acquire)) {
+        return;
+    }
+    const uint32_t pane = SettingsPane(window);
+    if (pane == 0) {
+        return;
+    }
+    const uint32_t sda2 = ctx->gpr[2];
+    if (sda2 < 0x80000000u || sda2 >= 0x81800000u) {
+        return;
+    }
+    const bool slot = Memory::TryWrite32(window + kSettingsSlot, pane);
+    const bool table = Memory::TryWrite32(sda2 - kCursorTableOffset + 8u, 3u);
+    if (slot && table) {
+        g_settingsTablePatched.store(true, std::memory_order_release);
+    }
+    RT_LOGF(RT_TAG_RUNTIME,
+            "pause window: Settings pane registered (0x%08X), cursor slot %s, table[2] %s\n",
+            pane, slot ? "ok" : "failed", table ? "ok" : "failed");
+}
+
 extern "C" void PauseCursorSetup_8015ac30(CpuContext* ctx) {
     const uint32_t window = ctx->gpr[3];
-    if (!Active() || Memory::Read32(window + kNextButton) != kSettings) {
+    EnsureCursorTable(ctx, window);
+    if (!Active()) {
+        if (window != 0 && Memory::Read32(window + kNextButton) == kSettings) {
+            Memory::Write32(window + kNextButton, 0);  // keep the game's two-button table in range
+        }
+        func_8015AC30(ctx);
+        return;
+    }
+    if (Memory::Read32(window + kNextButton) != kSettings) {
         func_8015AC30(ctx);
         return;
     }
@@ -297,6 +383,9 @@ extern "C" void PauseCursorSetup_8015ac30(CpuContext* ctx) {
 
 extern "C" void PauseOpenAnime_8015ad80(CpuContext* ctx) {
     const uint32_t window = ctx->gpr[3];
+    if (!Active() && window != 0 && Memory::Read32(window + kNextButton) == kSettings) {
+        Memory::Write32(window + kNextButton, 0);
+    }
     func_8015AD80(ctx);
     if (!Active()) return;
     // The Settings button starts plain like the others.
@@ -311,7 +400,14 @@ extern "C" void PauseButtonChange_8015ae70(CpuContext* ctx) {
     const uint32_t window = ctx->gpr[3];
     const uint32_t next = Memory::Read32(window + kNextButton);
     const int32_t active = static_cast<int32_t>(Memory::Read32(window + kActiveButton));
-    if (!Active() || (next != kSettings && active != kSettings)) {
+    if (!Active()) {
+        if (next == kSettings) {
+            Memory::Write32(window + kNextButton, 0);
+        }
+        func_8015AE70(ctx);
+        return;
+    }
+    if (next != kSettings && active != kSettings) {
         func_8015AE70(ctx);
         return;
     }
@@ -326,7 +422,14 @@ extern "C" void PauseButtonChange_8015ae70(CpuContext* ctx) {
 
 extern "C" void PauseHitAnime_8015b030(CpuContext* ctx) {
     const uint32_t window = ctx->gpr[3];
-    if (!Active() || Memory::Read32(window + kNextButton) != kSettings) {
+    if (!Active()) {
+        if (window != 0 && Memory::Read32(window + kNextButton) == kSettings) {
+            Memory::Write32(window + kNextButton, 0);
+        }
+        func_8015B030(ctx);
+        return;
+    }
+    if (Memory::Read32(window + kNextButton) != kSettings) {
         func_8015B030(ctx);
         return;
     }
@@ -338,11 +441,19 @@ extern "C" void PauseHitAnime_8015b030(CpuContext* ctx) {
 // on screen the order is Continue, Settings, Exit.
 extern "C" void PauseCursorMove_800d0c00(CpuContext* ctx) {
     if (!Active()) {
+        const uint32_t manager = ctx->gpr[3];
+        if (Memory::Read32(manager + kCursor) == kSettings) {
+            Memory::Write32(manager + kCursor, 0);
+        }
+        if (static_cast<int32_t>(ctx->gpr[4]) > 1) {
+            ctx->gpr[4] = 1;
+        }
         func_800D0C00(ctx);
         return;
     }
     const uint32_t manager = ctx->gpr[3];
     const uint32_t window = Window();
+    EnsureCursorTable(ctx, window);
     const int cursor = Button(Memory::Read32(manager + kCursor));
     const int delta = static_cast<int32_t>(ctx->gpr[4]) - cursor < 0 ? -1 : 1;
     static constexpr int kScreen[3] = {0, 2, 1};  // button -> place on screen
@@ -364,8 +475,15 @@ extern "C" void PauseCursorMove_800d0c00(CpuContext* ctx) {
 
 extern "C" void PauseKeyCheck_800d0cb0(CpuContext* ctx) {
     const uint32_t manager = ctx->gpr[3];
-    const uint32_t window = Active() ? Window() : 0;
-    if (window == 0) {
+    const uint32_t window = Window();
+    EnsureCursorTable(ctx, window);
+    if (!Active() || window == 0) {
+        if (window != 0 && Memory::Read32(window + kNextButton) == kSettings) {
+            Memory::Write32(window + kNextButton, 0);
+        }
+        if (Memory::Read32(manager + kCursor) == kSettings) {
+            Memory::Write32(manager + kCursor, 0);
+        }
         func_800D0CB0(ctx);
         return;
     }
@@ -456,6 +574,8 @@ void ReopenMapMenu() noexcept {
 // on, idle, hit and off), panes and messages. Returns whether the layout's resource was there.
 extern "C" void MapMenuCreate_8077ab70(CpuContext* ctx) {
     const uint32_t menu = ctx->gpr[3];
+    static int createCount = 0;
+    RT_LOGF(RT_TAG_RUNTIME, "world map menu: create #%d (0x%08X)\n", ++createCount, menu);
     const uint32_t layout = menu + kLayout;
     g_mapSettings = 0;
     g_mapBackToSettings = false;
@@ -585,7 +705,10 @@ extern "C" void MapMenuInput_8077b010(CpuContext* ctx) {
     if (Memory::Read8(menu + kMapLocked) != 0) {
         return;
     }
-    MapMenuCursorSetup_8077ad70(ctx);
+    if (Memory::Read8(menu + kMapPlaceCursor) != 0) {
+        MapMenuCursorSetup_8077ad70(ctx);
+        Memory::Write8(menu + kMapPlaceCursor, 0);
+    }
     const uint32_t trigger = Trigger(Memory::Read32(kMapPlayer));
     if ((trigger & 0x3u) != 0) {  // 0x2 up, else 0x1 down
         Memory::Write32(menu + kMapNext, MapStep(Memory::Read32(menu + kMapNext), (trigger & 0x2u) == 0));

@@ -424,9 +424,11 @@ bool PatchMapLayout(std::vector<uint8_t>& file, std::map<std::string, std::strin
     std::vector<Section> sections;
     if (!ReadSections(file, Tag("RLYT"), header, sections)) return false;
     const int save = FindPane(sections, "P_SBBase_03"), above = FindPane(sections, "P_SBBase_02");
+    const int baseWindow = FindPane(sections, "W_corseSelect_01");
+    const int newerWindow = FindPane(sections, "BaseMiddle");
     if (save < 0 || above < 0 || FindPane(sections, "P_SBBase_04") < 0 || FindPane(sections, "P_SBBase_06") >= 0 ||
-        FindPane(sections, "W_corseSelect_01") < 0 || FindPane(sections, "N_corseSelect_01") < 0 ||
-        FindPane(sections, "P_winbg_01") < 0) {
+        (baseWindow < 0 && newerWindow < 0) ||
+        (baseWindow >= 0 && FindPane(sections, "P_winbg_01") < 0)) {
         return false;
     }
     const float pitch = GetF(&sections[static_cast<size_t>(above)].bytes[0x28]) -
@@ -453,16 +455,31 @@ bool PatchMapLayout(std::vector<uint8_t>& file, std::map<std::string, std::strin
     PutF(&copy.front().bytes[0x28], GetF(&copy.front().bytes[0x28]) - pitch);
     sections.insert(sections.begin() + static_cast<long>(end) + 1, copy.begin(), copy.end());
     // The buttons move up half a button, Title Screen down half, the separator and its band with it.
-    MovePane(sections, "N_corseSelect_01", pitch / 2);
-    MovePane(sections, "P_SBBase_04", -pitch);
+    // Newer has no N_corseSelect_01 row: move its three upper buttons individually.
+    if (FindPane(sections, "N_corseSelect_01") >= 0) {
+        MovePane(sections, "N_corseSelect_01", pitch / 2);
+        MovePane(sections, "P_SBBase_04", -pitch);
+    } else {
+        for (const char* up : {"P_SBBase_01", "P_SBBase_02", "P_SBBase_03", "P_SBBase_06"}) {
+            MovePane(sections, up, pitch / 2);
+        }
+        MovePane(sections, "P_SBBase_04", -pitch / 2);
+    }
     MovePane(sections, "P_line_00", -pitch / 2);
     MovePane(sections, "P_winbg_00", -pitch / 2);
     GrowPane(sections, "P_winbg_01", pitch);
     GrowPane(sections, "W_corseSelect_01", pitch);
+    for (const char* grow : {"BaseLeft", "BaseMiddle", "BaseRight"}) {
+        GrowPane(sections, grow, pitch);
+    }
     // The window's frame then ends clear of "Back (1)" (N_back, at -183).
-    const int window = FindPane(sections, "W_corseSelect_01");
+    const int window = baseWindow >= 0 ? baseWindow : newerWindow;
     const float half = GetF(&sections[static_cast<size_t>(window)].bytes[0x48]) / 2;
-    MovePane(sections, "N_corseSelect_00", std::max(0.0f, half - 168.0f));
+    if (baseWindow >= 0) {
+        MovePane(sections, "N_corseSelect_00", std::max(0.0f, half - 168.0f));
+    } else {
+        MovePane(sections, "N_back", -pitch / 2);
+    }
     if (!CopyGroup(sections, "B03_Button", kMapGroupName, renames)) return false;
     file = WriteSections(header, sections);
     return true;
@@ -745,11 +762,8 @@ fs::path Patch(const std::string& dvdPath, std::vector<uint8_t> arc) {
     if (lower != "/layout/pausemenu/pausemenu.arc" && !map) {
         return {};
     }
-    // The world map's code is only known in the disc's own build (hle/nsmbw_menu_settings.cpp); Newer
-    // draws its own map, and its + menu.
-    if (map && RuntimeProduct::Active().gameId != "SMNE01") {
-        return {};
-    }
+    // Newer replaces the + menu layout but keeps the game's map code; the native port in
+    // hle/nsmbw_menu_settings.cpp handles it with the same pane and group names.
     // NSMBW_NO_MENU_PATCH=1: the pause window as the disc has it (comparisons, tests). NSMBW_MENU_PATCH=1
     // patches it in deterministic mode too (a test seam for reproducible runs; LAN sessions never set it).
     const bool forced = std::getenv("NSMBW_MENU_PATCH") != nullptr;
@@ -772,7 +786,8 @@ fs::path Patch(const std::string& dvdPath, std::vector<uint8_t> arc) {
             return {};
         }
         g_mapPatched.store(true);
-        RT_LOGF(RT_TAG_DVD, "layout patch: the world map's menu gets its Settings button\n");
+        RT_LOGF(RT_TAG_DVD, "layout patch: %s gets its Settings button (%zu bytes)\n",
+                dvdPath.c_str(), arc.size());
         return out;
     }
     if (arc.empty() || !PatchPauseArchive(arc, pitch)) {
@@ -790,7 +805,8 @@ fs::path Patch(const std::string& dvdPath, std::vector<uint8_t> arc) {
     }
     g_pausePitch.store(pitch);
     g_pausePatched.store(true);
-    RT_LOGF(RT_TAG_DVD, "layout patch: the pause window gets its Settings button (pitch %.0f)\n", pitch);
+    RT_LOGF(RT_TAG_DVD, "layout patch: %s gets its Settings button (pitch %.0f, %zu bytes)\n",
+            dvdPath.c_str(), pitch, arc.size());
     return out;
 }
 
