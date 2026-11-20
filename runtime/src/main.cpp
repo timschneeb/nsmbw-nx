@@ -134,6 +134,9 @@ void MkwStartPgoDumpTimer() {
 #include "runtime_config.h"
 #include "shadow_sampler.h"
 #include "runtime_log.h"
+#if defined(NSMBW_MEMTRACE)
+#include "mem_tracker.h"
+#endif
 #include "updater.h"
 #include "runtime_product.h"
 #include "recomp_mod_loader.h"
@@ -1565,6 +1568,9 @@ static void TerminateHandler() {
         std::fputs("[runtime] std::terminate() without current exception\n", stderr);
     }
     std::fflush(stderr);
+#if defined(NSMBW_MEMTRACE)
+    MemTracker::Close();
+#endif
     {
         ReleaseFatalReserve();
         ErrorSystemConfig config{};
@@ -1780,6 +1786,9 @@ extern "C" void LogStartupPhase(const char* phase) {
 }
 
 int RuntimeMain(int argc, char** argv) {
+#if defined(NSMBW_MEMTRACE)
+    MemTracker::Init();
+#endif
     LogStartupPhase("runtime main");
 #if defined(MKW_PLATFORM_SWITCH)
     ReserveFatalMemory();
@@ -2259,6 +2268,9 @@ int RuntimeMain(int argc, char** argv) {
         DiscordPresence::Shutdown();
         SetRuntimeExitCodeImpl(0);
         ShutdownProcessTranscript();
+#if defined(NSMBW_MEMTRACE)
+        MemTracker::Close();
+#endif
         return 0;
     } catch (const Memory::AccessViolation& ex) {
         std::cerr << "Runtime error: " << ex.what() << std::endl;

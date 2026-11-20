@@ -123,6 +123,10 @@ if(BZip2_FOUND)
     target_link_libraries(mkw_disc_codecs INTERFACE BZip2::BZip2)
 endif()
 
+if(MKW_MEMTRACE)
+    list(APPEND SOURCES "${MKW_RUNTIME_SOURCE_DIR}/src/mem_tracker.cpp")
+endif()
+
 add_library(mkw_runtime_common OBJECT ${SOURCES})
 mkw_configure_object_target(mkw_runtime_common)
 target_compile_features(mkw_runtime_common PRIVATE cxx_std_20)
@@ -131,6 +135,9 @@ target_compile_definitions(mkw_runtime_common PRIVATE
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
 if(MKW_ENABLE_SHADOW_SAMPLER)
     target_compile_definitions(mkw_runtime_common PRIVATE MKW_SHADOW_SAMPLER=1)
+endif()
+if(MKW_MEMTRACE)
+    target_compile_definitions(mkw_runtime_common PRIVATE NSMBW_MEMTRACE=1)
 endif()
 if(MKW_PLATFORM_SWITCH)
     if(NSMBW_GAME_ID STREQUAL "SMNE03")
@@ -353,6 +360,13 @@ function(mkw_configure_product target)
         target_link_options(${target} PRIVATE
             "LINKER:--wrap=pthread_create"
             "LINKER:--wrap=thrd_create")
+        if(MKW_MEMTRACE)
+            # mem_tracker.cpp records every heap operation through these.
+            target_link_options(${target} PRIVATE
+                "LINKER:--wrap=malloc" "LINKER:--wrap=free" "LINKER:--wrap=realloc"
+                "LINKER:--wrap=calloc" "LINKER:--wrap=memalign" "LINKER:--wrap=posix_memalign"
+                "LINKER:--wrap=aligned_alloc")
+        endif()
     endif()
     if(MKW_PLATFORM_WINDOWS)
         foreach(runtime_dll libc++.dll libunwind.dll)
@@ -487,11 +501,23 @@ if(MKW_PLATFORM_SWITCH)
     if(NOT MKW_NACP_RESULT EQUAL 0)
         message(FATAL_ERROR "nacptool failed to write ${MKW_SWITCH_NACP}")
     endif()
+    # Per-game home menu icon, so several game.nro files stay distinguishable. Mods without
+    # their own icon keep the generic one.
+    if(NSMBW_GAME_ID STREQUAL "SMNE03")
+        set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/newersmbw_icon.png")
+    elseif(NSMBW_GAME_ID STREQUAL "SMNE01")
+        set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/nsmbw_icon.png")
+    else()
+        set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/assets/icon/switch.jpg")
+    endif()
+    if(NOT EXISTS "${MKW_SWITCH_ICON}")
+        message(FATAL_ERROR "Missing NRO icon: ${MKW_SWITCH_ICON}")
+    endif()
     add_custom_command(TARGET WiiCompiled POST_BUILD
         COMMAND "${MKW_ELF2NRO}" "$<TARGET_FILE:WiiCompiled>"
             "${CMAKE_BINARY_DIR}/NSMBW.nro"
             "--nacp=${MKW_SWITCH_NACP}"
-            "--icon=${MKW_RUNTIME_SOURCE_DIR}/assets/icon/switch.jpg"
+            "--icon=${MKW_SWITCH_ICON}"
             "--romfsdir=${CMAKE_BINARY_DIR}/romfs/WiiCompiled"
         COMMENT "Packing NSMBW.nro"
         VERBATIM)

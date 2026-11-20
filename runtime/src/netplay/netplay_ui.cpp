@@ -9,6 +9,9 @@
 #include "netplay_session.h"
 #include "netplay_start.h"
 #include "runtime_log.h"
+#if defined(NSMBW_MEMTRACE)
+#include "mem_tracker.h"
+#endif
 
 #include "aurora_events.h"
 #include "hle_stubs.h"
@@ -21,6 +24,7 @@
 #include "software_keyboard.h"
 #include "test_pad.h"
 #include "keybinds.h"
+#include "perf_stats.h"
 #include "settings_overlay.h"
 #include "ui_text.h"
 #include "updater.h"
@@ -42,6 +46,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#if defined(MKW_PLATFORM_SWITCH)
+#include <malloc.h>
+#endif
 #include <vector>
 
 // Defined in hle/vi.cpp: whether an aurora frame is open for drawing.
@@ -941,9 +948,13 @@ void Gear(const Canvas& c, float x, float y, float r) {
 // (with its separator and dark band) down by kMenuLower, and "Back (1)" drops below the taller
 // window. The button itself is drawn here in the game's button style; the controller reaches it
 // down from Quick Save or up from Title Screen, and taps or clicks work on it and on Back.
-constexpr float kMenuGrow = 65.0f, kMenuRaise = 32.0f, kMenuLower = -33.0f, kMenuBackDrop = -29.0f;
-constexpr float kMenuSettingsY = -22.0f + kMenuRaise - 65.0f;  // one button pitch under Quick Save
-constexpr float kMenuBackX = 189.0f, kMenuBackY = -183.0f + kMenuBackDrop;
+constexpr float kMenuBackX = 189.0f;
+// The base game's window is one W_corseSelect_01 with P_winbg_01; Newer draws it as three Base*
+// slices. Both use the same four button panes, so the pitch and every derived offset come from the
+// live layout instead of constants.
+float g_menuPitch = 65.0f, g_menuRaise = 32.0f, g_menuLower = -33.0f, g_menuGrow = 65.0f;
+float g_menuSettingsY = -55.0f, g_menuBackDrop = -29.0f, g_menuBackY = -212.0f;
+const char* g_menuWindowPane = "W_corseSelect_01";
 
 // nw4r::lyt::Pane: mpParent +0xC, child list +0x10 (size, then the terminator node {next, prev}),
 // each child linked through its node at +4, mTranslate +0x2C, mSize +0x4C, mFlag +0xBB (bit 0:
@@ -960,6 +971,7 @@ struct MenuLayout {
     std::map<uint32_t, std::string> names;
 };
 MenuLayout g_menuLayout;
+bool g_menuFallback = false;  // the + menu has the base window panes the fallback edits
 std::atomic<bool> g_menuFocus{false};  // "Settings" holds the menu's cursor
 int g_menuFocusFrom = 2;               // the game's own cursor meanwhile: Quick Save or Title Screen
 std::atomic<bool> g_menuOpenSettings{false};
@@ -1052,8 +1064,14 @@ bool AttachMenuLayout() {
         g_menuLayout = MenuLayout{};
         return false;
     }
-    if (object == g_menuLayout.object) {
-        return true;
+    if (object == g_menuLayout.object && g_menuWindowPane != nullptr) {
+        const auto quick = g_menuLayout.panes.find("P_SBBase_03");
+        const auto window = g_menuLayout.panes.find(g_menuWindowPane);
+        if (quick != g_menuLayout.panes.end() && window != g_menuLayout.panes.end() &&
+            LivePaneName(quick->second.addr) == "P_SBBase_03") {
+            return true;
+        }
+        g_menuLayout = MenuLayout{};
     }
     const uint32_t root = FindRootPane(object);
     if (root == 0) {
@@ -1068,40 +1086,66 @@ bool AttachMenuLayout() {
         layout.panes[name] = LivePane{pane, parent, Memory::ReadFloat32(pane + 0x30), Memory::ReadFloat32(pane + 0x50)};
         layout.names[pane] = name;
     });
-    if (layout.panes.count("W_corseSelect_01") == 0 || layout.panes.count("P_SBBase_04") == 0) {
+    // Newer replaces the base window (W_corseSelect_01/P_winbg_01) and its own menu code does not
+    // tolerate the fallback's injected cursor move: leave that menu untouched.
+    const bool baseWindow = layout.panes.count("W_corseSelect_01") != 0;
+    const char* windowPane = "W_corseSelect_01";
+    if (!baseWindow || layout.panes.count(windowPane) == 0 || layout.panes.count("P_SBBase_03") == 0 ||
+        layout.panes.count("P_SBBase_04") == 0) {
+        g_menuFallback = false;
         return false;
     }
-    RT_LOGF(RT_TAG_RUNTIME, "world map menu: %zu panes, adding Settings\n", layout.panes.size());
+    g_menuFallback = true;
+    const auto quick = layout.panes.find("P_SBBase_03");
+    const auto above = layout.panes.find("P_SBBase_02");
+    const auto title = layout.panes.find("P_SBBase_04");
+    float pitch = above != layout.panes.end() ? std::fabs(above->second.y - quick->second.y) : 0.0f;
+    if (pitch < 20.0f || pitch > 120.0f) {
+        pitch = baseWindow ? 65.0f : 70.0f;
+    }
+    g_menuPitch = pitch;
+    g_menuRaise = pitch / 2;
+    g_menuLower = -pitch / 2;
+    g_menuGrow = pitch;
+    g_menuWindowPane = windowPane;
+    // The buttons hang off N_corseSelect_01 on the base window and off the root on Newer.
+    const auto row = layout.panes.find("N_corseSelect_01");
+    const float rowY = row != layout.panes.end() ? row->second.y : 0.0f;
+    g_menuSettingsY = rowY + (quick->second.y + g_menuRaise + title->second.y + g_menuLower) / 2;
+    g_menuBackDrop = -pitch / 2;
+    const auto back = layout.panes.find("N_back");
+    g_menuBackY = back != layout.panes.end() ? back->second.y + g_menuBackDrop : -183.0f + g_menuBackDrop;
+    RT_LOGF(RT_TAG_RUNTIME, "world map menu: %zu panes, pitch %.0f, adding Settings\n",
+            layout.panes.size(), pitch);
     g_menuLayout = std::move(layout);
     return true;
 }
 
 // How far (layout units, world space) a pane of the menu moves; panes not listed follow their parent.
 bool MenuShift(const std::string& name, float& dy) {
-    static const std::map<std::string, float> kShifts = [] {
-        std::map<std::string, float> m;
-        for (const char* n : {"1", "2", "3"}) {
-            m[std::string("P_SBBase_0") + n] = kMenuRaise;
-            m[std::string("T_corseSelectS0") + n] = kMenuRaise;
-            m[std::string("T_corseSelect_0") + n] = kMenuRaise;
-            m[std::string("W_SButton_0") + n] = kMenuRaise;
-            m[std::string("P_shadow_0") + n] = kMenuRaise;
-        }
-        for (const char* n : {"P_SBBase_04", "T_corseSelectS04", "T_corseSelect_05", "W_SButton_04", "P_shadow_04",
-                              "P_line_00", "P_winbg_00"}) {
-            m[n] = kMenuLower;
-        }
-        for (const char* n : {"N_back", "P_back", "P_backWhite", "T_back"}) {
-            m[n] = kMenuBackDrop;
-        }
-        return m;
-    }();
-    const auto it = kShifts.find(name);
-    if (it == kShifts.end()) {
-        return false;
+    const auto numbered = [&](const char* prefix) {
+        const size_t length = std::strlen(prefix);
+        return name.size() == length + 1 && name.compare(0, length, prefix) == 0 &&
+               name.back() >= '1' && name.back() <= '3';
+    };
+    const bool raised = numbered("P_SBBase_0") || numbered("T_corseSelectS0") ||
+                        numbered("T_corseSelect_0") || numbered("W_SButton_0") ||
+                        numbered("P_shadow_0");
+    if (raised) {
+        dy = g_menuRaise;
+        return true;
     }
-    dy = it->second;
-    return true;
+    if (name == "P_SBBase_04" || name == "T_corseSelectS04" || name == "T_corseSelect_05" ||
+        name == "W_SButton_04" || name == "P_shadow_04" || name == "P_line_00" ||
+        name == "P_winbg_00") {
+        dy = g_menuLower;
+        return true;
+    }
+    if (name == "N_back" || name == "P_back" || name == "P_backWhite" || name == "T_back") {
+        dy = g_menuBackDrop;
+        return true;
+    }
+    return false;
 }
 
 // Moves the listed panes of a menu's layout by their world-space shift (a pane under a moved parent
@@ -1135,8 +1179,13 @@ void ApplyLayoutEdit(const MenuLayout& layout, PaneShift shift, std::initializer
 }
 
 void ApplyMenuLayout() {
+    if (!g_ui.menuSettingsShown) {
+        return;
+    }
     if (AttachMenuLayout()) {
-        ApplyLayoutEdit(g_menuLayout, MenuShift, {"W_corseSelect_01", "P_winbg_01"}, kMenuGrow);
+        ApplyLayoutEdit(g_menuLayout, MenuShift,
+                        {"W_corseSelect_01", "P_winbg_01", "BaseLeft", "BaseMiddle", "BaseRight"},
+                        g_menuGrow);
     }
 }
 
@@ -1438,7 +1487,7 @@ bool WindowTransform(const MenuLayout& layout, uint32_t liveObject, const char* 
 }
 
 bool MenuWindowTransform(float& cx, float& cy, float& scale, float& alpha) {
-    return WindowTransform(g_menuLayout, GameMenus::CourseSelectMenuObject(), "W_corseSelect_01", cx, cy, scale,
+    return WindowTransform(g_menuLayout, GameMenus::CourseSelectMenuObject(), g_menuWindowPane, cx, cy, scale,
                            alpha);
 }
 
@@ -1481,7 +1530,7 @@ void DrawWindowSettings(ImDrawList* list, bool (*transform)(float&, float&, floa
 }
 
 void DrawMenuSettings(ImDrawList* list) {
-    DrawWindowSettings(list, MenuWindowTransform, kMenuSettingsY, g_menuFocus.load());
+    DrawWindowSettings(list, MenuWindowTransform, g_menuSettingsY, g_menuFocus.load());
 }
 
 void DrawPauseSettings(ImDrawList* list) {
@@ -2713,6 +2762,11 @@ float SettingsWindowScale(bool& closed) {
 void FinishCloseSettings();
 
 void DrawSettings(const Canvas& outer) {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        RT_LOGF(RT_TAG_RUNTIME, "settings: first draw\n");
+    }
     Assets& a = GetAssets();
     Canvas c = outer;
     // Sized for a 16:9 screen, whatever the game picture: the screen's height on a wider one (the window centred),
@@ -3769,13 +3823,13 @@ void TapAt(float lx, float ly, float gx, uint16_t scene, bool title) {
         }
         return;
     }
-    if (scene == kSceneWorldMap && g_ui.menuSettingsShown) {
-        if (in(0, kMenuSettingsY, 345, 64)) {
+    if (scene == kSceneWorldMap && g_ui.menuSettingsShown && g_menuFallback && !MenuSettings::MapButtonActive()) {
+        if (in(0, g_menuSettingsY, 345, 64)) {
             g_menuFocus = true;
             g_menuFocusFrom = std::max(2, GameMenus::CourseMenuCursor());
             g_ui.settingsFromPause = true;
             Show(Screen::Settings);
-        } else if (in(kMenuBackX, kMenuBackY, 210, 40)) {
+        } else if (in(kMenuBackX, g_menuBackY, 210, 40)) {
             StartNav(NavKind::Press, static_cast<int>(kOne));  // Back (1)
         } else {
             g_menuFocus = false;  // the game's own cursor (hidden while Settings has it) takes the tap
@@ -4387,8 +4441,10 @@ void Draw() {
     }
     if (g_menuOpenSettings.exchange(false) || g_pauseOpenSettings.exchange(false)) {
         g_ui.settingsFromPause = true;
+        RT_LOGF(RT_TAG_RUNTIME, "map/pause menu: opening Settings\n");
         settings_overlay::PlayGameSound(settings_overlay::kGameSoundDecide);
         Show(Screen::Settings);
+        RT_LOGF(RT_TAG_RUNTIME, "map/pause menu: Settings screen selected\n");
     }
     // The file select: while the top bar (Couch / LAN, the gear, Update) has the cursor, or Settings is open
     // from it over the see-through window, the game's brackets would still sit on the last file.
@@ -4485,7 +4541,7 @@ void Draw() {
             ++g_ui.frame;
             DrawPauseSettings(list);
         }
-        if (scene == kSceneWorldMap && !MenuSettings::MapButtonActive()) {
+        if (scene == kSceneWorldMap && g_menuFallback && !MenuSettings::MapButtonActive()) {
             ++g_ui.frame;
             DrawMenuSettings(list);
         }
@@ -4584,7 +4640,8 @@ void FilterGameInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
 
         // The world map's + menu: Settings sits between Quick Save and Title Screen. The game never
         // sees the presses that move onto or off it, and its own cursor is moved to match.
-        if (g_ui.menuSettingsShown && !Modal() && !tapping && !MenuSettings::MapButtonActive()) {
+        if (g_ui.menuSettingsShown && g_menuFallback && !Modal() && !tapping &&
+            !MenuSettings::MapButtonActive()) {
             const uint32_t down = upright ? kDown : kLeft, up = upright ? kUp : kRight;
             const int cursor = GameMenus::CourseMenuCursor();
             if (!g_menuFocus) {
