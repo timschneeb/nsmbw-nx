@@ -113,6 +113,15 @@ template <> struct KnownTypedNativeCpuCall<addr> { \
     static constexpr bool kLeaf = true; \
     static void Invoke(CpuContext* cpu) { (void)cpu; fn(__VA_ARGS__); } \
 }
+
+// A leaf that takes the context but only touches volatile state (f0-f4, r0/r3/r4) and fixed guest
+// memory: no guest calls, no scheduler, no nonvolatile register writes. Called without guards.
+#define MKW_KNOWN_LEAF_CPU_NATIVE(addr, fn) \
+template <> struct KnownTypedNativeCpuCall<addr> { \
+    static constexpr bool kAvailable = true; \
+    static constexpr bool kLeaf = true; \
+    static void Invoke(CpuContext* cpu) { fn(cpu); } \
+}
 #define MKW_KNOWN_LEAF_NATIVE_RET(addr, fn, ...) \
 template <> struct KnownTypedNativeCpuCall<addr> { \
     static constexpr bool kAvailable = true; \
@@ -207,7 +216,13 @@ MKW_KNOWN_LEAF_NATIVE(0x801AC440u, DCInvalidateRange_801a1600, cpu->gpr[3], cpu-
 MKW_KNOWN_LEAF_NATIVE(0x801AC470u, DCFlushRange_801a162c, cpu->gpr[3], cpu->gpr[4]);
 MKW_KNOWN_LEAF_NATIVE(0x801AC4A0u, DCStoreRange_801a165c, cpu->gpr[3], cpu->gpr[4]);
 
+extern "C" void NW4R_G3D_SinFIdx_HLE(CpuContext* ctx);
+MKW_KNOWN_LEAF_CPU_NATIVE(0x80237BD0u, NW4R_G3D_SinFIdx_HLE);
+extern "C" void NW4R_G3D_CosFIdx_HLE(CpuContext* ctx);
+MKW_KNOWN_LEAF_CPU_NATIVE(0x80237C40u, NW4R_G3D_CosFIdx_HLE);
+
 #undef MKW_KNOWN_TYPED_NATIVE
+#undef MKW_KNOWN_LEAF_CPU_NATIVE
 #undef MKW_KNOWN_LEAF_NATIVE
 #undef MKW_KNOWN_LEAF_NATIVE_RET
 
