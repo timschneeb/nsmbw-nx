@@ -248,4 +248,16 @@ MKW_KNOWN_NATIVE_CPU_CALL(0x80245440u, NW4R_G3D_TexPatGetResult_HLE);
 extern "C" void NW4R_G3D_AnmObjChrBlendGetResult_HLE(CpuContext* ctx);
 MKW_KNOWN_NATIVE_CPU_CALL(0x80248330u, NW4R_G3D_AnmObjChrBlendGetResult_HLE);
 
+extern "C" void NW4R_G3D_ScnGroupDefG3dProc_HLE(CpuContext* ctx);
+MKW_KNOWN_NATIVE_CPU_CALL(0x80257FC0u, NW4R_G3D_ScnGroupDefG3dProc_HLE);
+
+extern "C" void NW4R_G3D_ScnGroupG3dProc_HLE(CpuContext* ctx);
+MKW_KNOWN_NATIVE_CPU_CALL(0x80257F80u, NW4R_G3D_ScnGroupG3dProc_HLE);
+
+extern "C" void NW4R_G3D_ScnRootG3dProc_HLE(CpuContext* ctx);
+MKW_KNOWN_NATIVE_CPU_CALL(0x80258B20u, NW4R_G3D_ScnRootG3dProc_HLE);
+
+extern "C" void NW4R_G3D_ScnRootCalcMaterial_HLE(CpuContext* ctx);
+MKW_KNOWN_NATIVE_CPU_CALL(0x802590F0u, NW4R_G3D_ScnRootCalcMaterial_HLE);
+
 #undef MKW_KNOWN_NATIVE_CPU_CALL
