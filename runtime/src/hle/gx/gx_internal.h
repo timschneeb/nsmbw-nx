@@ -248,6 +248,9 @@ struct HleGxState {
     // this state (gx_dl.cpp's applied-state mirror) use it to detect that a
     // republish would be a no-op.
     uint32_t vtxStateGeneration = 0;
+    // Bit per vtxfmt row: a GX_VA_NBT format write clobbered the packed NRM VAT after the last
+    // begin publish, so the next begin only has to republish NRM.
+    uint8_t nbtVatDirtyFmt = 0;
     // Bumped whenever a GXBegin path republishes aurora's vertex registers from
     // this state. Those paths expand indexed attributes into a direct stream, so
     // after one aurora no longer holds what gx_dl.cpp's mirror last published.

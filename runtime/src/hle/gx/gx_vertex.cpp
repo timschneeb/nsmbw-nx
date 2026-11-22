@@ -46,12 +46,48 @@ void ApplyAuroraVtxStateForBegin(GXVtxFmt fmt) {
     }();
     const bool descSame = descSkip && samePublish && regs[0] == lastRegs[0] &&
                           regs[1] == lastRegs[1] && regs[5] == lastRegs[5];
-    GxStream::PublishAuroraVtxState(fmt,
-                                    GxStream::AuroraVtxPublishOptions{
-                                        /*includeNbt=*/false,
-                                        /*fmtLoopFirst=*/static_cast<int>(GX_VA_POS),
-                                        /*fmtLoopLast=*/static_cast<int>(GX_VA_TEX7)},
-                                    !descSame);
+    // An NBT format write between begins changes only the packed NRM VAT. When everything else is
+    // still the last published state, one NRM republish reproduces the full row.
+    static const bool vatSparse = [] {
+        const char* value = std::getenv("NSMBW_GX_VAT_SPARSE");
+        return value == nullptr || value[0] != '0';
+    }();
+    const bool nbtOnly =
+        vatSparse && descSame && (g_hleGxState.nbtVatDirtyFmt & (1u << fmt)) != 0;
+    if (nbtOnly) {
+        GxStream::PublishAuroraVtxState(fmt,
+                                        GxStream::AuroraVtxPublishOptions{
+                                            /*includeNbt=*/false,
+                                            /*fmtLoopFirst=*/static_cast<int>(GX_VA_NRM),
+                                            /*fmtLoopLast=*/static_cast<int>(GX_VA_NRM)},
+                                        false);
+    } else {
+        GxStream::PublishAuroraVtxState(fmt,
+                                        GxStream::AuroraVtxPublishOptions{
+                                            /*includeNbt=*/false,
+                                            /*fmtLoopFirst=*/static_cast<int>(GX_VA_POS),
+                                            /*fmtLoopLast=*/static_cast<int>(GX_VA_TEX7)},
+                                        !descSame);
+    }
+    g_hleGxState.nbtVatDirtyFmt &= static_cast<uint8_t>(~(1u << fmt));
+    if (nbtOnly) {
+        static const bool verify = [] {
+            const char* value = std::getenv("NSMBW_GX_VAT_VERIFY");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (verify) {
+            uint32_t after[6];
+            AuroraGetVtxFormatRegs(fmt, after);
+            if (std::memcmp(after, lastRegs, sizeof(after)) != 0) {
+                RT_LOGF(RT_TAG_RUNTIME,
+                        "vtx vat verify mismatch: now %08x %08x %08x %08x %08x %08x "
+                        "last %08x %08x %08x %08x %08x %08x\n",
+                        after[0], after[1], after[2], after[3], after[4], after[5],
+                        lastRegs[0], lastRegs[1], lastRegs[2], lastRegs[3], lastRegs[4],
+                        lastRegs[5]);
+            }
+        }
+    }
     valid = true;
     lastFmt = fmt;
     lastGeneration = g_hleGxState.vtxStateGeneration;
@@ -158,6 +194,9 @@ extern "C" void GX__SetVtxAttrFmt_8016dc68(uint32_t vf, uint32_t a, uint32_t c, 
     }
     if (unchanged) {
         return;
+    }
+    if (a == GX_VA_NBT && vf < GX_MAX_VTXFMT) {
+        g_hleGxState.nbtVatDirtyFmt |= static_cast<uint8_t>(1u << vf);
     }
     GXSetVtxAttrFmt((GXVtxFmt)vf, (GXAttr)a, (GXCompCnt)c, (GXCompType)t, (u8)fr);
 }
