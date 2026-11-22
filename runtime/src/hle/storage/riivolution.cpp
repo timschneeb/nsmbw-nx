@@ -18,8 +18,10 @@
 #include "runtime_log.h"
 #include "runtime_product.h"
 
+#if defined(__SWITCH__)
 #include <switch/runtime/devices/fs_dev.h>
 #include <switch/runtime/devices/romfs_dev.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -427,6 +429,7 @@ bool MountNewerPack() {
         return false;
     }
 
+#if defined(__SWITCH__)
     static bool tried = false;
     static bool mounted = false;
     static FsFile image_file{};
@@ -452,9 +455,14 @@ bool MountNewerPack() {
         }
     }
     return mounted;
+#else
+    // Desktop builds use a loose Riivolution pack from paths.overlay_roots.
+    return false;
+#endif
 }
 
 bool NewerPackVersionFileValid(uintmax_t expected) {
+#if defined(__SWITCH__)
     if (!MountNewerPack()) {
         return false;
     }
@@ -465,6 +473,24 @@ bool NewerPackVersionFileValid(uintmax_t expected) {
     RT_LOG(RT_TAG_RIIVOLUTION) << "pack version file " << PathToUtf8(path) << ": " << (ec ? 0 : size)
               << " bytes (expected " << expected << ")" << std::endl;
     return !ec && size == expected;
+#else
+    // No RomFS mount on desktop: the pack's version file is read from a configured overlay root.
+    const std::string versionFile = std::string(RuntimeProduct::Active().versionFile);
+    if (versionFile.empty()) {
+        return true;
+    }
+    for (const auto& root : RuntimeConfigFile::OverlayRoots()) {
+        const auto path = RuntimeNandPath::ResolveConfiguredPath(root) / "NewerSMBW" / versionFile;
+        std::error_code ec;
+        const uintmax_t size = fs::file_size(path, ec);
+        RT_LOG(RT_TAG_RIIVOLUTION) << "pack version file " << PathToUtf8(path) << ": " << (ec ? 0 : size)
+                  << " bytes (expected " << expected << ")" << std::endl;
+        if (!ec && size == expected) {
+            return true;
+        }
+    }
+    return false;
+#endif
 }
 
 

@@ -11,7 +11,6 @@
 #include <chrono>
 #include <cstdio>
 #include <string>
-#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -23,7 +22,9 @@ namespace {
 // subsequent GXLoadTexObj. There is at most one live range per destination;
 // rewriting the destination replaces its previous extent.
 std::mutex g_efbCopyDestinationsMutex;
-std::map<uint32_t, uint32_t> g_efbCopyDestinations;
+// Sorted by guest address. A flat vector beats the tree map here: the set is small, the copy path
+// looks up every destination, and invalidation only needs a lower_bound plus a short erase run.
+std::vector<std::pair<uint32_t, uint32_t>> g_efbCopyDestinations;
 uint32_t g_largestEfbCopyDestination = 0;
 
 // How many destinations touch each 64 KiB bucket of guest RAM: every DCStoreRange asks whether it
@@ -60,8 +61,11 @@ void RememberEfbCopyDestination(uint32_t addr, uint32_t size) {
     }
     std::lock_guard<std::mutex> guard(g_efbCopyDestinationsMutex);
     const uint32_t canonical = CanonicalizeGxMainRamAddress(addr);
-    const auto [it, inserted] = g_efbCopyDestinations.try_emplace(canonical, size);
-    if (inserted) {
+    const auto it = std::lower_bound(
+        g_efbCopyDestinations.begin(), g_efbCopyDestinations.end(), canonical,
+        [](const auto& entry, uint32_t address) { return entry.first < address; });
+    if (it == g_efbCopyDestinations.end() || it->first != canonical) {
+        g_efbCopyDestinations.insert(it, {canonical, size});
         CountEfbCopyBuckets(canonical, size, +1);
     } else if (it->second != size) {
         CountEfbCopyBuckets(canonical, it->second, -1);
@@ -91,8 +95,10 @@ void InvalidateEfbCopyDestinationsForRange(uint32_t addr, uint32_t size) {
         }
         const uint64_t earliestCandidate =
             dirtyStart > g_largestEfbCopyDestination ? dirtyStart - g_largestEfbCopyDestination : 0;
-        for (auto it = g_efbCopyDestinations.lower_bound(static_cast<uint32_t>(earliestCandidate));
-             it != g_efbCopyDestinations.end() && static_cast<uint64_t>(it->first) < dirtyEnd;) {
+        auto it = std::lower_bound(
+            g_efbCopyDestinations.begin(), g_efbCopyDestinations.end(), static_cast<uint32_t>(earliestCandidate),
+            [](const auto& entry, uint32_t address) { return entry.first < address; });
+        while (it != g_efbCopyDestinations.end() && static_cast<uint64_t>(it->first) < dirtyEnd) {
             const uint64_t copyStart = it->first;
             const uint64_t copyEnd = copyStart + it->second;
             if (dirtyEnd <= copyStart || dirtyStart >= copyEnd) {
