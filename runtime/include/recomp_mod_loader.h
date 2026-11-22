@@ -23,29 +23,29 @@ struct MemoryReservation {
 };
 
 // Diagnostic-only, read by fatal reporters (unmapped access, executable-write, CPU dumps).
-// The backing variable is g_guestThreadState.translatedExecutionAddress (guest_thread_state.h),
-// header-inline with a constant initializer: every indirect dispatch scopes this, so an
-// out-of-line ctor/dtor would cost two un-inlinable calls plus a register spill each for three
-// instructions of work.
+// The slot is CpuContext::activeTranslatedTarget: every indirect dispatch scopes this, so it must
+// stay a plain store into the already-hot context instead of a thread-local write.
 class ScopedTranslatedExecutionAddress {
 public:
-    explicit ScopedTranslatedExecutionAddress(uint32_t address) noexcept
-        : previous_(g_guestThreadState.translatedExecutionAddress) {
-        // Address 0 means "nothing new to report" - the enclosing scope's value
-        // stays visible, and the unconditional restore below keeps nesting exact.
-        if (address != 0) {
-            g_guestThreadState.translatedExecutionAddress = address;
+    ScopedTranslatedExecutionAddress(uint32_t* slot, uint32_t address) noexcept
+        : slot_(address != 0 ? slot : nullptr) {
+        if (slot_ != nullptr) {
+            previous_ = *slot_;
+            *slot_ = address;
         }
     }
 
     ~ScopedTranslatedExecutionAddress() noexcept {
-        g_guestThreadState.translatedExecutionAddress = previous_;
+        if (slot_ != nullptr) {
+            *slot_ = previous_;
+        }
     }
 
     ScopedTranslatedExecutionAddress(const ScopedTranslatedExecutionAddress&) = delete;
     ScopedTranslatedExecutionAddress& operator=(const ScopedTranslatedExecutionAddress&) = delete;
 
 private:
+    uint32_t* slot_ = nullptr;
     uint32_t previous_ = 0;
 };
 
@@ -90,8 +90,6 @@ const std::vector<RiivolutionOptionSelection>& RiivolutionOptionSelections();
 
 void RegisterMemoryReservation(uint32_t start, uint32_t end, std::string name);
 const std::vector<MemoryReservation>& MemoryReservations();
-
-uint32_t CurrentTranslatedExecutionAddress() noexcept;
 
 void RegisterExecutableRange(uint32_t start, uint32_t end, std::string name);
 bool HandleExecutableWrite(uint32_t address, size_t length, uint64_t value);

@@ -448,7 +448,8 @@ MKW_PPC_FORCE_INLINE bool TryDispatchResolvedCpuTarget(const TranslatedFunctionI
         return false;
     }
 
-    RecompMod::ScopedTranslatedExecutionAddress translatedExecution(info->address);
+    RecompMod::ScopedTranslatedExecutionAddress translatedExecution(&cpu->activeTranslatedTarget,
+                                                                  info->address);
     PpcNonvolatileFprGuard fprGuard(cpu, NonvolatileFprGuardMaskFor(info));
     PpcNonvolatileGprGuard gprGuard(cpu, ShouldPreserveNonvolatileGprsForRawCpuCall(info));
     if (TryGetCpuContext() != cpu) {
@@ -463,7 +464,8 @@ MKW_PPC_FORCE_INLINE bool TryDispatchResolvedCpuTarget(const TranslatedFunctionI
 // What the raw record path always did (scoped execution address, the record's register guards, the
 // CpuContext scope only when another context is current), from one indirect-call table slot.
 MKW_PPC_FORCE_INLINE void DispatchFastRawSlot(const FastRawDispatchSlot& slot, CpuContext* cpu) {
-    RecompMod::ScopedTranslatedExecutionAddress translatedExecution(slot.address);
+    RecompMod::ScopedTranslatedExecutionAddress translatedExecution(&cpu->activeTranslatedTarget,
+                                                                  slot.address);
     PpcNonvolatileGprGuard gprGuard(cpu, (slot.fprMaskAndFlags & kFastRawPreserveGprsFlag) != 0);
     PpcNonvolatileFprGuard fprGuard(cpu, slot.fprMaskAndFlags & kPpcAllNonvolatileFprMask);
     if (TryGetCpuContext() != cpu) {
@@ -496,7 +498,7 @@ inline void DispatchKnownTranslatedCpuTargetStatic(CpuContext* cpu) {
     }
 
     CpuContextScope contextScope(cpu);
-    RecompMod::ScopedTranslatedExecutionAddress translatedExecution(Target);
+    RecompMod::ScopedTranslatedExecutionAddress translatedExecution(&cpu->activeTranslatedTarget, Target);
     if constexpr (KnownTranslatedCpuCall<Target>::kNonvolatileFprWriteMask == 0) {
         invokeKnownTranslated();
         return;

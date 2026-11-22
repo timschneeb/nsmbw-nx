@@ -488,9 +488,10 @@ void ReportFatalGuestFault(const char* category, uint32_t guestAddress, bool isW
     // access, so the size is genuinely unavailable on this path. The checked
     // path (runtime/src/memory.cpp) reports the exact length instead.
     std::cerr << "  access size:   unknown (not recoverable from the fault record)" << std::endl;
+    auto* activeCpu = TryGetCpuContext();
     std::cerr << "  active func:   0x" << std::hex << std::uppercase
-              << RecompMod::CurrentTranslatedExecutionAddress() << std::dec << std::nouppercase
-              << std::endl;
+              << (activeCpu != nullptr ? activeCpu->activeTranslatedTarget : 0u) << std::dec
+              << std::nouppercase << std::endl;
     std::cerr << "  detail:        " << detail << std::endl;
     if (auto* cpu = TryGetCpuContext()) {
         std::cerr << "  guest pc:      0x" << std::hex << cpu->pc << " lr=0x" << cpu->lr << std::dec
@@ -511,13 +512,13 @@ void ReportFatalGuestFault(const char* category, uint32_t guestAddress, bool isW
 // Called with StateMutex() released so the register dump (which reads guest memory) can't deadlock against it.
 void ReportUnmappedCommit(uint32_t guestAddress, uint64_t blockBase, bool isWrite,
                           uint32_t regionOrdinal) {
-    RT_LOG(RT_TAG_MEMORY) << "WARNING unmapped guest touch: no mapped region for 0x" << std::hex
-              << std::uppercase << std::setw(8) << std::setfill('0') << guestAddress
-              << std::setfill(' ') << " (" << (isWrite ? "write" : "read")
-              << "); committed zero-filled block 0x" << blockBase << "-0x"
-              << (blockBase + kAllocationGranularity) << " active=0x"
-              << RecompMod::CurrentTranslatedExecutionAddress();
     if (auto* cpu = TryGetCpuContext()) {
+        RT_LOG(RT_TAG_MEMORY) << "WARNING unmapped guest touch: no mapped region for 0x" << std::hex
+                  << std::uppercase << std::setw(8) << std::setfill('0') << guestAddress
+                  << std::setfill(' ') << " (" << (isWrite ? "write" : "read")
+                  << "); committed zero-filled block 0x" << blockBase << "-0x"
+                  << (blockBase + kAllocationGranularity) << " active=0x"
+                  << cpu->activeTranslatedTarget;
         std::cerr << " pc=0x" << cpu->pc << " lr=0x" << cpu->lr << " r1=0x" << cpu->gpr[1];
     }
     std::cerr << std::dec << std::nouppercase << " region#" << regionOrdinal << std::endl;

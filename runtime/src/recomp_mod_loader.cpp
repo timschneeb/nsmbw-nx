@@ -350,13 +350,6 @@ const std::vector<MemoryReservation>& MemoryReservations() {
     return Reservations();
 }
 
-// ScopedTranslatedExecutionAddress lives in abi_bridge.h next to the dispatch paths that scope
-// it; the address itself is stored in the CpuContext so no thread-local access is needed.
-
-uint32_t CurrentTranslatedExecutionAddress() noexcept {
-    return g_guestThreadState.translatedExecutionAddress;
-}
-
 void RegisterExecutableRange(uint32_t start, uint32_t end, std::string name) {
     if (end <= start) {
         return;

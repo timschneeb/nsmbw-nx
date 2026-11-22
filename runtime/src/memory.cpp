@@ -356,7 +356,7 @@ Region& ResolveRegion(uint32_t address, size_t length) {
     }
     // Emit extra context to help diagnose early-boot accesses that miss the map.
     if (auto* cpu = TryGetCpuContext()) {
-        const uint32_t active = RecompMod::CurrentTranslatedExecutionAddress();
+        const uint32_t active = cpu->activeTranslatedTarget;
         RT_LOG(RT_TAG_MEMORY) << "AccessViolation ctx=" << cpu
                   << " pc=0x" << std::hex << cpu->pc
                   << " active=0x" << active
@@ -637,9 +637,11 @@ namespace {
     reason << (MemoryInline::IsGpuFifoAddress(addr)
                    ? "GPU FIFO read blocked (the gather pipe is write-only)"
                    : "MMIO read blocked (non-GPU)")
-           << "; add HLE for this device instead of answering zero"
-           << " (active=0x" << std::hex << std::uppercase
-           << RecompMod::CurrentTranslatedExecutionAddress() << std::dec << std::nouppercase << ")";
+           << "; add HLE for this device instead of answering zero";
+    if (auto* cpu = TryGetCpuContext()) {
+        reason << " (active=0x" << std::hex << std::uppercase << cpu->activeTranslatedTarget
+               << std::dec << std::nouppercase << ")";
+    }
     throw Memory::AccessViolation(addr, length, reason.str());
 }
 // A register page Bluetooth passthrough backed with memory (GuestFlat::BackRegisterPage).

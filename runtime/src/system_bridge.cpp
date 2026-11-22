@@ -275,7 +275,7 @@ void DumpGuestCrashHints(std::ostream& os, const CpuContext* cpu) {
         return;
     }
 
-    const uint32_t active = RecompMod::CurrentTranslatedExecutionAddress();
+    const uint32_t active = cpu->activeTranslatedTarget;
     if (active != 0) {
         os << "[runtime] Active translated target: ";
         PrintGuestValue(os, "guest", active);

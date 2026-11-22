@@ -11,8 +11,6 @@ struct CpuContext;
 struct GuestThreadState {
     // The CpuContext translated code on this thread runs with (CpuContextScope, TryGetCpuContext).
     CpuContext* currentCpuContext = nullptr;
-    // Diagnostic only, read by fatal reporters (RecompMod::ScopedTranslatedExecutionAddress).
-    uint32_t translatedExecutionAddress = 0;
 };
 
 // `inline thread_local` with a constant initializer: no per-access init guard.

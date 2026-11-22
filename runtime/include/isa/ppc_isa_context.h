@@ -53,6 +53,10 @@ struct CpuContext {
     uint32_t srr0;      // Save/Restore Register 0
     uint32_t srr1;      // Save/Restore Register 1
     uint32_t msr;       // Machine State Register
+
+    // Diagnostic only: the translated target of the innermost dispatch. Kept in the context so
+    // the dispatch path writes a hot cache line instead of thread-local storage.
+    uint32_t activeTranslatedTarget = 0;
 };
 
 class CpuContextScope {
