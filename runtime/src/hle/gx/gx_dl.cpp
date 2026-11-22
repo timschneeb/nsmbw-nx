@@ -56,6 +56,21 @@ constexpr uint32_t kDlScanCacheMaxEntryBytes = 64u * 1024u;
 constexpr size_t kDlScanCacheMaxEntries = 8192;
 constexpr size_t kDlScanCacheMaxStoredBytes = 8u * 1024u * 1024u;
 
+// NSMBW_GX_DL_CACHE_STATS=1: per-call scan-cache outcome, to tell first-use loads from
+// lists that miss every frame.
+static bool DlScanCacheStatsEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NSMBW_GX_DL_CACHE_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+static uint64_t s_dlScanCalls = 0;
+static uint64_t s_dlScanHits = 0;
+static uint64_t s_dlScanMisses = 0;
+static uint64_t s_dlScanOversized = 0;
+static uint64_t s_dlScanResets = 0;
+
 // Display-list write tracking (audit F6a): re-digesting every list every call is the
 // costliest step of GX__CallDisplayList, and wasted on BRRES shape lists that are written
 // once at load and never touched again.
@@ -790,6 +805,7 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
         s_cache.previousHitSlot = nullptr;
         s_cache.storedCommandBytes = 0;
         replacing = false;
+        ++s_dlScanResets;
         replacedBytes = 0;
     }
     DlScanCacheRecord record{};
@@ -1557,6 +1573,25 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
             allowScanCache ? ProbeDlScanCache(list, listAddr, nbytes, scanLayoutHash)
                            : DlScanCacheProbe{};
         const DlScanCacheRecord* cached = probe.record;
+    if (DlScanCacheStatsEnabled()) {
+        ++s_dlScanCalls;
+        if (!allowScanCache) {
+            ++s_dlScanOversized;
+        } else if (cached != nullptr) {
+            ++s_dlScanHits;
+        } else {
+            ++s_dlScanMisses;
+        }
+        if ((s_dlScanCalls % 1000) == 0) {
+            RT_LOGF(RT_TAG_RUNTIME,
+                    "dl scan cache: %llu calls, %llu hits, %llu misses, %llu oversized, %llu resets\n",
+                    static_cast<unsigned long long>(s_dlScanCalls),
+                    static_cast<unsigned long long>(s_dlScanHits),
+                    static_cast<unsigned long long>(s_dlScanMisses),
+                    static_cast<unsigned long long>(s_dlScanOversized),
+                    static_cast<unsigned long long>(s_dlScanResets));
+        }
+    }
         if (allowScanCache) {
             LinkAndPrefetchDlSuccessor(probe, listAddr, nbytes);
             if (cached != nullptr && probe.mayContainDraw) {
