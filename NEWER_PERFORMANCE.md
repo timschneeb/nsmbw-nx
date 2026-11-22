@@ -566,6 +566,41 @@ write. The display-list walk shows 4-9% in individual windows but the scan
 cache is at 99.6% hits, and its measured total is 1-138 ms per run depending on how much of the
 level is streamed first time.
 
+## Switch PGO
+
+Two-pass profile-guided optimisation for the Newer build, using the repo's existing
+`MKW_PGO` flow.
+
+- Recording pass: `build-switch-newer2` configured with `-DMKW_PGO=generate`, NRO 124.3 MB.
+  Installed over the launcher's Newer `game.nro` (release kept on the SD as `game.nro.release`),
+  `stats = "full"`, clocks 1785/768/1600. The route covered the World 8/9/4/5 heavy levels, the
+  world map, menus and a few light levels. Counters dump to `sdmc:/gcov` every 60 s.
+- Profile pull: `scripts/pull_pgo_profile.py --port 5001 --build-dir build-switch-newer2` installed
+  109 `.gcda`, 0 unmatched: 72 shard objects, 8 unity runtime objects and 29 other runtime objects.
+- Use pass: `-DMKW_PGO=use`, NRO 96.7 MB.
+- Baseline: the same source built without PGO, NRO 101.0 MB.
+
+Console A/B (same clocks and config; world map ~60 s, then `8-3` for 2-3 minutes):
+
+| Scene | Baseline (no PGO) | PGO | Delta |
+|---|---:|---:|---:|
+| `0x003` world map | 12.55 ms, 50.5 fps | 11.99 ms, 46.0 fps | -0.56 ms (-4.5%) |
+| `0x005` `8-3` | 25.30 ms, 29.1 fps | 21.77 ms, 40.9 fps | **-3.53 ms (-14.0%), +11.8 fps** |
+
+The `8-3` gain is consistent across the distribution (p25 19.50 -> 12.03 ms, p75 26.88 -> 22.66 ms,
+p50 27.66 -> 23.93 ms). These are short runs with different window counts (42/25 map, 26/18 stage)
+and not identical level sections, so treat the map number as indicative; the stage result is far
+outside that noise. The map fps moved the other way while its guest CPU fell, consistent with the
+map being GPU/pacing bound in those windows.
+
+The recording build stopped at the end of the attract demo with no Atmosphere crash report
+(`crash_reports` has nothing newer than Nov 20); the only reports are ERPT `2123-0011`
+(`nn.pdmSrv.SyncPlayLog`), the usual play-log error from a forwarder launch. The last window had
+1.51 GB heap used with 35 MB free, so an instrumentation-driven out-of-memory kill is likely. The
+baseline and PGO builds run normally.
+
+The PGO NRO is at `build-switch-newer2/NSMBW.nro`; the release install was restored afterwards.
+
 ## Source review
 
 The Newer source is available at `https://github.com/Newer-Team/NewerSMBW` and was checked against
@@ -636,5 +671,6 @@ entries are host-side attribution spill. The remaining targets, in order of expe
    `CosFIdx` no longer use the generic stack helper, but animation and matrix code still does).
 3. Per-model material work (`ScnMdl_G3DPROC_CALC_MAT`, `m3d::calcMaterial`) is below 0.6% after the
    traversal change; a native path is not worth its risk.
-4. A Newer-specific PGO profile on hardware. The current Newer build's PGO is base-derived; the
-   base PGO pass measured -9.5% guest CPU on Switch.
+4. Newer-specific PGO is now measured: -14.0% guest CPU and +11.8 fps on `8-3`, -4.5% on the
+   world map (short console A/B). The profile is collected and the NRO exists; re-record it after
+   code changes that alter the hot paths.
