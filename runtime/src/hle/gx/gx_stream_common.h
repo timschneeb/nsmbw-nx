@@ -398,22 +398,25 @@ struct AuroraVtxPublishOptions {
 // One GXSetVtxDescv and one GXSetVtxAttrFmtv with every attribute in order, which leave aurora in
 // exactly the state the per-attribute GXSetVtxDesc / GXSetVtxAttrFmt calls did (same registers, set
 // in the same order; dirty when any of them changed): two calls per draw instead of ~48.
-inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& options) {
+inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& options,
+                                  bool publishDesc = true) {
     ++g_hleGxState.auroraVtxPublishEpoch;
-    GXVtxDescList descs[27];
-    size_t descCount = 0;
-    for (int attr = 0; attr < 26; ++attr) {
-        if (!options.includeNbt && attr == GX_VA_NBT) {
-            continue;
+    if (publishDesc) {
+        GXVtxDescList descs[27];
+        size_t descCount = 0;
+        for (int attr = 0; attr < 26; ++attr) {
+            if (!options.includeNbt && attr == GX_VA_NBT) {
+                continue;
+            }
+            GXAttrType type = g_hleGxState.vtxDesc[attr];
+            if (type == GX_INDEX8 || type == GX_INDEX16) {
+                type = GX_DIRECT;
+            }
+            descs[descCount++] = GXVtxDescList{static_cast<GXAttr>(attr), type};
         }
-        GXAttrType type = g_hleGxState.vtxDesc[attr];
-        if (type == GX_INDEX8 || type == GX_INDEX16) {
-            type = GX_DIRECT;
-        }
-        descs[descCount++] = GXVtxDescList{static_cast<GXAttr>(attr), type};
+        descs[descCount] = GXVtxDescList{GX_VA_NULL, GX_NONE};
+        GXSetVtxDescv(descs);
     }
-    descs[descCount] = GXVtxDescList{GX_VA_NULL, GX_NONE};
-    GXSetVtxDescv(descs);
 
     GXVtxAttrFmtList fmts[27];
     size_t fmtCount = 0;

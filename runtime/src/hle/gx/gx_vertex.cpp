@@ -32,17 +32,26 @@ void ApplyAuroraVtxStateForBegin(GXVtxFmt fmt) {
     static uint32_t lastGeneration = 0;
     static uint32_t lastRegs[6] = {};
     uint32_t regs[6];
-    if (valid && fmt == lastFmt && g_hleGxState.vtxStateGeneration == lastGeneration) {
-        AuroraGetVtxFormatRegs(fmt, regs);
-        if (std::memcmp(regs, lastRegs, sizeof(regs)) == 0) {
-            return;
-        }
+    AuroraGetVtxFormatRegs(fmt, regs);
+    const bool samePublish =
+        valid && fmt == lastFmt && g_hleGxState.vtxStateGeneration == lastGeneration;
+    if (samePublish && std::memcmp(regs, lastRegs, sizeof(regs)) == 0) {
+        return;
     }
+    // regs[0]/[1] are aurora's vcdLo/vcdHi. When the HLE state has not moved since the last
+    // publish and aurora still holds that descriptor, only the VAT row needs the republish.
+    static const bool descSkip = [] {
+        const char* value = std::getenv("NSMBW_GX_DESC_SKIP");
+        return value == nullptr || value[0] != '0';
+    }();
+    const bool descSame = descSkip && samePublish && regs[0] == lastRegs[0] &&
+                          regs[1] == lastRegs[1] && regs[5] == lastRegs[5];
     GxStream::PublishAuroraVtxState(fmt,
                                     GxStream::AuroraVtxPublishOptions{
                                         /*includeNbt=*/false,
                                         /*fmtLoopFirst=*/static_cast<int>(GX_VA_POS),
-                                        /*fmtLoopLast=*/static_cast<int>(GX_VA_TEX7)});
+                                        /*fmtLoopLast=*/static_cast<int>(GX_VA_TEX7)},
+                                    !descSame);
     valid = true;
     lastFmt = fmt;
     lastGeneration = g_hleGxState.vtxStateGeneration;
