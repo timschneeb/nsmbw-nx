@@ -289,6 +289,32 @@ static float g_stripOriginY = 0.f;
 static uint32_t g_stripEfbWidth = 0;
 static uint32_t g_stripEfbHeight = 0;
 static ClipRect g_stripEfbRect{};
+// NSMBW: the game reuses one small scratch rect for every animated tile, and each tile's copy
+// forces a resolve before the next tile overwrites it. Give each scratch draw its own rows in a
+// taller strip target instead, so one pass holds every tile and the copies stay deferred.
+static uint32_t g_stripSlotHeight = 0;
+static uint32_t g_stripSlotYOffset = 0;
+static uint32_t g_stripSlotCount = 1;
+static uint32_t g_stripSlotIndex = 0;
+// Set by a copy inside the strip, cleared when the next draw takes a new slot. Draws between
+// two copies compose one scratch image, so they must share a slot.
+static bool g_stripCopySinceSlot = false;
+
+static bool strip_slots_enabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("NSMBW_GX_SCRATCH_SLOTS");
+    return value == nullptr || value[0] != '0';
+  }();
+  return enabled;
+}
+
+static void reset_strip_slots() {
+  g_stripSlotHeight = 0;
+  g_stripSlotYOffset = 0;
+  g_stripSlotCount = 1;
+  g_stripSlotIndex = 0;
+  g_stripCopySinceSlot = false;
+}
 static std::optional<RenderPass> g_suspendedEfbPass;
 static Viewport g_suspendedEfbViewport;
 static ClipRect g_suspendedEfbScissor;
@@ -570,7 +596,7 @@ void set_viewport(const Viewport& cmd) noexcept {
   Viewport vp = cmd;
   if (g_inStripTarget) {
     vp.left -= g_stripOriginX;
-    vp.top -= g_stripOriginY;
+    vp.top += static_cast<float>(g_stripSlotYOffset) - g_stripOriginY;
   }
   if (vp != g_cachedViewport) {
     push_command(CommandType::SetViewport, Command::Data{.setViewport = vp});
@@ -583,7 +609,7 @@ void set_scissor(const ClipRect& cmd) noexcept {
   ClipRect sc = cmd;
   if (g_inStripTarget) {
     sc.x -= static_cast<int32_t>(std::lround(g_stripOriginX));
-    sc.y -= static_cast<int32_t>(std::lround(g_stripOriginY));
+    sc.y += static_cast<int32_t>(g_stripSlotYOffset) - static_cast<int32_t>(std::lround(g_stripOriginY));
   }
   if (sc != g_cachedScissor) {
     push_command(CommandType::SetScissor, Command::Data{.setScissor = sc});
@@ -672,6 +698,9 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
       end_strip_target();
     }
   }
+  if (g_inStripTarget) {
+    g_stripCopySinceSlot = true;
+  }
   ensure_staging_space({0, 2 * staging_uniform_bytes(48), 0, 0});
   auto& prevPass = g_renderPasses[g_currentRenderPass];
   const auto targetWidth = static_cast<int32_t>(prevPass.targetSize.width);
@@ -696,6 +725,13 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
         sourceRect.z(),
         sourceRect.w(),
     };
+    if (g_stripSlotYOffset != 0) {
+      // The copy follows the draw it belongs to, so read that draw's slot rows.
+      const auto slotTop = static_cast<int32_t>(g_stripSlotYOffset);
+      rect.y += slotTop;
+      sourceRect = {sourceRect.x(), sourceRect.y() + static_cast<float>(slotTop), sourceRect.z(),
+                    sourceRect.w()};
+    }
   }
   if (targetWidth > 0 && targetHeight > 0) {
     const int32_t left = std::clamp(rect.x, 0, targetWidth - 1);
@@ -1012,9 +1048,33 @@ void begin_strip_target(ClipRect efbRect, float originX, float originY) {
   g_stripOriginX = originX;
   g_stripOriginY = originY;
 
-  auto offscreenEntry = get_offscreen_textures(efbRect.width, efbRect.height);
+  const auto stripWidth = static_cast<uint32_t>(efbRect.width);
+  const auto stripHeight = static_cast<uint32_t>(efbRect.height);
+  uint32_t slotCount = 1;
+  const uint64_t stripArea = static_cast<uint64_t>(stripWidth) * stripHeight;
+  // Above this the strip is full-screen sized and the rows would cost more than the passes save.
+  constexpr uint32_t MaxSlotArea = 64 * 1024;
+  if (strip_slots_enabled() && stripArea > 0 && stripArea <= MaxSlotArea) {
+    // Enough rows for the usual per-frame tile count without letting a large scratch strip
+    // allocate hundreds of megabytes.
+    constexpr uint64_t kSlotBudgetBytes = 8ull << 20;
+    const uint64_t perSlotBytes = static_cast<uint64_t>(stripWidth) * stripHeight * 8;
+    slotCount = static_cast<uint32_t>(
+        std::clamp<uint64_t>(kSlotBudgetBytes / std::max<uint64_t>(perSlotBytes, 1), 2, 128));
+    slotCount = std::min<uint32_t>(slotCount, std::max<uint32_t>(4096 / stripHeight, 1));
+  }
+  const uint32_t targetWidth = std::max<uint32_t>(stripWidth, 1);
+  const uint32_t targetHeight = std::max<uint32_t>(stripHeight * std::max<uint32_t>(slotCount, 1), 1);
+
+  auto offscreenEntry = get_offscreen_textures(targetWidth, targetHeight);
   g_offscreenColor = std::move(offscreenEntry.color);
   g_offscreenDepth = std::move(offscreenEntry.depth);
+
+  g_stripSlotHeight = stripHeight;
+  g_stripSlotCount = std::max<uint32_t>(slotCount, 1);
+  g_stripSlotIndex = 0;
+  g_stripSlotYOffset = 0;
+  g_stripCopySinceSlot = false;
 
   const auto savedViewport = g_cachedViewport;
   RenderPass newPass{
@@ -1023,7 +1083,7 @@ void begin_strip_target(ClipRect efbRect, float originX, float originY) {
       .copySourceTexture = g_offscreenColor.texture,
       .copySourceView = g_offscreenColor.view,
       .copySourceDepthView = g_offscreenDepth.view,
-      .targetSize = {static_cast<uint32_t>(efbRect.width), static_cast<uint32_t>(efbRect.height), 1},
+      .targetSize = {targetWidth, targetHeight, 1},
       .msaaSamples = 1,
       .clearColorValue = gx::g_gxState.clearColor,
       .clearDepthValue = gx::clear_depth_value(),
@@ -1040,10 +1100,10 @@ void begin_strip_target(ClipRect efbRect, float originX, float originY) {
   g_inStripTarget = true;
   static const bool logStrip = std::getenv("NSMBW_LOG_STRIP") != nullptr;
   if (logStrip) {
-    std::fprintf(stderr, "[strip] begin rect %d,%d %dx%d origin %.2f,%.2f efb %ux%u vp %.1f,%.1f %.1fx%.1f\n",
+    std::fprintf(stderr, "[strip] begin rect %d,%d %dx%d origin %.2f,%.2f efb %ux%u vp %.1f,%.1f %.1fx%.1f slots %u\n",
                  efbRect.x, efbRect.y, efbRect.width, efbRect.height, originX, originY, g_stripEfbWidth,
                  g_stripEfbHeight, savedViewport.left, savedViewport.top, savedViewport.width,
-                 savedViewport.height);
+                 savedViewport.height, g_stripSlotCount);
   }
   g_cachedViewport = {savedViewport.left - originX, savedViewport.top - originY, savedViewport.width,
                       savedViewport.height, savedViewport.znear, savedViewport.zfar};
@@ -1086,6 +1146,7 @@ void end_strip_target() {
   g_inOffscreen = false;
   g_offscreenColor = {};
   g_offscreenDepth = {};
+  reset_strip_slots();
 
   // Continue on the EFB, loading what the pre-strip pass left there.
   auto& pass = push_render_pass(RenderPass{});
@@ -1143,13 +1204,37 @@ void push_draw_command(gx::DrawData data) {
       // The first draw outside the scratch strip goes back to the EFB pass.
       static const bool logStripEnd = std::getenv("NSMBW_LOG_STRIP") != nullptr;
       if (logStripEnd) {
-        std::fprintf(stderr, "[strip] end at draw scissor %d,%d %dx%d rect %d,%d %dx%d\n", sc.x, sc.y,
+        std::fprintf(stderr, "[strip] end at draw scissor %d,%d %dx%d rect %d,%d %dx%d slots used %u/%u\n", sc.x, sc.y,
                      sc.width, sc.height, g_stripEfbRect.x, g_stripEfbRect.y, g_stripEfbRect.width,
-                     g_stripEfbRect.height);
+                     g_stripEfbRect.height, g_stripSlotIndex + 1, g_stripSlotCount);
       }
       end_strip_target();
     } else {
-      flush_strip_resolves();
+      if (g_stripSlotCount > 1) {
+        // The first draw after a copy starts a new scratch image and needs its own rows. Later
+        // draws before the next copy are layers of that image and share them.
+        if (g_stripCopySinceSlot) {
+          g_stripCopySinceSlot = false;
+          if (g_stripSlotIndex + 1 < g_stripSlotCount) {
+            ++g_stripSlotIndex;
+            g_stripSlotYOffset = g_stripSlotIndex * g_stripSlotHeight;
+            g_cachedViewport.top += static_cast<float>(g_stripSlotHeight);
+            g_cachedScissor.y += static_cast<int32_t>(g_stripSlotHeight);
+          } else {
+            // Out of rows: fall back to a pass split and restart the slots in the continuation.
+            flush_strip_resolves();
+            const auto drop = static_cast<int32_t>(g_stripSlotYOffset);
+            g_stripSlotIndex = 0;
+            g_stripSlotYOffset = 0;
+            g_cachedViewport.top -= static_cast<float>(drop);
+            g_cachedScissor.y -= drop;
+          }
+          push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+          push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+        }
+      } else {
+        flush_strip_resolves();
+      }
     }
   }
   push_draw_command(ShaderDrawCommand{.type = ShaderType::GX, .gx = data});
@@ -1457,6 +1542,7 @@ void abort_frame() noexcept {
   g_inOffscreen = false;
   g_inStripTarget = false;
   g_stripEfbRect = {};
+  reset_strip_slots();
   for (auto& array : gx::g_gxState.arrays) {
     array.cachedRange = {};
   }

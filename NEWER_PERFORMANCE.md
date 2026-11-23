@@ -722,9 +722,40 @@ Changes:
   and skip the intermediate blit.
 
 `NSMBW_GX_PATCH_MEMO=0` and `NSMBW_GX_PATCH_DIRECT=0` restore the old paths. A deterministic 8-16
-demo capture is byte-identical with the direct path on and off. The remaining 8-3 worker cost is
-the scene itself: about 8k draws, 70 passes and a 13.6 ms submit. Batching the 81 tile copies
-does not move that; the next lever is the worker's draw and pass recording or the GPU work.
+demo capture is byte-identical with the direct path on and off. The remaining worker cost is the
+renderer's pass structure, not the copies themselves.
+
+### Scratch slot virtualization
+
+The strip log for one 8-3 frame showed 738 strip starts in three shapes: 853x76 (light textures),
+43x35 and 43x34 (tile atlas). Every tile draw reuses the same small scratch rect, so the deferred
+resolve had to flush before the next tile overwrote it, one render pass per tile. That is where
+the 70-pass frame came from.
+
+Each scratch strip target now holds several slots. The first draw after a copy moves down one slot
+(`slotHeight` rows), shifts its viewport and scissor by the same amount, and the following copy
+reads the same rows; draws between two copies are layers of one scratch image and share the slot.
+Slot capacity is `8 MiB / (width * height * 8)` clamped to 2..128 slots and 4096 rows, for strips
+up to 64 KiB in area. When the rows run out the strip splits as before and the slots restart.
+
+On the PC 8-16 demo frame:
+
+```
+                        old     slots
+render passes            65       8
+worker cycle (ms)      12.22    4.79
+worker record (ms)      1.38    1.39
+worker submit (ms)      3.18    2.84
+worker prep (ms)        7.14    0.08
+guest CPU (ms)          3.72    3.65
+```
+
+The deterministic capture differs from the old path by 132 pixels of 1,638,000, every one by 1 LSB
+in one channel: the taller strip texture evaluates the same linear-filter UVs at a different float
+magnitude. Vanilla `SMNE01` is byte-identical with slots on and off.
+
+`NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
+begin/end with its shape plus `slots N` and `slots used N/M`.
 
 ### PC harness caveat
 
