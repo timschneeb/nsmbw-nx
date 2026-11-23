@@ -754,6 +754,24 @@ The deterministic capture differs from the old path by 132 pixels of 1,638,000, 
 in one channel: the taller strip texture evaluates the same linear-filter UVs at a different float
 magnitude. Vanilla `SMNE01` is byte-identical with slots on and off.
 
+On the console, the same heavy 8-3 stretch (2.2 to 3.0 ms of display lists, 17.5 to 18.2 k FIFO
+writes) before and after:
+
+```
+                        before   slots
+p50 (ms)               53.7-62.5  41.7-48.4
+guest CPU (ms)         36.6-37.8  31.8-33.5
+gx (ms)                10.4-10.9   7.5-7.7
+passes                    70       9-10
+worker cycle (ms)        51-57     35-48
+worker record (ms)       26-30     16-25
+worker submit (ms)       23-25     17-21
+```
+
+That is about 20% off the frame at stock clocks, but 8-3 is still renderer-bound: the worker
+records about 8k draws in 16 to 25 ms and waits 17 to 21 ms on the GPU. One 2 s window still
+reported 70 passes, so a few scratch patterns fall back to splits.
+
 `NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
 begin/end with its shape plus `slots N` and `slots used N/M`.
 
