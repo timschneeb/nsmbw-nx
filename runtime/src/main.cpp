@@ -591,14 +591,15 @@ void InitializeProcessTranscript(int argc, char** argv) {
         restoreFailedSetup();
         return;
     }
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    // Unbuffered stderr writes to SD block the calling thread for tens of milliseconds, and the
-    // stats lines land on gameplay threads. Buffer it and flush from a background thread; a hard
-    // abort can lose at most the last quarter second of the log.
+    // Unbuffered SD writes block the calling thread for tens of milliseconds, and both the OSReport
+    // lines and the stats lines land on gameplay threads. Buffer both streams and flush them from
+    // a background thread; a hard abort can lose at most the last quarter second of the log.
+    std::setvbuf(stdout, nullptr, _IOFBF, 256 * 1024);
     std::setvbuf(stderr, nullptr, _IOFBF, 256 * 1024);
     static std::thread stderrFlusher([] {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            std::fflush(stdout);
             std::fflush(stderr);
         }
     });

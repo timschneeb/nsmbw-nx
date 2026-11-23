@@ -127,11 +127,19 @@ static void HLE_LogOSReport(CpuContext* cpu, const char* fmt)
 
     std::cout << "[OSReport] " << buffer;
 
-    // OSReport strings don't always end in \n, so flush explicitly
+    // OSReport strings don't always end in \n. On the Switch, stdout is buffered and flushed by
+    // the background log thread: a per-report flush here is a blocking SD write on the guest
+    // thread, and the world map reports a line per path/world check while the player walks.
     if (buffer.empty() || buffer.back() != '\n') {
+#if defined(MKW_PLATFORM_SWITCH)
+        std::cout << '\n';
+#else
         std::cout << std::endl;
+#endif
     } else {
+#if !defined(MKW_PLATFORM_SWITCH)
         std::cout << std::flush;
+#endif
     }
 
     // Translator correctness diagnostic: NW4R assertion reports normally lose
