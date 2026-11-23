@@ -832,8 +832,27 @@ Host profile after the index, stock clocks, stats light, 3069 samples:
 The guest is 25.3 to 26.3 ms with stats light; normal play has stats off and does not pay the
 10% timing instrumentation. The worker is 21 ms (record 7.6, submit 11.5), the GPU 13 ms, so the
 frame is guest-bound. Nothing left is a single large hot spot; further gains have to come from
-call-graph work (re-recorded PGO, FIFO hand-off copies, cross-thread locking) rather than one
-function.
+call-graph work rather than one function.
+
+### Display-list cache and FIFO hand-off
+
+`NSMBW_GX_DL_CACHE_STATS=1` showed 99.6% scan-cache hits, but 0.65% of calls were "oversized"
+lists over the 64 KiB entry cap. Those are the level geometry lists, and they were rescanned
+every frame. Raising the per-entry cap to 1 MiB keeps the aggregate stored-byte cap and makes the
+level lists cacheable; a verbatim list stores no copy. After the change there are **0 oversized
+calls** in 8-3 (856,000 calls, 852,287 hits, 3,713 misses on first use or rewrite), and `fifo`
+dropped from about 5.3 to 4.1 ms.
+
+The FIFO hand-off also copied every producer buffer into a job vector. It now swaps ownership
+with a spare buffer (`unique_ptr` arrays, used bytes and capacity carried separately), so no copy
+and no zero-fill. `fifo` fell to 3.9 ms.
+
+```
+                        after index   + DL cache   + hand-off
+p50 (ms)                  28.3-29.5   27.1-28.7    26.5-27.7
+guest CPU (ms)            25.3-26.3   24.0-25.2    23.8-24.4
+fps                       33.6-35.4   35.1-37.1    36.0-37.5
+```
 
 
 `NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
