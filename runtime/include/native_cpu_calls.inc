@@ -216,6 +216,9 @@ MKW_KNOWN_LEAF_NATIVE(0x801AC440u, DCInvalidateRange_801a1600, cpu->gpr[3], cpu-
 MKW_KNOWN_LEAF_NATIVE(0x801AC470u, DCFlushRange_801a162c, cpu->gpr[3], cpu->gpr[4]);
 MKW_KNOWN_LEAF_NATIVE(0x801AC4A0u, DCStoreRange_801a165c, cpu->gpr[3], cpu->gpr[4]);
 
+extern "C" int32_t CXReadUncompLZ_Native(uint32_t ctx, uint32_t src, uint32_t size);
+MKW_KNOWN_LEAF_NATIVE_RET(0x801D6B60u, CXReadUncompLZ_Native, cpu->gpr[3], cpu->gpr[4], cpu->gpr[5]);
+
 extern "C" void NW4R_G3D_SinFIdx_HLE(CpuContext* ctx);
 MKW_KNOWN_LEAF_CPU_NATIVE(0x80237BD0u, NW4R_G3D_SinFIdx_HLE);
 extern "C" void NW4R_G3D_CosFIdx_HLE(CpuContext* ctx);
