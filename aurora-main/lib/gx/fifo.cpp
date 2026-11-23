@@ -36,6 +36,10 @@ namespace detail {
 uint8_t* sBufferData = nullptr;
 uint32_t sBufferSize = 0;
 uint32_t sBufferCapacity = 0;
+// NSMBW: the producer's command buffer. hand_off() swaps ownership with a decoded job buffer
+// instead of copying it; a background display list is hundreds of KiB and the copy cost 0.5 ms a
+// frame.
+std::unique_ptr<uint8_t[]> sProducerOwned;
 bool sInDisplayList = false;
 uint8_t* sDlBuffer = nullptr;
 uint32_t sDlSize = 0;
@@ -45,8 +49,8 @@ uint32_t sDlWritePos = 0;
 void init() {
   constexpr uint32_t initialCapacity = 64 * 1024;
   reset_cp_register_cache();
-  free(detail::sBufferData);
-  detail::sBufferData = static_cast<uint8_t*>(malloc(initialCapacity));
+  detail::sProducerOwned = std::unique_ptr<uint8_t[]>(new uint8_t[initialCapacity]);
+  detail::sBufferData = detail::sProducerOwned.get();
   detail::sBufferSize = 0;
   detail::sBufferCapacity = initialCapacity;
   detail::sInDisplayList = false;
@@ -56,12 +60,15 @@ void init() {
 }
 
 void write_data_grow(const void* data, uint32_t length) {
-  uint32_t needed = detail::sBufferSize + length;
-  uint32_t newCap = std::max(detail::sBufferCapacity * 2, needed);
-  detail::sBufferData = static_cast<uint8_t*>(realloc(detail::sBufferData, newCap));
+  const uint32_t needed = detail::sBufferSize + length;
+  const uint32_t newCap = std::max(detail::sBufferCapacity * 2, needed);
+  auto grown = std::unique_ptr<uint8_t[]>(new uint8_t[newCap]);
+  std::memcpy(grown.get(), detail::sBufferData, detail::sBufferSize);
+  detail::sProducerOwned = std::move(grown);
+  detail::sBufferData = detail::sProducerOwned.get();
+  detail::sBufferCapacity = newCap;
   std::memcpy(detail::sBufferData + detail::sBufferSize, data, length);
   detail::sBufferSize = needed;
-  detail::sBufferCapacity = newCap;
 }
 
 void begin_display_list(uint8_t* buf, uint32_t size) {
@@ -143,13 +150,19 @@ uint32_t handOffBytes() {
   return bytes;
 }
 
+struct FifoJob {
+  std::unique_ptr<uint8_t[]> data;
+  uint32_t size = 0;
+  uint32_t capacity = 0;
+};
+
 struct GxThread {
   std::thread thread;
   std::mutex mutex;
   std::condition_variable work;
   std::condition_variable idle;
-  std::deque<std::vector<uint8_t>> jobs;
-  std::vector<std::vector<uint8_t>> spare;
+  std::deque<FifoJob> jobs;
+  std::vector<FifoJob> spare;
   bool busy = false;
 };
 
@@ -188,7 +201,7 @@ GxThread& gx_thread() {
 #endif
 #endif
       for (;;) {
-        std::vector<uint8_t> job;
+        FifoJob job;
         {
           std::unique_lock lock(state->mutex);
           state->work.wait(lock, [state] { return !state->jobs.empty(); });
@@ -196,11 +209,11 @@ GxThread& gx_thread() {
           state->jobs.pop_front();
           state->busy = true;
         }
-        process_buffer(job.data(), static_cast<uint32_t>(job.size()));
+        process_buffer(job.data.get(), job.size);
         {
           std::lock_guard lock(state->mutex);
           state->busy = false;
-          job.clear();
+          job.size = 0;
           state->spare.push_back(std::move(job));
           if (state->jobs.empty()) {
             state->idle.notify_all();
@@ -221,15 +234,22 @@ void hand_off() {
     return;
   }
   auto& t = gx_thread();
-  std::vector<uint8_t> job;
+  FifoJob next;
   {
     std::lock_guard lock(t.mutex);
     if (!t.spare.empty()) {
-      job = std::move(t.spare.back());
+      next = std::move(t.spare.back());
       t.spare.pop_back();
     }
   }
-  job.assign(detail::sBufferData, detail::sBufferData + detail::sBufferSize);
+  if (!next.data) {
+    next.data = std::unique_ptr<uint8_t[]>(new uint8_t[64 * 1024]);
+    next.capacity = 64 * 1024;
+  }
+  FifoJob job{std::move(detail::sProducerOwned), detail::sBufferSize, detail::sBufferCapacity};
+  detail::sProducerOwned = std::move(next.data);
+  detail::sBufferData = detail::sProducerOwned.get();
+  detail::sBufferCapacity = next.capacity;
   detail::sBufferSize = 0;
   {
     std::lock_guard lock(t.mutex);
