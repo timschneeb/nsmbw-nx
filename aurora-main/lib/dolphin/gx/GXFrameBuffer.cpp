@@ -656,7 +656,12 @@ void copy_tex_decoded(void* dest, GXBool clear, bool queued) {
         .lastProducedFrame = lastProducedFrame,
     };
   }
-  if (logFrame >= 0 && (currentFrame == static_cast<u32>(logFrame) || currentFrame == static_cast<u32>(logFrame) + 1)) {
+  static int loggedAllCopies = 0;
+  const bool logAllCopies = logFrame == -2 && loggedAllCopies < 200;
+  if (logAllCopies) {
+    ++loggedAllCopies;
+  }
+  if (logAllCopies || (logFrame >= 0 && (currentFrame == static_cast<u32>(logFrame) || currentFrame == static_cast<u32>(logFrame) + 1))) {
     size_t pooled = 0, free = 0;
     for (const auto& entry : g_copyTexturePool) {
       if (entry.key == key) {
