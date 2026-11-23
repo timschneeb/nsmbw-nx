@@ -26,7 +26,25 @@ uint32_t CanonicalVtxAttr(uint32_t attr) {
 // descriptor and format, 40-odd GX calls that almost always change nothing. Skipped when the HLE's
 // vertex state is the one last published for this format and aurora still holds exactly what that
 // publish left (anything else that set aurora's descriptor or table shows up as different registers).
-void ApplyAuroraVtxStateForBegin(GXVtxFmt fmt) {
+
+namespace {
+
+struct BeginPublishMemo {
+    bool valid = false;
+    uint32_t generation = 0;
+    uint32_t regs[6] = {};
+    bool vatValid = false;
+    VtxAttrFmt vat[26] = {};
+};
+
+BeginPublishMemo g_beginPublish[GX_MAX_VTXFMT];
+
+bool SameVatFmt(const VtxAttrFmt& a, const VtxAttrFmt& b) {
+    return a.cnt == b.cnt && a.type == b.type && a.frac == b.frac;
+}
+
+// The pre-per-format memo, kept for NSMBW_GX_FMT_MEMO=0 and for A/B runs.
+void ApplyAuroraVtxStateForBeginLegacy(GXVtxFmt fmt) {
     static bool valid = false;
     static GXVtxFmt lastFmt = GX_VTXFMT0;
     static uint32_t lastGeneration = 0;
@@ -70,28 +88,122 @@ void ApplyAuroraVtxStateForBegin(GXVtxFmt fmt) {
                                         !descSame);
     }
     g_hleGxState.nbtVatDirtyFmt &= static_cast<uint8_t>(~(1u << fmt));
-    if (nbtOnly) {
-        static const bool verify = [] {
-            const char* value = std::getenv("NSMBW_GX_VAT_VERIFY");
-            return value != nullptr && value[0] == '1';
-        }();
-        if (verify) {
-            uint32_t after[6];
-            AuroraGetVtxFormatRegs(fmt, after);
-            if (std::memcmp(after, lastRegs, sizeof(after)) != 0) {
-                RT_LOGF(RT_TAG_RUNTIME,
-                        "vtx vat verify mismatch: now %08x %08x %08x %08x %08x %08x "
-                        "last %08x %08x %08x %08x %08x %08x\n",
-                        after[0], after[1], after[2], after[3], after[4], after[5],
-                        lastRegs[0], lastRegs[1], lastRegs[2], lastRegs[3], lastRegs[4],
-                        lastRegs[5]);
-            }
-        }
-    }
     valid = true;
     lastFmt = fmt;
     lastGeneration = g_hleGxState.vtxStateGeneration;
     AuroraGetVtxFormatRegs(fmt, lastRegs);
+}
+
+} // namespace
+
+void ApplyAuroraVtxStateForBegin(GXVtxFmt fmt) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NSMBW_GX_FMT_MEMO");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (!enabled || fmt >= GX_MAX_VTXFMT) {
+        ApplyAuroraVtxStateForBeginLegacy(fmt);
+        return;
+    }
+
+    BeginPublishMemo& memo = g_beginPublish[fmt];
+    uint32_t regs[6];
+    AuroraGetVtxFormatRegs(fmt, regs);
+    const uint32_t generation = g_hleGxState.vtxStateGeneration;
+    const bool same = memo.valid && memo.generation == generation;
+    if (same && std::memcmp(regs, memo.regs, sizeof(regs)) == 0) {
+        return;
+    }
+
+    static const bool descSkip = [] {
+        const char* value = std::getenv("NSMBW_GX_DESC_SKIP");
+        return value == nullptr || value[0] != '0';
+    }();
+    const bool descSame = descSkip && memo.valid && regs[0] == memo.regs[0] &&
+                          regs[1] == memo.regs[1] && regs[5] == memo.regs[5];
+
+    // Another writer (the raw-FIFO publish's NBT entry, a direct GXSetVtxAttrFmt, a DL replay)
+    // changed aurora's table for this format without going through the memo. Its rows may have
+    // come back to the memoized values, so republish the whole row rather than trusting the mirror.
+    const bool vatDiverged = memo.valid && (regs[2] != memo.regs[2] || regs[3] != memo.regs[3] ||
+                                            regs[4] != memo.regs[4]);
+    const auto& row = g_hleGxState.vtxAttrFmt[fmt];
+    const bool nbtDirty = (g_hleGxState.nbtVatDirtyFmt & (1u << fmt)) != 0;
+    GXVtxAttrFmtList sparse[27];
+    size_t sparseCount = 0;
+    for (int attr = static_cast<int>(GX_VA_POS); attr <= static_cast<int>(GX_VA_TEX7); ++attr) {
+        const GXAttr gxAttr = static_cast<GXAttr>(attr);
+        if (IsMatrixIndexAttr(gxAttr)) {
+            continue;
+        }
+        const auto& f = row[attr];
+        bool changed = !memo.vatValid || vatDiverged || !SameVatFmt(memo.vat[attr], f);
+        if (attr == GX_VA_NRM && nbtDirty) {
+            changed = true;
+        }
+        if (changed) {
+            sparse[sparseCount++] = GXVtxAttrFmtList{gxAttr, f.cnt, f.type, f.frac};
+        }
+    }
+    if (sparseCount != 0) {
+        sparse[sparseCount] = GXVtxAttrFmtList{GX_VA_NULL, GX_POS_XYZ, GX_F32, 0};
+    }
+    const bool publishDesc = !descSame;
+    if (sparseCount == 0 && !publishDesc) {
+        memo.valid = true;
+        memo.generation = generation;
+        std::memcpy(memo.regs, regs, sizeof(regs));
+        g_hleGxState.nbtVatDirtyFmt &= static_cast<uint8_t>(~(1u << fmt));
+        return;
+    }
+
+    GxStream::PublishAuroraVtxStateSparse(
+        fmt, sparseCount != 0 ? sparse : nullptr, publishDesc,
+        GxStream::AuroraVtxPublishOptions{/*includeNbt=*/false,
+                                          /*fmtLoopFirst=*/static_cast<int>(GX_VA_POS),
+                                          /*fmtLoopLast=*/static_cast<int>(GX_VA_TEX7)});
+    g_hleGxState.nbtVatDirtyFmt &= static_cast<uint8_t>(~(1u << fmt));
+    for (int attr = static_cast<int>(GX_VA_POS); attr <= static_cast<int>(GX_VA_TEX7); ++attr) {
+        memo.vat[attr] = row[attr];
+    }
+    memo.vatValid = true;
+    memo.valid = true;
+    memo.generation = generation;
+    AuroraGetVtxFormatRegs(fmt, memo.regs);
+
+    static const bool verify = [] {
+        const char* value = std::getenv("NSMBW_GX_FMT_VERIFY");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (verify && sparseCount != 0) {
+        uint32_t sparseRegs[6];
+        std::memcpy(sparseRegs, memo.regs, sizeof(sparseRegs));
+        GxStream::PublishAuroraVtxState(fmt,
+                                        GxStream::AuroraVtxPublishOptions{
+                                            /*includeNbt=*/false,
+                                            /*fmtLoopFirst=*/static_cast<int>(GX_VA_POS),
+                                            /*fmtLoopLast=*/static_cast<int>(GX_VA_TEX7)},
+                                        false);
+        uint32_t fullRegs[6];
+        AuroraGetVtxFormatRegs(fmt, fullRegs);
+        if (std::memcmp(sparseRegs, fullRegs, sizeof(fullRegs)) != 0) {
+            static int reported = 0;
+            if (reported < 4) {
+                ++reported;
+                int nrmEntry = -1;
+                for (size_t i = 0; i < sparseCount; ++i) {
+                    if (sparse[i].attr == GX_VA_NRM) nrmEntry = static_cast<int>(sparse[i].cnt);
+                }
+                RT_LOGF(RT_TAG_RUNTIME,
+                        "vtx fmt verify mismatch: fmt %d vat %08x/%08x memoNrm %d rowNrm %d "
+                        "sparseNrm %d\n",
+                        static_cast<int>(fmt), sparseRegs[2], fullRegs[2],
+                        static_cast<int>(memo.vat[GX_VA_NRM].cnt),
+                        static_cast<int>(row[GX_VA_NRM].cnt), nrmEntry);
+            }
+        }
+        std::memcpy(memo.regs, fullRegs, sizeof(fullRegs));
+    }
 }
 }
 
@@ -377,12 +489,21 @@ extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
         return;
     }
     ServiceDeferredTimingDuringGxWork();
-    ApplyAuroraVtxStateForBegin(static_cast<GXVtxFmt>(vf));
     g_hleGxState.currentVtxFmt=(GXVtxFmt)vf; g_hleGxState.currentPrim=(GXPrimitive)t;
     g_hleGxState.vertsRemaining=nv; g_hleGxState.inBegin=true; g_hleGxState.auroraBeginCalled=false;
     g_hleGxState.fifoReadOffset = 0;
     g_hleGxState.fifoByteCount=0; g_hleGxState.ResetVertex();
-    HleTryBeginRaw(static_cast<GXPrimitive>(t), static_cast<GXVtxFmt>(vf), static_cast<uint16_t>(nv));
+    // A raw begin publishes its own table (with GX_VA_NBT) right before submitting the draw, so
+    // the immediate-mode publish would only be overwritten.
+    const bool raw = HleTryBeginRaw(static_cast<GXPrimitive>(t), static_cast<GXVtxFmt>(vf),
+                                    static_cast<uint16_t>(nv));
+    static const bool rawSkipImmediate = [] {
+        const char* value = std::getenv("NSMBW_GX_RAW_SKIP_IMM");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (!raw || !rawSkipImmediate) {
+        ApplyAuroraVtxStateForBegin(static_cast<GXVtxFmt>(vf));
+    }
 }
 PPC_NATIVE_OVERRIDE_VOID(801c5570, GX__Begin_8016f0f0, (uint32_t t, uint32_t vf, uint32_t nv), (t, vf, nv));
 

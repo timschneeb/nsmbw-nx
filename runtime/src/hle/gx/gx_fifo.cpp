@@ -84,14 +84,46 @@ int HleGxState::GetExpectedCompCount(GXAttr attr, const VtxAttrFmt& fmt) {
     return static_cast<int>(AttrCompCount(attr, fmt, 1u));
 }
 
+namespace {
+
+struct RawPublishMemo {
+    bool valid = false;
+    uint32_t generation = 0;
+    uint32_t regs[6] = {};
+};
+
+RawPublishMemo g_rawPublish[GX_MAX_VTXFMT];
+
+// NSMBW_GX_RAW_MEMO=0 restores the per-begin publish for A/B runs.
+bool RawPublishMemoEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NSMBW_GX_RAW_MEMO");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+} // namespace
+
 static void ApplyAuroraVtxStateForRawBegin(GXVtxFmt fmt) {
+    uint32_t regs[6];
+    AuroraGetVtxFormatRegs(fmt, regs);
+    RawPublishMemo& memo = g_rawPublish[fmt];
+    if (RawPublishMemoEnabled() && memo.valid &&
+        memo.generation == g_hleGxState.vtxStateGeneration &&
+        std::memcmp(regs, memo.regs, sizeof(regs)) == 0) {
+        return;
+    }
     // KNOWN DIVERGENCE: this is the only publish site with includeNbt=true, so it also
     // publishes GX_VA_NBT after GX_VA_NRM, which makes aurora's SETVAT fall-through clobber the
     // NRM VAT with the default. Raw-FIFO geometry renders correctly with it; do not "fix" without
-    // an in-race A/B run.
+    // an in-race A/B run. The memo records the registers this leaves, clobber included.
     PublishAuroraVtxState(fmt, AuroraVtxPublishOptions{/*includeNbt=*/true,
                                                        /*fmtLoopFirst=*/0,
                                                        /*fmtLoopLast=*/25});
+    AuroraGetVtxFormatRegs(fmt, memo.regs);
+    memo.generation = g_hleGxState.vtxStateGeneration;
+    memo.valid = true;
 }
 
 // There is deliberately no indexed-aurora path here. Immediate-mode indexed

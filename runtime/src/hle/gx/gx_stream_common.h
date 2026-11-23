@@ -398,8 +398,11 @@ struct AuroraVtxPublishOptions {
 // One GXSetVtxDescv and one GXSetVtxAttrFmtv with every attribute in order, which leave aurora in
 // exactly the state the per-attribute GXSetVtxDesc / GXSetVtxAttrFmt calls did (same registers, set
 // in the same order; dirty when any of them changed): two calls per draw instead of ~48.
-inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& options,
-                                  bool publishDesc = true) {
+// The descriptor half and the VAT half are separate so a caller can publish a sparse VAT row.
+// Either half may be skipped; the epoch bump is kept for the begin-path memos.
+inline void PublishAuroraVtxStateSparse(GXVtxFmt fmt, const GXVtxAttrFmtList* fmts,
+                                        bool publishDesc,
+                                        const AuroraVtxPublishOptions& options) {
     ++g_hleGxState.auroraVtxPublishEpoch;
     if (publishDesc) {
         GXVtxDescList descs[27];
@@ -418,6 +421,13 @@ inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& o
         GXSetVtxDescv(descs);
     }
 
+    if (fmts != nullptr) {
+        GXSetVtxAttrFmtv(fmt, fmts);
+    }
+}
+
+inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& options,
+                                  bool publishDesc = true) {
     GXVtxAttrFmtList fmts[27];
     size_t fmtCount = 0;
     for (int attr = options.fmtLoopFirst; attr <= options.fmtLoopLast; ++attr) {
@@ -433,7 +443,9 @@ inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& o
     }
     if (fmtCount != 0) {
         fmts[fmtCount] = GXVtxAttrFmtList{GX_VA_NULL, GX_POS_XYZ, GX_F32, 0};
-        GXSetVtxAttrFmtv(fmt, fmts);
+        PublishAuroraVtxStateSparse(fmt, fmts, publishDesc, options);
+    } else {
+        PublishAuroraVtxStateSparse(fmt, nullptr, publishDesc, options);
     }
 }
 
