@@ -123,15 +123,61 @@ static std::vector<DVDFileEntry> g_fileEntries;
 namespace {
 
 using FileBytes = std::shared_ptr<const std::vector<uint8_t>>;
+
+struct ReadCacheEntry {
+    FileBytes bytes;
+    uint64_t lastUse = 0;
+};
+
 std::mutex g_readCacheMutex;
-std::unordered_map<fs::path::string_type, FileBytes> g_readCache;
+std::unordered_map<fs::path::string_type, ReadCacheEntry> g_readCache;
+uint64_t g_readCacheBytes = 0;
+uint64_t g_readCacheClock = 0;
+uint64_t g_readCacheLimitBytes = 0;
+bool g_readCacheEnabled = false;
 std::atomic<uint64_t> g_dvdReadNanos{0};
 std::atomic<uint32_t> g_dvdReads{0};
+
+// Files up to this size are cached whole on first read, so repeated loads (the world map menu is
+// read on every open) skip the storage. Larger streams keep the direct path.
+constexpr uint64_t kReadThroughMaxFileBytes = 2ull << 20;
 
 FileBytes CachedFile(const fs::path& path) {
     std::lock_guard lock(g_readCacheMutex);
     const auto it = g_readCache.find(path.native());
-    return it != g_readCache.end() ? it->second : nullptr;
+    if (it == g_readCache.end()) {
+        return nullptr;
+    }
+    it->second.lastUse = ++g_readCacheClock;
+    return it->second.bytes;
+}
+
+// Insert a read-through file, evicting the least recently used entries to stay inside the budget.
+// The preload fills the same budget at boot; entries it never served are the first victims.
+void PutCachedFile(const fs::path& path, FileBytes bytes) {
+    if (!bytes || bytes->empty() || g_readCacheLimitBytes == 0) {
+        return;
+    }
+    const uint64_t size = bytes->size();
+    if (size > g_readCacheLimitBytes) {
+        return;
+    }
+    std::lock_guard lock(g_readCacheMutex);
+    if (g_readCache.find(path.native()) != g_readCache.end()) {
+        return;
+    }
+    while (g_readCacheBytes + size > g_readCacheLimitBytes && !g_readCache.empty()) {
+        auto oldest = g_readCache.begin();
+        for (auto it = g_readCache.begin(); it != g_readCache.end(); ++it) {
+            if (it->second.lastUse < oldest->second.lastUse) {
+                oldest = it;
+            }
+        }
+        g_readCacheBytes -= oldest->second.bytes->size();
+        g_readCache.erase(oldest);
+    }
+    g_readCacheBytes += size;
+    g_readCache.emplace(path.native(), ReadCacheEntry{std::move(bytes), ++g_readCacheClock});
 }
 
 
@@ -202,6 +248,44 @@ bool ReadWithOpenFile(const fs::path& path, uint64_t offset, uint32_t length, st
 }
 #endif
 
+bool TryReadThroughCache(const fs::path& path, uint64_t offset, uint32_t length,
+                         std::vector<uint8_t>& destination, DvdReadContract::HostReadFailure& failure) {
+#if defined(_WIN32) || defined(__ANDROID__) || defined(MKW_PLATFORM_SWITCH)
+    if (!g_readCacheEnabled) {
+        return false;
+    }
+    std::error_code ec;
+    const uint64_t size = fs::file_size(path, ec);
+    if (ec || size == 0 || size > kReadThroughMaxFileBytes) {
+        return false;
+    }
+    if (offset >= size) {
+        failure = DvdReadContract::HostReadFailure::BadOffset;
+        return true;
+    }
+    if (length > size - offset) {
+        failure = DvdReadContract::HostReadFailure::ShortRead;
+        return true;
+    }
+    auto bytes = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(size));
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    if (!file.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(size))) {
+        return false;
+    }
+    PutCachedFile(path, bytes);
+    destination.assign(bytes->begin() + static_cast<std::ptrdiff_t>(offset),
+                       bytes->begin() + static_cast<std::ptrdiff_t>(offset + length));
+    failure = DvdReadContract::HostReadFailure::None;
+    return true;
+#else
+    (void)path; (void)offset; (void)length; (void)destination; (void)failure;
+    return false;
+#endif
+}
+
 bool ReadHostFile(const fs::path& path, uint64_t offset, uint32_t length, std::vector<uint8_t>& destination,
                   DvdReadContract::HostReadFailure& failure) {
     const auto start = std::chrono::steady_clock::now();
@@ -217,12 +301,14 @@ bool ReadHostFile(const fs::path& path, uint64_t offset, uint32_t length, std::v
                                bytes->begin() + static_cast<std::ptrdiff_t>(offset + length));
             ok = true;
         }
-    } else {
+    } else if (!TryReadThroughCache(path, offset, length, destination, failure)) {
 #if defined(__ANDROID__)
         ok = ReadWithOpenFile(path, offset, length, destination, failure);
 #else
         ok = DvdReadContract::ReadExact(path, offset, length, destination, failure);
 #endif
+    } else {
+        ok = true;
     }
     g_dvdReadNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                        std::chrono::steady_clock::now() - start)
@@ -254,19 +340,20 @@ void StartReadCachePreload() {
 #if defined(MKW_PLATFORM_SWITCH)
     // The Switch keeps the whole disc in RAM, but 384 MiB is enough for the streaming reads and
     // leaves room for guest memory and the GPU caches.
-    constexpr uint64_t kCacheLimitBytes = 384ull << 20;
+    g_readCacheLimitBytes = 384ull << 20;
 #elif defined(__ANDROID__)
-    const uint64_t kCacheLimitBytes = std::min<uint64_t>(1ull << 30, ram / 8);
+    g_readCacheLimitBytes = std::min<uint64_t>(1ull << 30, ram / 8);
 #else
-    constexpr uint64_t kCacheLimitBytes = 1ull << 30;
+    g_readCacheLimitBytes = 1ull << 30;
 #endif
+    g_readCacheEnabled = true;
     std::vector<fs::path> paths;
     for (const DVDFileEntry& entry : g_fileEntries) {
         if (!entry.isDirectory && entry.size > 0) {
             paths.push_back(entry.hostPath);
         }
     }
-    std::thread([paths = std::move(paths), kCacheLimitBytes] {
+    std::thread([paths = std::move(paths)] {
 #if defined(_WIN32)
         ::SetThreadPriority(::GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
 #elif defined(__ANDROID__)
@@ -278,8 +365,15 @@ void StartReadCachePreload() {
         for (const fs::path& path : paths) {
             std::error_code ec;
             const uint64_t size = fs::file_size(path, ec);
-            if (ec || size == 0 || total + size > kCacheLimitBytes || CachedFile(path)) {
+            if (ec || size == 0) {
                 continue;
+            }
+            {
+                std::lock_guard lock(g_readCacheMutex);
+                if (g_readCacheBytes + size > g_readCacheLimitBytes ||
+                    g_readCache.find(path.native()) != g_readCache.end()) {
+                    continue;
+                }
             }
             std::ifstream file(path, std::ios::binary);
             auto bytes = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(size));
@@ -288,7 +382,10 @@ void StartReadCachePreload() {
             }
             {
                 std::lock_guard lock(g_readCacheMutex);
-                g_readCache.emplace(path.native(), std::move(bytes));
+                if (g_readCache.find(path.native()) == g_readCache.end()) {
+                    g_readCacheBytes += size;
+                    g_readCache.emplace(path.native(), ReadCacheEntry{std::move(bytes), ++g_readCacheClock});
+                }
             }
             total += size;
             ++files;
