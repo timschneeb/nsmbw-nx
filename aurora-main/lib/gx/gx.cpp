@@ -267,6 +267,8 @@ struct TlutObjectCache {
 absl::flat_hash_map<u32, CachedTextureEntry> s_textureObjectCaches;
 absl::flat_hash_map<u32, TlutObjectCache> s_tlutObjectCaches;
 absl::flat_hash_map<StaticTextureKey, StaticTextureSourceEntry> s_staticTextureSourceCache;
+// NSMBW: bumped on every source-cache change so find_patch_targets can memoize by destination.
+u64 s_staticTextureSourceGeneration = 0;
 absl::flat_hash_map<StaticPaletteTextureKey, StaticPaletteTextureSourceEntry> s_staticPaletteTextureSourceCache;
 absl::flat_hash_map<u32, StaticTextureKey> s_texObjSourceKeys;
 absl::flat_hash_map<u32, StaticPaletteTextureKey> s_texObjPaletteSourceKeys;
@@ -297,11 +299,24 @@ struct StaticTextureContentEntry {
   size_t bytes = 0;
 };
 absl::flat_hash_map<StaticTextureContentKey, StaticTextureContentEntry> s_staticTextureContentCache;
+// NSMBW: handle -> its content-cache key, so a patched copy's forget is O(1) instead of a scan.
+absl::flat_hash_map<const void*, StaticTextureContentKey> s_staticTextureContentHandleIndex;
 u64 s_contentCacheClock = 0;
 size_t s_contentCacheBytes = 0;
 constexpr size_t kContentCacheBudgetBytes = 96u << 20;
 
 void forget_content_cached_handle(const gfx::TextureHandle& handle) {
+  if (const auto indexIt = s_staticTextureContentHandleIndex.find(handle.get());
+      indexIt != s_staticTextureContentHandleIndex.end()) {
+    if (const auto cacheIt = s_staticTextureContentCache.find(indexIt->second);
+        cacheIt != s_staticTextureContentCache.end()) {
+      s_contentCacheBytes -= cacheIt->second.bytes;
+      s_staticTextureContentCache.erase(cacheIt);
+    }
+    s_staticTextureContentHandleIndex.erase(indexIt);
+    return;
+  }
+  // A handle not in the index should not be in the cache, but keep the scan for safety.
   absl::erase_if(s_staticTextureContentCache, [&](const auto& item) {
     if (item.second.handle != handle) {
       return false;
@@ -313,6 +328,7 @@ void forget_content_cached_handle(const gfx::TextureHandle& handle) {
 
 void clear_static_texture_content_cache() {
   s_staticTextureContentCache.clear();
+  s_staticTextureContentHandleIndex.clear();
   s_contentCacheBytes = 0;
 }
 
@@ -694,8 +710,42 @@ gfx::TextureHandle get_tlut_texture(const GXTlutObj_& tlut) {
 
 // NSMBW: every cached static texture whose RAM contains `dest`, with the patch's place in it. A copy
 // into part of a texture (NSMBW's animated tiles patch the tile atlas) is then applied on the GPU.
-std::vector<PatchTarget> find_patch_targets(const void* dest) {
+namespace {
+
+// NSMBW: the patched EFB copy destination is the same atlas every frame, so the source-cache scan
+// below only has to run when the source cache changes. The forget side effect is still per call.
+struct PatchTargetMemoEntry {
+  const void* dest = nullptr;
+  u64 generation = 0;
   std::vector<PatchTarget> targets;
+};
+std::array<PatchTargetMemoEntry, 8> s_patchTargetMemos;
+u32 s_patchTargetMemoNext = 0;
+
+bool patch_target_memo_enabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("NSMBW_GX_PATCH_MEMO");
+    return value == nullptr || value[0] != '0';
+  }();
+  return enabled;
+}
+
+} // namespace
+
+const std::vector<PatchTarget>& find_patch_targets(const void* dest) {
+  const u64 generation = s_staticTextureSourceGeneration;
+  if (patch_target_memo_enabled()) {
+    for (const auto& memo : s_patchTargetMemos) {
+      if (memo.dest == dest && memo.generation == generation) {
+        for (const auto& target : memo.targets) {
+          forget_content_cached_handle(target.texture);
+        }
+        return memo.targets;
+      }
+    }
+  }
+  static thread_local std::vector<PatchTarget> scratch;
+  scratch.clear();
   const auto* d = static_cast<const uint8_t*>(dest);
   for (const auto& [key, entry] : s_staticTextureSourceCache) {
     if (!entry.handle || key.data == nullptr || key.mips > 1) {
@@ -726,9 +776,16 @@ std::vector<PatchTarget> find_patch_targets(const void* dest) {
     const u32 blocksPerRow = (key.width + blockW - 1) / blockW;
     const u32 block = static_cast<u32>(d - base) / blockBytes;
     forget_content_cached_handle(entry.handle);
-    targets.push_back({entry.handle, (block % blocksPerRow) * blockW, (block / blocksPerRow) * blockH});
+    scratch.push_back({entry.handle, (block % blocksPerRow) * blockW, (block / blocksPerRow) * blockH});
   }
-  return targets;
+  if (patch_target_memo_enabled()) {
+    auto& memo = s_patchTargetMemos[s_patchTargetMemoNext++ % s_patchTargetMemos.size()];
+    memo.dest = dest;
+    memo.generation = generation;
+    memo.targets = scratch;
+    return memo.targets;
+  }
+  return scratch;
 }
 
 namespace {
@@ -881,6 +938,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
     if (auto it = s_staticTextureSourceCache.find(sourceKey); it != s_staticTextureSourceCache.end()) {
       if (!validate_static_texture_source_entry(sourceKey, it->second, &sourceDigest)) {
         s_staticTextureSourceCache.erase(it);
+        ++s_staticTextureSourceGeneration;
         clear_static_source_front_cache();
       } else {
         const auto& handle = it->second.handle;
@@ -924,6 +982,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
         // What the GPU holds: RGBA8 texels, a third more with mips.
         const size_t bytes = size_t{obj.width()} * obj.height() * 4 * (obj.mip_count() > 1 ? 4 : 3) / 3;
         s_staticTextureContentCache[contentKey] = {handle, ++s_contentCacheClock, bytes};
+        s_staticTextureContentHandleIndex[handle.get()] = contentKey;
         s_contentCacheBytes += bytes;
         if (s_contentCacheBytes > kContentCacheBudgetBytes) {
           std::vector<std::pair<u64, StaticTextureContentKey>> byAge;
@@ -938,6 +997,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
             }
             const auto it = s_staticTextureContentCache.find(key);
             s_contentCacheBytes -= it->second.bytes;
+            s_staticTextureContentHandleIndex.erase(it->second.handle.get());
             s_staticTextureContentCache.erase(it);
           }
         }
@@ -952,6 +1012,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
         clear_static_source_front_cache();
       }
       s_staticTextureSourceCache[sourceKey] = make_static_texture_source_entry(sourceKey, handle, &sourceDigest);
+      ++s_staticTextureSourceGeneration;
       store_static_source_front_cache(sourceKey, sourceHash, handle);
       if (obj.texObjId != 0) {
         record_tex_obj_source_key(obj.texObjId, sourceKey);
@@ -1352,6 +1413,7 @@ void evict_texture_object(u32 texObjId) noexcept {
   }
   if (const auto it = s_texObjSourceKeys.find(texObjId); it != s_texObjSourceKeys.end()) {
     s_staticTextureSourceCache.erase(it->second);
+    ++s_staticTextureSourceGeneration;
     s_texObjSourceKeys.erase(it);
     s_texObjSourceKeyMemo.forget(texObjId);
     clear_static_source_front_cache();
@@ -1453,6 +1515,7 @@ void invalidate_static_texture_cache() noexcept {
     s_textureObjectCaches.clear();
     s_tlutObjectCaches.clear();
     s_staticTextureSourceCache.clear();
+    ++s_staticTextureSourceGeneration;
     clear_static_texture_content_cache();
     s_staticPaletteTextureSourceCache.clear();
     s_texObjSourceKeys.clear();
@@ -1487,6 +1550,7 @@ void reset_static_texture_caches() noexcept {
   s_textureObjectCaches.clear();
   s_tlutObjectCaches.clear();
   s_staticTextureSourceCache.clear();
+  ++s_staticTextureSourceGeneration;
   clear_static_texture_content_cache();
   s_staticPaletteTextureSourceCache.clear();
   s_texObjSourceKeys.clear();
@@ -2585,6 +2649,7 @@ void shutdown() noexcept {
   s_textureObjectCaches.clear();
   s_tlutObjectCaches.clear();
   s_staticTextureSourceCache.clear();
+  ++s_staticTextureSourceGeneration;
   clear_static_texture_content_cache();
   s_staticPaletteTextureSourceCache.clear();
   s_texObjSourceKeys.clear();

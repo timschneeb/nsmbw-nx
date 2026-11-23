@@ -475,7 +475,7 @@ struct PatchTarget {
   gfx::TextureHandle texture;
   u32 x = 0, y = 0;
 };
-std::vector<PatchTarget> find_patch_targets(const void* dest);
+const std::vector<PatchTarget>& find_patch_targets(const void* dest);
 // NSMBW: AuroraSetTextureOverride (GXAurora.h). Any thread; the decode thread applies it.
 void set_texture_override(u32 slot, const void* source, u32 sourceSize, u32 width, u32 height, u32 format,
                           const void* rgba, u32 rgbaWidth, u32 rgbaHeight);
