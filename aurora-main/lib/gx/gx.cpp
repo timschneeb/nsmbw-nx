@@ -349,14 +349,9 @@ void forget_content_cached_handle(const gfx::TextureHandle& handle) {
     s_staticTextureContentHandleIndex.erase(indexIt);
     return;
   }
-  // A handle not in the index should not be in the cache, but keep the scan for safety.
-  absl::erase_if(s_staticTextureContentCache, [&](const auto& item) {
-    if (item.second.handle != handle) {
-      return false;
-    }
-    s_contentCacheBytes -= item.second.bytes;
-    return true;
-  });
+  // The index is written whenever the cache is, so a miss means this handle was never cached
+  // (a replacement or a non-content upload) and there is nothing to forget. The old fallback
+  // scanned the whole cache here, which a patched tile paid on every copy.
 }
 
 void clear_static_texture_content_cache() {
