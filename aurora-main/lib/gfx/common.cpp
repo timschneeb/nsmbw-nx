@@ -193,6 +193,9 @@ struct RenderPass {
     TextureHandle native;  // the resolve target scaled to the patch's own size
     Range uniformRange;
     uint32_t x = 0, y = 0, width = 0, height = 0;
+    // NSMBW: the resolve target is already exactly this size and RGBA8, so the patch is a plain
+    // texture copy instead of a blit through a second texture.
+    bool direct = false;
   };
   std::vector<Patch> patches;
   // NSMBW: this pass renders a scratch strip into its own target (begin_strip_target). Such a pass
@@ -623,8 +626,14 @@ bool add_resolve_patch(const TextureHandle& source, TextureHandle dst, uint32_t 
   const std::array blitUniform{
       0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
   };
+  static const bool directEnabled = [] {
+    const char* value = std::getenv("NSMBW_GX_PATCH_DIRECT");
+    return value == nullptr || value[0] != '0';
+  }();
+  const bool direct = directEnabled && source->format == wgpu::TextureFormat::RGBA8Unorm &&
+                      source->size.width == width && source->size.height == height;
   auto makePatch = [&]() {
-    return RenderPass::Patch{std::move(dst), native, push_uniform(blitUniform), x, y, width, height};
+    return RenderPass::Patch{std::move(dst), native, push_uniform(blitUniform), x, y, width, height, direct};
   };
   // The pass or deferred resolve that produces `source`: the most recent one with it as its target.
   for (size_t i = g_currentRenderPass + 1; i-- > 0;) {
@@ -1927,18 +1936,21 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         cmd.CopyTextureToTexture(&src, &dst, &size);
       }
       for (const auto& patch : passInfo.patches) {
-        if (!patch.dst || !patch.native) {
+        if (!patch.dst || (!patch.direct && !patch.native)) {
           continue;
         }
-        tex_copy_conv::blit(cmd, tex_copy_conv::ConvRequest{
-                                     .fmt = GX_TF_RGBA8,
-                                     .srcView = passInfo.resolveTarget->sampleTextureView,
-                                     .uniformRange = patch.uniformRange,
-                                     .dst = patch.native,
-                                     .sampleFilter = tex_copy_conv::SampleFilter::Linear,
-                                 });
+        if (!patch.direct) {
+          tex_copy_conv::blit(cmd, tex_copy_conv::ConvRequest{
+                                       .fmt = GX_TF_RGBA8,
+                                       .srcView = passInfo.resolveTarget->sampleTextureView,
+                                       .uniformRange = patch.uniformRange,
+                                       .dst = patch.native,
+                                       .sampleFilter = tex_copy_conv::SampleFilter::Linear,
+                                   });
+        }
         patch.dst->materialize();  // a static texture (TextureRef::lazy)
-        const wgpu::TexelCopyTextureInfo src{.texture = patch.native->texture};
+        const wgpu::TexelCopyTextureInfo src{
+            .texture = patch.direct ? passInfo.resolveTarget->texture : patch.native->texture};
         const wgpu::TexelCopyTextureInfo dst{
             .texture = patch.dst->texture,
             .origin = wgpu::Origin3D{.x = patch.x, .y = patch.y},
@@ -1981,18 +1993,21 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         cmd.CopyTextureToTexture(&src, &dst, &size);
       }
       for (const auto& patch : op.patches) {
-        if (!patch.dst || !patch.native) {
+        if (!patch.dst || (!patch.direct && !patch.native)) {
           continue;
         }
-        tex_copy_conv::blit(cmd, tex_copy_conv::ConvRequest{
-                                     .fmt = GX_TF_RGBA8,
-                                     .srcView = op.target->sampleTextureView,
-                                     .uniformRange = patch.uniformRange,
-                                     .dst = patch.native,
-                                     .sampleFilter = tex_copy_conv::SampleFilter::Linear,
-                                 });
+        if (!patch.direct) {
+          tex_copy_conv::blit(cmd, tex_copy_conv::ConvRequest{
+                                       .fmt = GX_TF_RGBA8,
+                                       .srcView = op.target->sampleTextureView,
+                                       .uniformRange = patch.uniformRange,
+                                       .dst = patch.native,
+                                       .sampleFilter = tex_copy_conv::SampleFilter::Linear,
+                                   });
+        }
         patch.dst->materialize();
-        const wgpu::TexelCopyTextureInfo src{.texture = patch.native->texture};
+        const wgpu::TexelCopyTextureInfo src{
+            .texture = patch.direct ? op.target->texture : patch.native->texture};
         const wgpu::TexelCopyTextureInfo dst{
             .texture = patch.dst->texture,
             .origin = wgpu::Origin3D{.x = patch.x, .y = patch.y},
