@@ -6,6 +6,7 @@
 #include "tracy/Tracy.hpp"
 
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
@@ -104,6 +105,13 @@ void clear_shader_module_cache() {
 
 void render(const DrawData& data, const wgpu::RenderPassEncoder& pass, DrawEncodeState& state,
             bool requireReadyPipeline, const gfx::Range* uniformRangeOverride) {
+  static const int skipDraws = [] {
+    const char* value = std::getenv("NSMBW_GX_SKIP_DRAWS");
+    return value != nullptr ? std::atoi(value) : 0;
+  }();
+  if (skipDraws == 1) {
+    return;
+  }
   if (!gfx::bind_pipeline(data.pipeline, pass, state.currentPipeline, requireReadyPipeline)) {
     return;
   }
@@ -130,7 +138,9 @@ void render(const DrawData& data, const wgpu::RenderPassEncoder& pass, DrawEncod
     pass.SetIndexBuffer(gfx::g_indexBuffer, wgpu::IndexFormat::Uint16, 0, wgpu::kWholeSize);
     state.indexBufferBound = true;
   }
-  pass.DrawIndexed(data.indexCount, data.instanceCount,
-                   static_cast<uint32_t>(data.idxRange.offset / sizeof(uint16_t)));
+  if (skipDraws != 2) {
+    pass.DrawIndexed(data.indexCount, data.instanceCount,
+                     static_cast<uint32_t>(data.idxRange.offset / sizeof(uint16_t)));
+  }
 }
 } // namespace aurora::gx

@@ -39,6 +39,12 @@ typedef struct {
   // Time spent copying the recorded frame into the staging buffer, and the bytes copied.
   uint64_t stagingCopyNanos;
   uint64_t stagedBytes;
+  // Time the last native frame spent encoding scratch-copy resolves and patches, a substage of the
+  // worker's record phase.
+  uint64_t renderCopyNanos;
+  uint32_t viewportCommands;
+  uint32_t scissorCommands;
+  uint32_t drawCommands;
 } AuroraStats;
 
 typedef struct {
@@ -108,6 +114,8 @@ void aurora_release_shader_modules_light();
 void aurora_set_prewarm_boost(bool enabled);
 // Lets the queued boot prewarm run at background priority, without raising it above the guest.
 void aurora_prewarm_allow();
+// NSMBW: pauses background pipeline creation while a playable scene is on screen.
+void aurora_set_prewarm_enabled(bool enabled);
 
 // Cached pipelines held back at startup on drivers that stall the next present until every shader
 // handed to them is compiled: true until aurora_prewarm_release(UINT32_MAX). The embedder shows its

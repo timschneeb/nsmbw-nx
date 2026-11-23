@@ -537,7 +537,9 @@ static FrameBuffers s_pendingFrame;
 static bool s_pendingFrameValid = false;
 
 
+static uint32_t g_commandCounts[4] = {};
 static inline void push_command(CommandType type, const Command::Data& data) {
+  ++g_commandCounts[static_cast<uint32_t>(type)];
   if (!has_current_render_pass())
     UNLIKELY {
       Log.warn("Dropping command {}", magic_enum::enum_name(type));
@@ -1895,6 +1897,8 @@ void gpu_timer_end(wgpu::CommandEncoder& cmd);
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
                         bool finalize, DebugFrameData& debugFrame, const depth_peek::FrameMapping& depthMapping) {
   ZoneScoped;
+  const auto encodeStart = std::chrono::steady_clock::now();
+  uint64_t copyNanos = 0;
   // Palette conversions, MSAA resolves and EFB copies depend on sealed frame state, not on the
   // interpolation weight, so encode them on the native render and let replay slots sample them.
   const bool encodeTextureBakes = interpolatedFrame < 0;
@@ -2047,6 +2051,7 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
     }
     // NSMBW: strip copies deferred until the segment ended. All of them read the strip color that
     // the pass just produced, so one split serves the whole copy group.
+    const auto copyStart = std::chrono::steady_clock::now();
     for (const auto& op : passInfo.deferred) {
       if (!op.target) {
         continue;
@@ -2102,11 +2107,14 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         cmd.CopyTextureToTexture(&src, &dst, &size);
       }
     }
+    copyNanos += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - copyStart).count());
   }
   if (timeGpu) {
     gpu_timer_end(cmd);
   }
   if (finalize) {
+    g_stats.renderCopyNanos = copyNanos;
     recycle_render_passes(renderPasses);
   }
 
@@ -2286,6 +2294,10 @@ void seal_frame(SealedFrame& out) noexcept {
   recycle_render_passes(passes);
   passes.swap(g_renderPasses);
   g_stats.renderPassCount = static_cast<uint32_t>(passes.size());
+  g_stats.viewportCommands = g_commandCounts[static_cast<uint32_t>(CommandType::SetViewport)];
+  g_stats.scissorCommands = g_commandCounts[static_cast<uint32_t>(CommandType::SetScissor)];
+  g_stats.drawCommands = g_commandCounts[static_cast<uint32_t>(CommandType::Draw)];
+  g_commandCounts[0] = g_commandCounts[1] = g_commandCounts[2] = g_commandCounts[3] = 0;
   uint32_t efbPasses = 0;
   for (const auto& pass : passes) {
     if (pass.colorView.Get() == webgpu::g_frameBuffer.view.Get()) {

@@ -631,6 +631,9 @@ void LogSceneChanges() {
     s_lastScene = now;
     GuestProfiler::NoteScene(now);
     NsmbwShadowSamplerSetScene(now);
+    // Background shader prewarm contends for the GPU device lock; keep it off while a level or the
+    // world map is playable and let it run during boot and scene transitions.
+    aurora_set_prewarm_enabled(now != 0x005u && now != 0x003u);
     char name[48] = "?";
     uint32_t namePtr = 0;
     if (now < 0x300u && Memory::TryRead32(0x80320840u + now * 4u, namePtr) && namePtr != 0) {
@@ -1399,10 +1402,18 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                                       workerStages[4] + workerStages[5] + workerStages[6]) /
                                      1e6 / n;
             const double workerCycle = workerStages[7] / 1e6 / n;
-            FrameStats::Log("worker: cycle %.2f seal %.2f enc %.2f record %.2f fill %.2f finish %.2f submit %.2f tail %.2f "
-                     "prep %.2f ms/frame\n", workerCycle, workerStages[0] / 1e6 / n, workerStages[1] / 1e6 / n,
-                     workerStages[2] / 1e6 / n, workerStages[3] / 1e6 / n, workerStages[4] / 1e6 / n,
-                     workerStages[5] / 1e6 / n, workerStages[6] / 1e6 / n, workerCycle - workerSum);
+            const AuroraStats* workerStats = aurora_get_stats();
+            FrameStats::Log("worker: cycle %.2f seal %.2f enc %.2f record %.2f (copy %.2f) fill %.2f finish %.2f submit %.2f tail %.2f "
+                     "prep %.2f ms/frame, %u draws, %u merged, %u passes, vp %u sc %u\n", workerCycle, workerStages[0] / 1e6 / n,
+                     workerStages[1] / 1e6 / n, workerStages[2] / 1e6 / n,
+                     workerStats != nullptr ? static_cast<double>(workerStats->renderCopyNanos) / 1e6 / n : 0.0,
+                     workerStages[3] / 1e6 / n, workerStages[4] / 1e6 / n,
+                     workerStages[5] / 1e6 / n, workerStages[6] / 1e6 / n, workerCycle - workerSum,
+                     workerStats != nullptr ? workerStats->drawCallCount : 0,
+                     workerStats != nullptr ? workerStats->mergedDrawCallCount : 0,
+                     workerStats != nullptr ? workerStats->renderPassCount : 0,
+                     workerStats != nullptr ? workerStats->viewportCommands : 0,
+                     workerStats != nullptr ? workerStats->scissorCommands : 0);
             const double presentWaitN = presentWaitFrames != 0 ? presentWaitFrames : 1;
             static uint64_t s_lastMapWait = 0;
             const uint64_t mapWait = stats != nullptr ? stats->stagingMapWaitNanos : 0;

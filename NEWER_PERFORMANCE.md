@@ -768,9 +768,28 @@ worker record (ms)       26-30     16-25
 worker submit (ms)       23-25     17-21
 ```
 
-That is about 20% off the frame at stock clocks, but 8-3 is still renderer-bound: the worker
-records about 8k draws in 16 to 25 ms and waits 17 to 21 ms on the GPU. One 2 s window still
-reported 70 passes, so a few scratch patterns fall back to splits.
+That is about 20% off the frame at stock clocks. One 2 s window still reported 70 passes, so a few
+scratch patterns fall back to splits.
+
+### Shader prewarm contention
+
+The 8k GX draws merge into 230 to 290 renderer draws, so the worker cost is not the draw count.
+The remaining worker time was being taken by the background shader prewarm. Each pipeline build
+holds the Dawn device lock for tens of milliseconds (Tint and the driver compile), so every render
+command the frame worker records waits behind it. A 20 to 30 s 8-3 run still had about 1500 of
+2500 pipelines queued, so the contention never stopped.
+
+```
+                        prewarm running   gated
+p50 (ms)                   41-48           35-39
+worker cycle (ms)          39-45           19
+worker record (ms)         19-25           6.4
+worker submit (ms)         17-20           11
+```
+
+Background prewarm now pauses while scene 0x005 (stage) or 0x003 (world map) is on screen and
+resumes during boot, menus and scene transitions. `NSMBW_PREWARM=off` disables it entirely. The
+worker now has headroom; the frame is guest-bound at about 32 ms.
 
 `NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
 begin/end with its shape plus `slots N` and `slots used N/M`.

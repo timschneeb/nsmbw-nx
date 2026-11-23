@@ -1196,6 +1196,10 @@ static std::atomic_bool g_prewarmBoost{false};
 // False until the first visible guest frame. The queued recipes stay pending so the guest's boot
 // and loading screen are not slowed by background pipeline work.
 static std::atomic_bool g_prewarmAllowed{false};
+// NSMBW: the embedder drops this while a level or the world map is on screen. Background pipeline
+// creation holds the Dawn device lock for tens of milliseconds (Tint plus the driver), which stalls
+// every render command the frame worker records, so it must not run during gameplay.
+static std::atomic_bool g_prewarmEnabled{true};
 static std::chrono::steady_clock::time_point g_prewarmStart{};
 static std::atomic<uint32_t> g_prewarmDone{0};
 static uint32_t g_prewarmCount = 0;
@@ -1317,7 +1321,8 @@ static void pipeline_worker() {
       g_pipelineCv.wait(lock, [] {
         const bool priorityReady = !g_priorityPipelines.empty() &&
                                    g_activePriorityPipelineWorkers < MaxPriorityPipelineWorkers;
-        const bool backgroundReady = g_prewarmAllowed.load(std::memory_order_relaxed) &&
+        const bool backgroundReady = g_prewarmEnabled.load(std::memory_order_relaxed) &&
+                                     g_prewarmAllowed.load(std::memory_order_relaxed) &&
                                      !g_backgroundPipelines.empty() &&
                                      g_activeBackgroundPipelineWorkers < MaxBackgroundPipelineWorkers &&
                                      (!g_prewarmHeld || g_prewarmBudget > 0);
@@ -1460,6 +1465,21 @@ static void load_pipeline_cache() {
                                                      clear::create_pipeline);
   load_pipeline_cache_entries<gx::PipelineConfig>(ShaderType::GX, gx::GXPipelineConfigVersion,
                                                   gx::create_pipeline);
+  // NSMBW_PREWARM=off drops the queued background builds: first-use pipelines still promote to the
+  // priority queue and compile, but the background pass no longer competes with the game threads.
+  static const bool prewarmDisabled = [] {
+    const char* value = std::getenv("NSMBW_PREWARM");
+    return value != nullptr && (value[0] == '0' || std::strcmp(value, "off") == 0);
+  }();
+  if (prewarmDisabled) {
+    std::lock_guard lock{g_pipelineMutex};
+    g_backgroundPipelines.clear();
+    g_pendingPipelines.clear();
+    queuedPipelines = 0;
+    g_prewarmCount = 0;
+    g_prewarmActive.store(false, std::memory_order_relaxed);
+    Log.info("Pipeline prewarm disabled by NSMBW_PREWARM");
+  }
   const auto queued = queuedPipelines.load();
   if (queued > 0) {
     g_prewarmCount = queued;
@@ -1642,6 +1662,12 @@ void set_prewarm_boost(bool enabled) noexcept {
   g_pipelineCv.notify_all();
 }
 
+void set_prewarm_enabled(bool enabled) noexcept {
+  if (g_prewarmEnabled.exchange(enabled, std::memory_order_relaxed) != enabled) {
+    g_pipelineCv.notify_all();
+  }
+}
+
 // Starts the queued prewarm at background priority. The caller already has a visible screen, so
 // the worker must not outrank the thread drawing it.
 void allow_prewarm() noexcept {
@@ -1735,6 +1761,7 @@ void aurora_release_shader_modules_light() {
 void aurora_set_prewarm_boost(bool enabled) { aurora::gfx::set_prewarm_boost(enabled); }
 
 void aurora_prewarm_allow() { aurora::gfx::allow_prewarm(); }
+void aurora_set_prewarm_enabled(bool enabled) { aurora::gfx::set_prewarm_enabled(enabled); }
 
 bool aurora_prewarm_held() { return aurora::gfx::prewarm_held(); }
 
