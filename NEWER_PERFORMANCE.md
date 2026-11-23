@@ -696,6 +696,36 @@ slightly better. Switch, World 4 map, `stats = "light"`, walking, median of 16 r
 not recorded with the same build, so treat this as the current state; the sampler table is the
 controlled before/after.
 
+## 8-3 and the render worker
+
+8-3 at stock clocks varies with the section. A stable stretch measured p50 28.3 ms with guest
+CPU 25.8 ms (`gx` 9.1, `gx fifo` 5.6) and a render worker cycle of 24.9 ms (record 9.6, submit
+13.6). A later section measured 56 to 62 ms with the worker record at 26 to 30 ms, so frame-time
+A/Bs within 8-3 are only meaningful for the same stretch.
+
+The stock-clock host samples show where the guest time goes: 31.7% waiting on the frame worker
+(`svcWaitProcessWideKeyAtomic`), 11.9% in mutex lock/unlock/signal, then `find_patch_targets`
+4.75%, `forget_content_cached_handle` 1.30%, display list scan 1.82%, and about 5% in
+`stats = "full"` timing. The worker is therefore as much of the 60 fps wall as the guest.
+
+One frame of 8-3 does 81 small EFB copies into the animated tile atlas, all 32x32 RGB5A3/RGBA8,
+plus the display copy. The patch path for each tile used to scan every cached static texture
+(`find_patch_targets`), erase the content cache with an `erase_if` scan, resolve the strip into a
+32x32 texture, blit that texture into a second 32x32 texture, and copy the result into the atlas.
+
+Changes:
+
+- Memoize `find_patch_targets` by destination with a generation counter on the source cache.
+- Return the target list by reference instead of allocating and copying a vector per copy.
+- Index the content cache by texture handle, so `forget_content_cached_handle` is O(1).
+- When the resolve target is already the patch size and RGBA8, copy it straight into the atlas
+  and skip the intermediate blit.
+
+`NSMBW_GX_PATCH_MEMO=0` and `NSMBW_GX_PATCH_DIRECT=0` restore the old paths. A deterministic 8-16
+demo capture is byte-identical with the direct path on and off. The remaining 8-3 worker cost is
+the scene itself: about 8k draws, 70 passes and a 13.6 ms submit. Batching the 81 tile copies
+does not move that; the next lever is the worker's draw and pass recording or the GPU work.
+
 ### PC harness caveat
 
 The PC scripted-input harness never reaches the world map. The save's world/node selects the
