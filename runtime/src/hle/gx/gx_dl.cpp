@@ -52,7 +52,10 @@ using GxCpDecode::SameVtxAttrFmt;
 // Small display lists dominate the in-race call count. Cache them as well, but
 // cap both individual entries and aggregate copied command bytes so malformed
 // guest input cannot turn this optimization into unbounded host allocation.
-constexpr uint32_t kDlScanCacheMaxEntryBytes = 64u * 1024u;
+// NSMBW: level geometry lists are several hundred KiB and were rescanned every
+// frame because of the old 64 KiB entry cap; their metadata is tiny (a verbatim
+// list stores no copy), so allow them in and keep the aggregate byte cap.
+constexpr uint32_t kDlScanCacheMaxEntryBytes = 1024u * 1024u;
 constexpr size_t kDlScanCacheMaxEntries = 8192;
 constexpr size_t kDlScanCacheMaxStoredBytes = 8u * 1024u * 1024u;
 
