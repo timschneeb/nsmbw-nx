@@ -601,6 +601,57 @@ baseline and PGO builds run normally.
 
 The PGO NRO is at `build-switch-newer2/NSMBW.nro`; the release install was restored afterwards.
 
+## Switch host sampling and the world-map stutter
+
+The guest profile could not explain the world-map stalls, so a real PC sampler was enabled
+without instrumenting the shards: `MKW_ENABLE_HOST_SAMPLER` defines `MKW_SHADOW_SAMPLER` for the
+runtime only (the host mode reads the thread context; the `-finstrument-functions` hooks are only
+needed by the inaccurate shadow mode). It builds in its own `build-switch-sample` directory, so
+the normal build stays clean. Console config:
+
+```
+[debug]
+stats = "full"
+env = "NSMBW_SAMPLE=60:60;NSMBW_SAMPLE_SCENE=0;NSMBW_SAMPLE_HOST=1;NSMBW_SAMPLE_HOST_HZ=100"
+```
+
+`host-samples.tsv` is symbolized with `scripts/host_samples.py --elf build-switch-sample/WiiCompiled.elf`
+(6,000 samples, 100 Hz for 60 s):
+
+| Sample | Before fix | After fix |
+|---|---:|---:|
+| `svcSendSyncRequest` (all IPC) | 18.78% | 3.98% |
+| of which `fsFileWrite` | **15.0% (900 samples)** | **0.12% (7)** |
+| of which `fsFileRead` | 3.7% | 3.8% |
+| `steady_clock::now` | 8.88% | 9.85% |
+| GX vertex publish (`GXSetVtxDescv` + `GXSetVtxAttrFmtv` + `PublishAuroraVtxState`) | 10.9% | 13.2% |
+| `HleFifoWrite` | 3.4% | 4.9% |
+
+The chain was unambiguous:
+
+```
+svcSendSyncRequest <- fsFileWrite   79.9%
+svcSendSyncRequest <- fsFileRead    19.8%
+```
+
+Newer calls `OSReport` while walking on the world map ("Activating world change", "Checking
+usability of path"), and `HLE_LogOSReport` flushed `std::cout` after every report while stdout was
+unbuffered on Switch. Each line was therefore a blocking SD write through `fs` IPC on the guest
+thread, tens of milliseconds, which is the visible walking stutter.
+
+Fix: stdout is buffered like stderr (256 KiB) and flushed together from the existing 250 ms
+background thread; `OSReport` no longer flushes per message on Switch. After the change the
+`fsFileWrite` share fell from 15% to 0.12% and the stutter is gone. The remaining IPC is file
+reads, which is asset streaming.
+
+Also collected in the same profile pass:
+
+- The map's 2D layout draws still spend about 13% in the GX vertex publish path on Switch. The
+  descriptor and VAT narrowing help the begin path, but the map alternates formats per draw, so
+  the per-format memo misses often.
+- `steady_clock::now` plus `PerfStats::GetLevel` and `clock_gettime` are about 15% with
+  `stats = "full"`. Part of that is measurement overhead; the release config keeps stats off.
+
 ## Source review
 
 The Newer source is available at `https://github.com/Newer-Team/NewerSMBW` and was checked against
