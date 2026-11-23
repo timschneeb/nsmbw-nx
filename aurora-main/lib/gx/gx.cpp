@@ -13,6 +13,7 @@
 #include "../gfx/texture_replacement.hpp"
 #include "gx_fmt.hpp"
 
+#include <absl/container/btree_map.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
 #include <tracy/Tracy.hpp>
@@ -267,8 +268,40 @@ struct TlutObjectCache {
 absl::flat_hash_map<u32, CachedTextureEntry> s_textureObjectCaches;
 absl::flat_hash_map<u32, TlutObjectCache> s_tlutObjectCaches;
 absl::flat_hash_map<StaticTextureKey, StaticTextureSourceEntry> s_staticTextureSourceCache;
-// NSMBW: bumped on every source-cache change so find_patch_targets can memoize by destination.
+// NSMBW: bumped on every source-cache change. Only a diagnostic now that patch targets are looked
+// up by address.
 u64 s_staticTextureSourceGeneration = 0;
+// NSMBW: source entries ordered by where they live in guest RAM, so find_patch_targets finds the
+// texture a copy destination falls inside without scanning the whole source cache. Sources are
+// normally disjoint; the multimap keeps aliased keys that share a base address.
+absl::btree_multimap<const uint8_t*, StaticTextureKey> s_staticTextureSourceByAddress;
+
+static void index_static_texture_source(const StaticTextureKey& key) {
+  if (key.data != nullptr) {
+    s_staticTextureSourceByAddress.emplace(static_cast<const uint8_t*>(key.data), key);
+  }
+}
+
+static void unindex_static_texture_source(const StaticTextureKey& key) {
+  if (key.data == nullptr) {
+    return;
+  }
+  const auto base = static_cast<const uint8_t*>(key.data);
+  const auto range = s_staticTextureSourceByAddress.equal_range(base);
+  for (auto it = range.first; it != range.second; ++it) {
+    if (it->second == key) {
+      s_staticTextureSourceByAddress.erase(it);
+      return;
+    }
+  }
+}
+
+static void rebuild_static_texture_source_index() {
+  s_staticTextureSourceByAddress.clear();
+  for (const auto& [key, entry] : s_staticTextureSourceCache) {
+    index_static_texture_source(key);
+  }
+}
 absl::flat_hash_map<StaticPaletteTextureKey, StaticPaletteTextureSourceEntry> s_staticPaletteTextureSourceCache;
 absl::flat_hash_map<u32, StaticTextureKey> s_texObjSourceKeys;
 absl::flat_hash_map<u32, StaticPaletteTextureKey> s_texObjPaletteSourceKeys;
@@ -712,49 +745,30 @@ gfx::TextureHandle get_tlut_texture(const GXTlutObj_& tlut) {
 // into part of a texture (NSMBW's animated tiles patch the tile atlas) is then applied on the GPU.
 namespace {
 
-// NSMBW: the patched EFB copy destination is the same atlas every frame, so the source-cache scan
-// below only has to run when the source cache changes. The forget side effect is still per call.
-struct PatchTargetMemoEntry {
-  const void* dest = nullptr;
-  u64 generation = 0;
-  std::vector<PatchTarget> targets;
-};
-std::array<PatchTargetMemoEntry, 8> s_patchTargetMemos;
-u32 s_patchTargetMemoNext = 0;
-
-bool patch_target_memo_enabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("NSMBW_GX_PATCH_MEMO");
-    return value == nullptr || value[0] != '0';
-  }();
-  return enabled;
-}
-
 } // namespace
 
 const std::vector<PatchTarget>& find_patch_targets(const void* dest) {
-  const u64 generation = s_staticTextureSourceGeneration;
-  if (patch_target_memo_enabled()) {
-    for (const auto& memo : s_patchTargetMemos) {
-      if (memo.dest == dest && memo.generation == generation) {
-        for (const auto& target : memo.targets) {
-          forget_content_cached_handle(target.texture);
-        }
-        return memo.targets;
-      }
-    }
-  }
-  static thread_local std::vector<PatchTarget> scratch;
-  scratch.clear();
+  static thread_local std::vector<PatchTarget> targets;
+  targets.clear();
   const auto* d = static_cast<const uint8_t*>(dest);
-  for (const auto& [key, entry] : s_staticTextureSourceCache) {
-    if (!entry.handle || key.data == nullptr || key.mips > 1) {
+  if (d == nullptr || s_staticTextureSourceByAddress.empty()) {
+    return targets;
+  }
+  // Sources are disjoint in normal use, so the closest base below the destination is the only
+  // candidate. Walk back a few entries to keep aliased or overlapping sources working.
+  auto it = s_staticTextureSourceByAddress.upper_bound(d);
+  for (int previous = 0; it != s_staticTextureSourceByAddress.begin() && previous < 8; ++previous) {
+    --it;
+    const StaticTextureKey& key = it->second;
+    if (key.mips > 1) {
+      continue;
+    }
+    const auto entryIt = s_staticTextureSourceCache.find(key);
+    if (entryIt == s_staticTextureSourceCache.end() || !entryIt->second.handle) {
       continue;
     }
     const auto* base = static_cast<const uint8_t*>(key.data);
-    const u32 size = GXGetTexBufferSize(static_cast<u16>(key.width), static_cast<u16>(key.height),
-                                        static_cast<GXTexFmt>(key.format), GX_FALSE, 0);
-    if (d < base || d >= base + size) {
+    if (base == nullptr || d < base || d >= base + entryIt->second.sourceSize) {
       continue;
     }
     u32 blockW = 4, blockH = 4, blockBytes = 32;
@@ -775,17 +789,11 @@ const std::vector<PatchTarget>& find_patch_targets(const void* dest) {
     }
     const u32 blocksPerRow = (key.width + blockW - 1) / blockW;
     const u32 block = static_cast<u32>(d - base) / blockBytes;
-    forget_content_cached_handle(entry.handle);
-    scratch.push_back({entry.handle, (block % blocksPerRow) * blockW, (block / blocksPerRow) * blockH});
+    forget_content_cached_handle(entryIt->second.handle);
+    targets.push_back(
+        {entryIt->second.handle, (block % blocksPerRow) * blockW, (block / blocksPerRow) * blockH});
   }
-  if (patch_target_memo_enabled()) {
-    auto& memo = s_patchTargetMemos[s_patchTargetMemoNext++ % s_patchTargetMemos.size()];
-    memo.dest = dest;
-    memo.generation = generation;
-    memo.targets = scratch;
-    return memo.targets;
-  }
-  return scratch;
+  return targets;
 }
 
 namespace {
@@ -937,6 +945,7 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
     }
     if (auto it = s_staticTextureSourceCache.find(sourceKey); it != s_staticTextureSourceCache.end()) {
       if (!validate_static_texture_source_entry(sourceKey, it->second, &sourceDigest)) {
+        unindex_static_texture_source(it->first);
         s_staticTextureSourceCache.erase(it);
         ++s_staticTextureSourceGeneration;
         clear_static_source_front_cache();
@@ -1009,9 +1018,12 @@ gfx::TextureHandle resolve_static_texture(const GXTexObj_& obj) {
     if (canUseSourceCache) {
       if (s_staticTextureSourceCache.size() >= 512) {
         absl::erase_if(s_staticTextureSourceCache, [](const auto& item) { return item.second.handle.use_count() <= 1; });
+        rebuild_static_texture_source_index();
         clear_static_source_front_cache();
       }
+      unindex_static_texture_source(sourceKey);
       s_staticTextureSourceCache[sourceKey] = make_static_texture_source_entry(sourceKey, handle, &sourceDigest);
+      index_static_texture_source(sourceKey);
       ++s_staticTextureSourceGeneration;
       store_static_source_front_cache(sourceKey, sourceHash, handle);
       if (obj.texObjId != 0) {
@@ -1412,6 +1424,7 @@ void evict_texture_object(u32 texObjId) noexcept {
     s_textureObjectCaches.erase(it);
   }
   if (const auto it = s_texObjSourceKeys.find(texObjId); it != s_texObjSourceKeys.end()) {
+    unindex_static_texture_source(it->second);
     s_staticTextureSourceCache.erase(it->second);
     ++s_staticTextureSourceGeneration;
     s_texObjSourceKeys.erase(it);
@@ -1515,6 +1528,7 @@ void invalidate_static_texture_cache() noexcept {
     s_textureObjectCaches.clear();
     s_tlutObjectCaches.clear();
     s_staticTextureSourceCache.clear();
+    s_staticTextureSourceByAddress.clear();
     ++s_staticTextureSourceGeneration;
     clear_static_texture_content_cache();
     s_staticPaletteTextureSourceCache.clear();
@@ -1550,6 +1564,7 @@ void reset_static_texture_caches() noexcept {
   s_textureObjectCaches.clear();
   s_tlutObjectCaches.clear();
   s_staticTextureSourceCache.clear();
+  s_staticTextureSourceByAddress.clear();
   ++s_staticTextureSourceGeneration;
   clear_static_texture_content_cache();
   s_staticPaletteTextureSourceCache.clear();
@@ -2649,6 +2664,7 @@ void shutdown() noexcept {
   s_textureObjectCaches.clear();
   s_tlutObjectCaches.clear();
   s_staticTextureSourceCache.clear();
+  s_staticTextureSourceByAddress.clear();
   ++s_staticTextureSourceGeneration;
   clear_static_texture_content_cache();
   s_staticPaletteTextureSourceCache.clear();

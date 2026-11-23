@@ -715,15 +715,16 @@ plus the display copy. The patch path for each tile used to scan every cached st
 
 Changes:
 
-- Memoize `find_patch_targets` by destination with a generation counter on the source cache.
+- Index the static texture source cache by guest address, so a copy destination finds its atlas
+  target without scanning the cache (see below).
 - Return the target list by reference instead of allocating and copying a vector per copy.
 - Index the content cache by texture handle, so `forget_content_cached_handle` is O(1).
 - When the resolve target is already the patch size and RGBA8, copy it straight into the atlas
   and skip the intermediate blit.
 
-`NSMBW_GX_PATCH_MEMO=0` and `NSMBW_GX_PATCH_DIRECT=0` restore the old paths. A deterministic 8-16
-demo capture is byte-identical with the direct path on and off. The remaining worker cost is the
-renderer's pass structure, not the copies themselves.
+`NSMBW_GX_PATCH_DIRECT=0` restores the old blit path. A deterministic 8-16 demo capture is
+byte-identical with the direct path on and off. The remaining worker cost is the renderer's pass
+structure, not the copies themselves.
 
 ### Scratch slot virtualization
 
@@ -789,7 +790,29 @@ worker submit (ms)         17-20           11
 
 Background prewarm now pauses while scene 0x005 (stage) or 0x003 (world map) is on screen and
 resumes during boot, menus and scene transitions. `NSMBW_PREWARM=off` disables it entirely. The
-worker now has headroom; the frame is guest-bound at about 32 ms.
+worker now has headroom.
+
+### Patch target address index
+
+`find_patch_targets` located the atlas texture containing a copy destination by scanning every
+entry of the static texture source cache (up to 512) and calling `GXGetTexBufferSize` for each.
+The generation-keyed memo missed whenever the game decoded any new texture, which is most frames,
+so the 81 tile copies paid that scan every frame.
+
+The source cache now keeps a `btree_multimap` from guest address to source key. A lookup takes the
+greatest base below the destination, checks up to eight entries back so aliased or overlapping
+sources still work, and uses the entry's stored `sourceSize` for the range test. This is both
+faster and always current.
+
+```
+                        memo     index
+p50 (ms)               35-39    28.8-29.5
+guest CPU (ms)         32-34    26.0-26.9
+gx (ms)                7.7-8.2  7.4-7.5
+fps                    27       33-34
+```
+
+A deterministic 8-16 capture is byte-identical to the memo path.
 
 `NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
 begin/end with its shape plus `slots N` and `slots used N/M`.
