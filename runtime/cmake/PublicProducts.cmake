@@ -133,7 +133,7 @@ target_compile_features(mkw_runtime_common PRIVATE cxx_std_20)
 target_compile_definitions(mkw_runtime_common PRIVATE
     SDL_MAIN_HANDLED
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
-if(MKW_ENABLE_SHADOW_SAMPLER)
+if(MKW_ENABLE_SHADOW_SAMPLER OR MKW_ENABLE_HOST_SAMPLER)
     target_compile_definitions(mkw_runtime_common PRIVATE MKW_SHADOW_SAMPLER=1)
 endif()
 if(MKW_MEMTRACE)

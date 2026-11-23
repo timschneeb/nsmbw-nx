@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -572,9 +573,15 @@ void ReopenMapMenu() noexcept {
 
 // create: its layout, animations, groups (Settings' four after the game's 19, copies of Quick Save's
 // on, idle, hit and off), panes and messages. Returns whether the layout's resource was there.
+static uint64_t MenuCreateMicros() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 extern "C" void MapMenuCreate_8077ab70(CpuContext* ctx) {
     const uint32_t menu = ctx->gpr[3];
     static int createCount = 0;
+    const uint64_t t0 = MenuCreateMicros();
     RT_LOGF(RT_TAG_RUNTIME, "world map menu: create #%d (0x%08X)\n", ++createCount, menu);
     const uint32_t layout = menu + kLayout;
     g_mapSettings = 0;
@@ -584,8 +591,11 @@ extern "C" void MapMenuCreate_8077ab70(CpuContext* ctx) {
     if (ctx->gpr[3] == 0) {
         return;
     }
+    const uint64_t t1 = MenuCreateMicros();
     Call(ctx, Memory::Read32(Memory::Read32(layout + 8) + 20), layout, kMapNames + 816, 0);  // Build
+    const uint64_t t2 = MenuCreateMicros();
     Call(ctx, kAnimResRegister, layout, kMapNames + 316, 7);
+    const uint64_t t3 = MenuCreateMicros();
     const uint32_t settingsGroup = MapActive() ? MapGroupName() : 0;
     if (settingsGroup == 0) {
         Call(ctx, kGroupRegister, layout, kMapNames + 404, kMapGroupAnims, kMapGroups);
@@ -609,10 +619,24 @@ extern "C" void MapMenuCreate_8077ab70(CpuContext* ctx) {
         ctx->gpr[1] = sp;
         RT_LOGF(RT_TAG_RUNTIME, "world map menu: Settings is one of its buttons\n");
     }
+    const uint64_t t4 = MenuCreateMicros();
     Memory::Write32(menu + kMapWindow, Memory::Read32(layout + 32));  // the root pane
     Call(ctx, kPPaneRegister, layout, kMapNames + 552, menu + kMapButtonPanes, 6);
+    const uint64_t t5 = MenuCreateMicros();
     Call(ctx, kTPaneRegister, layout, kMapNames + 616, menu + kMapTexts, 2);
+    const uint64_t t6 = MenuCreateMicros();
     Call(ctx, kTextMessages, layout, kMapNames + 752, kMapTextMessages, 2, 7);
+    const uint64_t t7 = MenuCreateMicros();
+    if (t7 - t0 >= 50000u) {
+        RT_LOGF(RT_TAG_RUNTIME,
+                "world map menu: create #%d took %llu us (read %llu, build %llu, anim %llu, "
+                "group %llu, pane %llu, text %llu, msg %llu)\n",
+                createCount, static_cast<unsigned long long>(t7 - t0),
+                static_cast<unsigned long long>(t1 - t0), static_cast<unsigned long long>(t2 - t1),
+                static_cast<unsigned long long>(t3 - t2), static_cast<unsigned long long>(t4 - t3),
+                static_cast<unsigned long long>(t5 - t4), static_cast<unsigned long long>(t6 - t5),
+                static_cast<unsigned long long>(t7 - t6));
+    }
     ctx->gpr[3] = 1;
 }
 

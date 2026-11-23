@@ -65,6 +65,7 @@ endif()
 option(MKW_BUILD_PRODUCTS "Build translated WiiCompiled product targets" ON)
 option(MKW_BUILD_PSQ_TESTS "Build focused PSQ ISA tests" OFF)
 option(MKW_ENABLE_SHADOW_SAMPLER "Instrument translated functions for the Switch shadow sampler" OFF)
+option(MKW_ENABLE_HOST_SAMPLER "Enable the Switch host-PC sampler without instrumenting translated shards" OFF)
 option(MKW_MEMTRACE "Trace heap allocations with the mem_tracker (Switch)" OFF)
 # Two-pass profile-guided optimisation: "generate" records gcov counters on the console,
 # "use" rebuilds against them. Empty is a normal build.
