@@ -652,6 +652,59 @@ Also collected in the same profile pass:
 - `steady_clock::now` plus `PerfStats::GetLevel` and `clock_gettime` are about 15% with
   `stats = "full"`. Part of that is measurement overhead; the release config keeps stats off.
 
+## GX vertex publish on the world map
+
+The host profile left the begin vertex publish at 13.2% of guest samples (`GXSetVtxDescv` 4.92%,
+`GXSetVtxAttrFmtv` 4.33%, `PublishAuroraVtxState` 3.93%). Two separate problems were behind it.
+
+**Double publish.** `GX__Begin` published the begin memo's vertex table, then `HleTryBeginRaw`
+published the raw-FIFO table right before submitting the draw, so every raw begin published twice
+and the first table was always overwritten. The raw path now publishes only when it takes the
+begin. On 900k begins of the attract demo: publishes 1.80M -> 0.94M, VAT entries 26.1M -> 15.7M.
+
+**Repeat publishes.** The raw path republished the descriptor (26 entries) and the VAT row (17
+entries) on every begin even when aurora already held exactly that state.
+`ApplyAuroraVtxStateForRawBegin` now keeps a per-format memo of
+`(vtxStateGeneration, packed vcd/vat registers)` and skips both when they still match. The
+registers are read after each publish, so the deliberate NRM clobber from the `GX_VA_NBT` entry is
+part of the memo key. Same demo: publishes 83.5k, VAT entries 1.24M, descriptor publishes 48k.
+
+The begin memo also became per-format: one entry per `GXVtxFmt` with its own generation, packed
+registers and applied VAT row, and a sparse `GXSetVtxAttrFmtv` that sends only changed attributes.
+If aurora's packed VAT for the format differs from the memo, the whole row is republished, which
+covers the raw NBT clobber, direct `GXSetVtxAttrFmt` calls and display-list replays.
+`NSMBW_GX_FMT_MEMO=0` and `NSMBW_GX_RAW_MEMO=0` restore the legacy behavior.
+
+`NSMBW_GX_FMT_VERIFY=1` compares every sparse publish against a full one. It caught the NBT
+clobber: the raw publish writes `GX_VA_NBT` last, whose default row is `cnt = GX_POS_XYZ` (1), and
+aurora's `SETVAT` treats it like NRM, so it sets the NRM VAT count bit. The old single-entry memo
+self-corrected on the next generation change; the per-format memo could skip it. With the VAT
+divergence check the 8-16 run reports 0 mismatches.
+
+World 4 map, host sampler, 60 s at 100 Hz, same save and walk:
+
+| Sample | Before | After |
+|---|---:|---:|
+| `GXSetVtxAttrFmtv` | 4.33% | 1.57% |
+| `GXSetVtxDescv` | 4.92% | 1.38% |
+| `PublishAuroraVtxState` | 3.93% | 1.22% |
+| total | 13.18% | 4.17% |
+
+The after numbers were taken with the debug counters still on the hot path, so the release build is
+slightly better. Switch, World 4 map, `stats = "light"`, walking, median of 16 report windows:
+40.8 fps, p50 23.6 ms, game 24.0 ms, guest 22.5 ms, gx 4.1 ms. The earlier 30 fps observation was
+not recorded with the same build, so treat this as the current state; the sampler table is the
+controlled before/after.
+
+### PC harness caveat
+
+The PC scripted-input harness never reaches the world map. The save's world/node selects the
+course played by the title screen's attract demo, which is what the scene log reports as
+`0x005 STAGE`, and the script only moves through the controller prompt and demo. Changing the
+save's subworld changes the demo course, which looks like level selection. World-map numbers must
+come from the console sampler. `NSMBW_CAPTURE_FRAME` and `NSMBW_CAPTURE_PATH` write the presented
+frame to a BMP; use them to check what a PC run is actually showing.
+
 ## Source review
 
 The Newer source is available at `https://github.com/Newer-Team/NewerSMBW` and was checked against
