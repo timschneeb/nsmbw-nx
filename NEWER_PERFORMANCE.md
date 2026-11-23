@@ -806,13 +806,35 @@ faster and always current.
 
 ```
                         memo     index
-p50 (ms)               35-39    28.8-29.5
-guest CPU (ms)         32-34    26.0-26.9
-gx (ms)                7.7-8.2  7.4-7.5
-fps                    27       33-34
+p50 (ms)               35-39    28.3-29.5
+guest CPU (ms)         32-34    25.3-26.3
+gx (ms)                7.7-8.2  7.6
+fps                    27       33.6-35.4
 ```
 
-A deterministic 8-16 capture is byte-identical to the memo path.
+A deterministic 8-16 capture is byte-identical to the memo path. Dropping the
+`forget_content_cached_handle` fallback scan (the handle index is authoritative) took another
+0.5 ms off the guest.
+
+### Where the remaining 8-3 time goes
+
+Host profile after the index, stock clocks, stats light, 3069 samples:
+
+| Sample | Share |
+|---|---:|
+| `svcWaitProcessWideKeyAtomic` (condvar / fiber idle) | 10.6% |
+| `steady_clock::now` + `PerfStats::GetLevel` + `clock_gettime` (stats) | 10.3% |
+| futex lock / signal / unlock | 7.1% |
+| `memcpy` (40% FIFO hand-off, 29% display-list copy, 20% raw vertex append) | 4.4% |
+| display-list scan | 4.3% |
+| largest single game function | 2.5% |
+
+The guest is 25.3 to 26.3 ms with stats light; normal play has stats off and does not pay the
+10% timing instrumentation. The worker is 21 ms (record 7.6, submit 11.5), the GPU 13 ms, so the
+frame is guest-bound. Nothing left is a single large hot spot; further gains have to come from
+call-graph work (re-recorded PGO, FIFO hand-off copies, cross-thread locking) rather than one
+function.
+
 
 `NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
 begin/end with its shape plus `slots N` and `slots used N/M`.
