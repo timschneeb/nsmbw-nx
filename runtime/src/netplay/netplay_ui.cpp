@@ -1863,68 +1863,6 @@ void TrackActiveFile() {
     }
 }
 
-// "Cheated" on each file Infinite Lives or the Power-Up was used on (RuntimeConfigFile::FileCheated),
-// at its card's top right: the file anchors N_posFile1_00..N_posFile3_00, in the game's layout units.
-// An erased file (its game data new again: dMj2dGame_c +2 bit 0) loses the mark.
-constexpr uint32_t kSaveMngInstance = 0x8042A040u, kSaveMngGames = 0x6C0, kSaveGameSize = 0x980;
-
-bool FileAnchors(float (&x)[3], float (&y)[3]) {
-    static uint32_t s_object = 0;
-    static float s_x[3] = {}, s_y[3] = {};
-    const uint32_t object = GameMenus::FileSelectObject();
-    if (object == 0) {
-        return false;
-    }
-    if (object != s_object) {
-        const uint32_t root = FindRootPane(object);
-        int found = 0;
-        if (root != 0) {
-            WalkPanes(root, 0, [&](uint32_t pane) {
-                const std::string name = LivePaneName(pane);
-                const int i = name == "N_posFile1_00" ? 0 : name == "N_posFile2_00" ? 1 : name == "N_posFile3_00" ? 2 : -1;
-                if (i >= 0) {
-                    s_x[i] = Memory::ReadFloat32(pane + 0x2C);
-                    s_y[i] = Memory::ReadFloat32(pane + 0x30);
-                    found |= 1 << i;
-                }
-            });
-        }
-        if (found != 7) {
-            return false;  // not built yet: look again next time
-        }
-        s_object = object;
-    }
-    std::copy(s_x, s_x + 3, x);
-    std::copy(s_y, s_y + 3, y);
-    return true;
-}
-
-bool FileIsNew(int file) {
-    uint32_t saves = 0;
-    return Memory::TryRead32(kSaveMngInstance, saves) && saves >= 0x80000000u && saves < 0x81800000u &&
-           (Memory::Read8(saves + kSaveMngGames + kSaveGameSize * static_cast<uint32_t>(file) + 2) & 1) != 0;
-}
-
-void DrawFileCheated(const Canvas& c) {
-    float x[3], y[3];
-    if (!FileAnchors(x, y)) {
-        return;
-    }
-    const bool stacked = FilesStacked();
-    for (int file = 0; file < 3; ++file) {
-        if (!RuntimeConfigFile::FileCheated(file)) {
-            continue;
-        }
-        if (FileIsNew(file)) {
-            RuntimeConfigFile::SetFileCheated(file, false);
-            continue;
-        }
-        // Centred above the card's "World N" in a row (the game's own); at the bar's right end where stacked.
-        const float gx = x[file] + (stacked ? 210.0f : 0.0f), gy = y[file] + (stacked ? 24.0f : 76.0f);
-        Text(c, "Cheated", gx * c.view.gameScaleX / c.view.scale, gy, 21, 1, 0xFF9040FFu);
-    }
-}
-
 // Made for a 16:9 screen (456 units tall, 811 across): the frame round it (6 and 7 units past the panel)
 // takes 96% of each.
 constexpr float kSettingsHeight = 424.0f, kSettingsWidth = 766.0f;
@@ -1961,14 +1899,11 @@ std::string TrWith(const char* english, const std::string& value) {
 
 bool TouchControlsTab();
 
-enum class CheatAsk { None, Lives, PowerUp };
-extern CheatAsk g_cheatAsk;
-extern int g_cheatAskReturn;
+enum class CheatAsk { Lives, PowerUp };
 
-// The row the tab's cursor is on: while the cheat question is up (its Yes / No take the cursor), the row
-// it was asked from.
+// The row the tab's cursor is on.
 int SettingsRow() {
-    return g_cheatAsk != CheatAsk::None ? g_cheatAskReturn : g_ui.cursor;
+    return g_ui.cursor;
 }
 
 // The help line while the cursor is on the tabs: what the open tab holds.
@@ -2234,12 +2169,7 @@ const char* BtModeLabel(const std::string& mode) {
 int g_powerUpChoice = -1;    // GameplayOptions's list; from Config.toml when the tab is first drawn
 int g_powerUpGivenAt = -1;   // the frame Power-Up was last pressed, for its note
 
-// Turning Infinite Lives on and Power-Up ask first (No Time Limit doesn't): "Are you sure? This will
-// mark your save as cheated.", Yes or No (the cursor: 0 or 1, No first). A file already marked isn't
-// asked about again.
-CheatAsk g_cheatAsk = CheatAsk::None;
-int g_cheatAskReturn = 0;  // the tab's cursor row, back to it after the answer
-
+// Infinite Lives and Power-Up take effect immediately; No Time Limit does the same.
 void DoCheat(CheatAsk cheat) {
     if (cheat == CheatAsk::Lives) {
         RuntimeConfigFile::SetInfiniteLives(true);
@@ -2253,49 +2183,6 @@ void DoCheat(CheatAsk cheat) {
     if (file >= 0 && cheat == CheatAsk::Lives) {
         RuntimeConfigFile::SetFileCheated(file, true);  // the Power-Up marks it once it's given
     }
-}
-
-void AskCheat(CheatAsk cheat) {
-    if (RuntimeConfigFile::FileCheated(GameplayOptions::ActiveFile())) {
-        DoCheat(cheat);
-        return;
-    }
-    g_cheatAsk = cheat;
-    g_cheatAskReturn = g_ui.cursor;
-    g_ui.cursor = 1;
-}
-
-void DrawCheatAsk(const Canvas& c) {
-    g_hits.clear();  // only Yes and No take taps now
-    Veil(c);
-    constexpr float kHeight = 250.0f;
-    Window(c, kHeight, 600.0f);
-    Text(c, "Are you sure?", 0, 62, 32);
-    Text(c, "This will mark your save as cheated.", 0, 16, 24);
-    // Yes and No keep one size, chosen or not (ButtonPair's chosen one breathes).
-    const float y = -kHeight / 2 + 43.0f;
-    Button(c, "Yes", -126, y, 232, g_ui.cursor == 0, true, g_ui.frame, 30.0f, 53.0f, 1.0f);
-    Button(c, "No", 126, y, 232, g_ui.cursor == 1, true, g_ui.frame, 30.0f, 53.0f, 1.0f);
-    AddHit(-126, y, 240, 60, 0);
-    AddHit(126, y, 240, 60, 1);
-}
-
-// The answer: true while the question is up (it takes every press).
-bool HandleCheatAsk(bool left, bool right, bool confirm, bool back) {
-    if (g_cheatAsk == CheatAsk::None) {
-        return false;
-    }
-    if (left || right) {
-        g_ui.cursor = g_ui.cursor == 0 ? 1 : 0;
-    } else if (confirm || back) {
-        const CheatAsk cheat = g_cheatAsk;
-        g_cheatAsk = CheatAsk::None;
-        if (confirm && g_ui.cursor == 0) {
-            DoCheat(cheat);
-        }
-        g_ui.cursor = g_cheatAskReturn;
-    }
-    return true;
 }
 
 // The rows of the Display, Graphics and Gameplay tabs: one setting a row, between the tabs and the help
@@ -2842,9 +2729,6 @@ void DrawSettings(const Canvas& outer) {
     if (cursor.set) {
         Cursor(cursor.canvas, cursor.x, cursor.y, cursor.w, cursor.h, cursor.frame);
     }
-    if (g_cheatAsk != CheatAsk::None) {
-        DrawCheatAsk(c);
-    }
     if ((g_settingsTab != kTabDisplay && g_settingsTab != kTabGraphics && g_settingsTab != kTabGameplay) ||
         g_settingsClosing) {
         CloseDropdown();
@@ -2912,10 +2796,9 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         return;
     }
     const bool capturing = Keybinds::Capturing() >= 0 || settings_overlay::ControllerCapturing() >= 0;
-    const bool asking = g_cheatAsk != CheatAsk::None;
     const int tab = g_settingsTab, cursor = g_ui.cursor;
-    const bool invalid = confirm && !capturing && !asking && SettingsChoiceInvalid();
-    if (DropdownOpen() && !capturing && !asking) {
+    const bool invalid = confirm && !capturing && SettingsChoiceInvalid();
+    if (DropdownOpen() && !capturing) {
         // The list's own sounds: moving through it, picking, closing.
         const int highlight = g_dropdown.highlight;
         HandleSettingsInput(left, right, up, down, confirm, back);
@@ -2928,7 +2811,7 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
         }
         return;
     }
-    if (confirm && cursor > 0 && !capturing && !asking && !invalid) {
+    if (confirm && cursor > 0 && !capturing && !invalid) {
         HitButton(cursor);
     }
     HandleSettingsInput(left, right, up, down, confirm, back);
@@ -2937,14 +2820,12 @@ void HandleSettings(bool left, bool right, bool up, bool down, bool confirm, boo
     }
     if (g_settingsTab != tab) {
         MenuSound(settings_overlay::kGameSoundPage);
-    } else if (g_ui.cursor != cursor && !asking) {
+    } else if (g_ui.cursor != cursor) {
         MenuSound(settings_overlay::kGameSoundCursor);
     } else if (invalid) {
         MenuSound(settings_overlay::kGameSoundInvalid);
     } else if (confirm) {
         MenuSound(settings_overlay::kGameSoundDecide);
-    } else if (back && asking) {
-        MenuSound(settings_overlay::kGameSoundBack);
     } else if (left || right) {
         MenuSound(settings_overlay::kGameSoundCursor);
     }
@@ -2957,9 +2838,6 @@ void HandleSettingsInput(bool left, bool right, bool up, bool down, bool confirm
     }
     if (settings_overlay::ControllerCapturing() >= 0) {
         settings_overlay::PollControllerCapture();  // likewise the controller's buttons
-        return;
-    }
-    if (HandleCheatAsk(left, right, confirm, back)) {
         return;
     }
     if (DropdownOpen()) {
@@ -3099,13 +2977,13 @@ void HandleSettingsInput(bool left, bool right, bool up, bool down, bool confirm
             RuntimeConfigFile::SetInfiniteLives(false);
             g_settingsChanged = true;
         } else if (confirm && cursor == kGameplayLives) {
-            AskCheat(CheatAsk::Lives);
+            DoCheat(CheatAsk::Lives);
         } else if ((left || right) && cursor == kGameplayPowerUp) {
             const int count = GameplayOptions::PowerUpCount();
             g_powerUpChoice = (g_powerUpChoice + (left ? count - 1 : 1)) % count;
             RuntimeConfigFile::SetPowerUp(static_cast<uint32_t>(g_powerUpChoice));
         } else if (confirm && cursor == kGameplayPowerUp) {
-            AskCheat(CheatAsk::PowerUp);
+            DoCheat(CheatAsk::PowerUp);
         } else if ((confirm || left || right) && cursor == kGameplayCheat) {
             RuntimeConfigFile::SetCheatButton(!RuntimeConfigFile::CheatButton());
         }
@@ -3402,7 +3280,7 @@ void HandleEvents(const NetplayLobby::Snapshot& lobby) {
     // A controller's L and R step through the settings tabs (wrapping), wherever the cursor is.
     const int shoulder = settings_overlay::ControllerShoulderPressed();
     if (shoulder != 0 && g_ui.screen == Screen::Settings && Keybinds::Capturing() < 0 &&
-        settings_overlay::ControllerCapturing() < 0 && g_cheatAsk == CheatAsk::None) {
+        settings_overlay::ControllerCapturing() < 0) {
         g_settingsTab = (g_settingsTab + shoulder + SettingsTabs()) % SettingsTabs();
         g_ui.cursor = 0;
         CloseDropdown();
@@ -4570,7 +4448,6 @@ void Draw() {
             ++g_ui.frame;
             DrawToggle(Canvas{list, GameLayout::GameView(), 1.0f});
             TrackActiveFile();
-            DrawFileCheated(Canvas{list, GameLayout::GameView(), 1.0f});
             DrawFileBack(Canvas{list, GameLayout::GameView(), 1.0f});
         }
         if (scene == kSceneStage && !MenuSettings::PauseButtonActive()) {

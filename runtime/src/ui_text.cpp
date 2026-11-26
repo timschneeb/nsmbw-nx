@@ -79,11 +79,6 @@ const Table& Italian() {
         {"An on-screen button that gives you the Power-Up.", "Un pulsante su schermo che ti dà il potenziamento."},
         {"P1 gets it once the game is on.", "G1 lo riceve appena inizia la partita."},
         {"Given to P1.", "Dato a G1."},
-        {"Are you sure?", "Sei sicuro?"},
-        {"This will mark your save as cheated.", "Il salvataggio verrà segnato come truccato."},
-        {"Yes", "Sì"},
-        {"No", "No"},
-        {"Cheated", "Truccato"},
         {"Left and right pick one; press it to give it to P1.", "Sinistra e destra per scegliere; premi per darlo a G1."},
         // Video
         {"Resolution", "Risoluzione"},
