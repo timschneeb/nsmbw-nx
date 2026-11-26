@@ -1043,6 +1043,24 @@ and `aurora::hardware_thread_count()` already returned 3; the remaining direct u
 The worker stayed at 18.2 ms, so this was guest-side. The frame is now about 1.6-3.4 ms faster in
 this sample.
 
+### Switch input path
+
+The KPAD path asked SDL for the same four gamepad ports dozens of times per frame, and every SDL
+gamepad lookup takes its object lock, whose unlock is a kernel call on Horizon. The answers are now
+cached for 4 ms and dropped on controller events. `SDL_HINT_INVALID_PARAM_CHECKS=1` also skips the
+object-table validation on each button and axis read, keeping the NULL checks.
+
+`8-3`, stats light, six one-second windows:
+
+| | step 1 | step 2 |
+|---|---:|---:|
+| guest CPU | 20.3-21.6 ms (median 21.4) | 20.0-20.7 ms (median 20.3) |
+| worker cycle | 16.1-18.7 ms (median 18.2) | 18.4-18.6 ms (median 18.4) |
+| p50 | 23.0-24.0 ms (median 23.8) | 22.7-23.1 ms (median 23.0) |
+
+About 1.1 ms off the guest and 0.8 ms off p50. Cumulative from the pre-step-1 state: guest 23.4 to
+20.3 ms, p50 25.4-27.2 to 23.0 ms.
+
 ## Other ports
 
 The analysis of schuler-ph's independently developed Switch fork, including the optimizations it

@@ -212,7 +212,8 @@ equivalent.
   21.3-21.6 ms (median 21.4), worker unchanged at 18.2 ms, p50 25.4-27.2 to
   23.3-24.0 ms (median 23.8). Keep.
 - Step 2, input path: port gamepad/kind cache plus
-  `SDL_HINT_INVALID_PARAM_CHECKS=1`. Build `f246e54fad0a`, not yet measured.
+  `SDL_HINT_INVALID_PARAM_CHECKS=1`. Build `f246e54fad0a` measured on 8-3: guest
+  21.4 to 20.3 ms (median), p50 23.8 to 23.0 ms, worker 18.2 to 18.4 ms. Keep.
 - Step 3, GXFAST: per-generation first-attribute and vertex-size caches, and
   direct stores into the open raw packet. `NSMBW_GX_RAW_FAST=0` restores the old
   path. Build `4f5c5ed9`, not yet measured.
