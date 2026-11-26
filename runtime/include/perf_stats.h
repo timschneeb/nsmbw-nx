@@ -13,6 +13,12 @@ namespace PerfStats {
 enum class Level : int { Off = 0, Light = 1, Full = 2 };
 enum Role : int { RoleGuest = 0, RoleAudio = 1, RoleCount = 2 };
 
+#if defined(__GNUC__) || defined(__clang__)
+#define MKW_STATS_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define MKW_STATS_ALWAYS_INLINE inline
+#endif
+
 inline Level ReadLevel() {
     const char* value = std::getenv("NSMBW_STATS");
     if (value == nullptr || value[0] == '\0') {
@@ -24,17 +30,24 @@ inline Level ReadLevel() {
     return std::strcmp(value, "full") == 0 ? Level::Full : Level::Light;
 }
 
-// Cached on first use, so ApplyConfig must run before anything reads it.
-inline Level GetLevel() {
-    static const Level level = ReadLevel();
-    return level;
+// Set once by ApplyConfig before gameplay. A plain int, not a function-local static: GetLevel is
+// called on every GX FIFO write and the magic-static guard plus the out-of-line call cost ~0.5 ms a
+// frame on the guest thread.
+inline std::atomic<int> g_level{static_cast<int>(Level::Off)};
+
+MKW_STATS_ALWAYS_INLINE Level GetLevel() {
+    return static_cast<Level>(g_level.load(std::memory_order_relaxed));
 }
 
-inline bool Enabled() {
+inline void SetLevel(Level level) {
+    g_level.store(static_cast<int>(level), std::memory_order_relaxed);
+}
+
+MKW_STATS_ALWAYS_INLINE bool Enabled() {
     return GetLevel() != Level::Off;
 }
 
-inline bool Full() {
+MKW_STATS_ALWAYS_INLINE bool Full() {
     return GetLevel() == Level::Full;
 }
 

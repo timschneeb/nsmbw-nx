@@ -499,6 +499,18 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
     }
     if (g_hleGxState.rawBegin) {
         const uint32_t count = sizeBytes == 0 ? 4u : std::min<uint32_t>(sizeBytes, 4u);
+        if (count == 4) {
+            // The FIFO is big-endian; one swap beats four byte extracts per vertex word.
+            const uint32_t be = __builtin_bswap32(val);
+            const uint32_t taken = RawBeginAppend(reinterpret_cast<const uint8_t*>(&be), 4);
+            if (taken < 4) {
+                const auto* bytes = reinterpret_cast<const uint8_t*>(&be);
+                for (uint32_t i = taken; i < 4; ++i) {
+                    HleFifoWrite(bytes[i], 1);  // past the last vertex: the next command's first bytes
+                }
+            }
+            return;
+        }
         uint8_t bytes[4];
         for (uint32_t i = 0; i < count; ++i) {
             bytes[i] = static_cast<uint8_t>(val >> (8u * (count - 1u - i)));

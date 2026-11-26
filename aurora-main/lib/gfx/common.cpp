@@ -1894,6 +1894,53 @@ bool gpu_timer_begin(wgpu::CommandEncoder& cmd);
 void gpu_timer_pass(const RenderPass& pass, wgpu::PassTimestampWrites& writes);
 void gpu_timer_end(wgpu::CommandEncoder& cmd);
 
+// NSMBW: scratch color target for batched strip copies. One pass renders every tile copy into a
+// grid cell; the cells are then copied into their own textures. Keyed by format and size, kept for
+// the process lifetime.
+static bool copy_grid_enabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("NSMBW_GX_COPY_GRID");
+    return value == nullptr || value[0] != '0';
+  }();
+  return enabled;
+}
+
+static TextureHandle get_copy_grid(wgpu::TextureFormat format, uint32_t width, uint32_t height) {
+  struct Entry {
+    wgpu::TextureFormat format;
+    uint32_t width;
+    uint32_t height;
+    TextureHandle handle;
+  };
+  static std::vector<Entry> grids;
+  for (const auto& entry : grids) {
+    if (entry.format == format && entry.width == width && entry.height == height) {
+      return entry.handle;
+    }
+  }
+  const wgpu::Extent3D size{width, height, 1};
+  const wgpu::TextureDescriptor descriptor{
+      .label = "Copy Grid",
+      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc |
+               wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::RenderAttachment,
+      .dimension = wgpu::TextureDimension::e2D,
+      .size = size,
+      .format = format,
+      .mipLevelCount = 1,
+      .sampleCount = 1,
+  };
+  auto texture = g_device.CreateTexture(&descriptor);
+  const wgpu::TextureViewDescriptor viewDescriptor{
+      .label = "Copy Grid view",
+      .format = format,
+      .dimension = wgpu::TextureViewDimension::e2D,
+  };
+  auto view = texture.CreateView(&viewDescriptor);
+  auto handle = std::make_shared<TextureRef>(std::move(texture), view, view, size, format, 1, GX_TF_RGBA8);
+  grids.push_back({format, width, height, handle});
+  return handle;
+}
+
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
                         bool finalize, DebugFrameData& debugFrame, const depth_peek::FrameMapping& depthMapping) {
   ZoneScoped;
@@ -2052,7 +2099,89 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
     // NSMBW: strip copies deferred until the segment ended. All of them read the strip color that
     // the pass just produced, so one split serves the whole copy group.
     const auto copyStart = std::chrono::steady_clock::now();
-    for (const auto& op : passInfo.deferred) {
+    // Group shader-resolved copies by source view, format, destination format and size, then render
+    // a whole group into one grid pass and copy the cells out. A frame's 60 tile copies were 60
+    // render passes and dominated the worker's submit stage.
+    struct BatchGroup {
+      wgpu::TextureFormat dstFormat;
+      GXTexFmt fmt;
+      uint32_t width;
+      uint32_t height;
+      bool conversion;
+      std::vector<uint32_t> indices;
+    };
+    std::vector<BatchGroup> groups;
+    std::vector<uint8_t> batched(passInfo.deferred.size(), 0);
+    for (uint32_t i = 0; copy_grid_enabled() && i < passInfo.deferred.size(); ++i) {
+      const auto& op = passInfo.deferred[i];
+      if (!op.target || (!op.needsConversion && !op.needsShaderSampling)) {
+        continue;
+      }
+      const uint32_t width = op.target->size.width;
+      const uint32_t height = op.target->size.height;
+      if (width == 0 || height == 0 || width > 512 || height > 512) {
+        continue;
+      }
+      auto it = std::find_if(groups.begin(), groups.end(), [&](const BatchGroup& group) {
+        return group.fmt == op.format && group.dstFormat == op.target->format && group.width == width &&
+               group.height == height && group.conversion == op.needsConversion;
+      });
+      if (it == groups.end()) {
+        groups.push_back(BatchGroup{op.target->format, op.format, width, height, op.needsConversion, {}});
+        it = groups.end() - 1;
+      }
+      it->indices.push_back(i);
+      batched[i] = 1;
+    }
+    for (const auto& group : groups) {
+      const uint32_t cellW = group.width;
+      const uint32_t cellH = group.height;
+      const uint32_t cols = std::max<uint32_t>(1, 512 / cellW);
+      const uint32_t rows = std::max<uint32_t>(1, 512 / cellH);
+      const uint32_t capacity = cols * rows;
+      const auto grid = get_copy_grid(group.dstFormat, cols * cellW, rows * cellH);
+      static thread_local std::vector<tex_copy_conv::CellCopy> cells;
+      for (uint32_t start = 0; start < group.indices.size(); start += capacity) {
+        const auto count = std::min<uint32_t>(capacity, static_cast<uint32_t>(group.indices.size()) - start);
+        cells.clear();
+        for (uint32_t j = 0; j < count; ++j) {
+          const auto& op = passInfo.deferred[group.indices[start + j]];
+          cells.push_back(tex_copy_conv::CellCopy{
+              .req =
+                  tex_copy_conv::ConvRequest{
+                      .fmt = op.format,
+                      .srcView = passInfo.copySourceView,
+                      .uniformRange = op.uniformRange,
+                      .dst = op.target,
+                      .sampleFilter = op.linearSampling ? tex_copy_conv::SampleFilter::Linear
+                                                        : tex_copy_conv::SampleFilter::Nearest,
+                      .forceOpaqueAlpha = op.forceOpaqueAlpha,
+                  },
+              .x = (j % cols) * cellW,
+              .y = (j / cols) * cellH,
+              .width = cellW,
+              .height = cellH,
+          });
+        }
+        tex_copy_conv::run_cells(cmd, grid, group.conversion, cells.data(), cells.size());
+        for (uint32_t j = 0; j < count; ++j) {
+          const auto& op = passInfo.deferred[group.indices[start + j]];
+          op.target->materialize();
+          const wgpu::TexelCopyTextureInfo src{
+              .texture = grid->texture,
+              .origin = wgpu::Origin3D{.x = (j % cols) * cellW, .y = (j / cols) * cellH},
+          };
+          const wgpu::TexelCopyTextureInfo dst{.texture = op.target->texture};
+          const wgpu::Extent3D size{cellW, cellH, 1};
+          cmd.CopyTextureToTexture(&src, &dst, &size);
+        }
+      }
+    }
+    for (uint32_t i = 0; i < passInfo.deferred.size(); ++i) {
+      if (batched[i]) {
+        continue;
+      }
+      const auto& op = passInfo.deferred[i];
       if (!op.target) {
         continue;
       }
@@ -2082,6 +2211,11 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
             .depthOrArrayLayers = 1,
         };
         cmd.CopyTextureToTexture(&src, &dst, &size);
+      }
+    }
+    for (const auto& op : passInfo.deferred) {
+      if (!op.target) {
+        continue;
       }
       for (const auto& patch : op.patches) {
         if (!patch.dst || (!patch.direct && !patch.native)) {

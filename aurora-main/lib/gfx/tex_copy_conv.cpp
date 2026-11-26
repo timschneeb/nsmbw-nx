@@ -637,4 +637,70 @@ void blit(const wgpu::CommandEncoder& cmd, const ConvRequest& req) {
   execute(cmd, req, it->second);
 }
 
+void run_cells(const wgpu::CommandEncoder& cmd, const TextureHandle& grid, bool conversion,
+               const CellCopy* cells, size_t count) {
+  if (!grid || cells == nullptr || count == 0) {
+    return;
+  }
+  const std::array colorAttachments{
+      wgpu::RenderPassColorAttachment{
+          .view = grid->attachmentTextureView,
+          .loadOp = wgpu::LoadOp::Load,
+          .storeOp = wgpu::StoreOp::Store,
+      },
+  };
+  const wgpu::RenderPassDescriptor renderPassDescriptor{
+      .label = "TexCopyConv Grid Pass",
+      .colorAttachmentCount = colorAttachments.size(),
+      .colorAttachments = colorAttachments.data(),
+  };
+  const auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
+  wgpu::RenderPipeline current;
+  for (size_t i = 0; i < count; ++i) {
+    const auto& cell = cells[i];
+    const auto& req = cell.req;
+    wgpu::RenderPipeline pipeline;
+    if (conversion) {
+      const auto it = g_pipelines.find(req.fmt);
+      if (it == g_pipelines.end()) {
+        Log.fatal("No copy conversion pipeline for format {}", static_cast<int>(req.fmt));
+      }
+      pipeline = it->second;
+    } else {
+      const auto it = g_blitPipelines.find(req.dst->format);
+      if (it == g_blitPipelines.end()) {
+        Log.fatal("Unsupported blit destination format {}", static_cast<int>(req.dst->format));
+      }
+      pipeline = it->second;
+    }
+    if (pipeline.Get() != current.Get()) {
+      pass.SetPipeline(pipeline);
+      current = pipeline;
+    }
+    const auto& sampler = req.sampleFilter == SampleFilter::Linear ? g_linearSampler : g_nearestSampler;
+    const std::array bindGroupEntries{
+        wgpu::BindGroupEntry{.binding = 0, .sampler = sampler},
+        wgpu::BindGroupEntry{.binding = 1, .textureView = req.srcView},
+        wgpu::BindGroupEntry{
+            .binding = 2,
+            .buffer = g_uniformBuffer,
+            .offset = req.uniformRange.offset,
+            .size = req.uniformRange.size,
+        },
+    };
+    const wgpu::BindGroupDescriptor bindGroupDescriptor{
+        .layout = g_bindGroupLayout,
+        .entryCount = bindGroupEntries.size(),
+        .entries = bindGroupEntries.data(),
+    };
+    const auto bindGroup = g_device.CreateBindGroup(&bindGroupDescriptor);
+    pass.SetBindGroup(0, bindGroup);
+    pass.SetViewport(static_cast<float>(cell.x), static_cast<float>(cell.y),
+                     static_cast<float>(cell.width), static_cast<float>(cell.height), 0.f, 1.f);
+    pass.SetScissorRect(cell.x, cell.y, cell.width, cell.height);
+    pass.Draw(3);
+  }
+  pass.End();
+}
+
 } // namespace aurora::gfx::tex_copy_conv

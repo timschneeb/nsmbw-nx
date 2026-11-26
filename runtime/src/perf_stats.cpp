@@ -108,6 +108,7 @@ void ApplyConfig() {
         setenv("NSMBW_LOG_FPS", "full", 1);
     }
     ApplyEnvList(RuntimeConfigFile::DebugEnv());
+    SetLevel(ReadLevel());
     if (Enabled()) {
         RT_LOGF(RT_TAG_RUNTIME, "stats: %s\n", Full() ? "full" : "light");
     } else {
