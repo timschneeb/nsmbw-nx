@@ -2213,6 +2213,84 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         cmd.CopyTextureToTexture(&src, &dst, &size);
       }
     }
+    // NSMBW: the 60+ atlas patches were one blit pass and one copy each. Batch the blits by patch
+    // size into a grid of RGBA8 cells and copy each cell into its atlas region, the same way the
+    // strip resolves are batched. Direct patches are already plain copies and stay in order.
+    struct PatchBatch {
+      uint32_t width = 0;
+      uint32_t height = 0;
+      std::vector<std::pair<uint32_t, uint32_t>> items;
+    };
+    std::vector<PatchBatch> patchBatches;
+    if (copy_grid_enabled()) {
+      for (uint32_t i = 0; i < passInfo.deferred.size(); ++i) {
+        const auto& op = passInfo.deferred[i];
+        if (!op.target) {
+          continue;
+        }
+        for (uint32_t j = 0; j < op.patches.size(); ++j) {
+          const auto& patch = op.patches[j];
+          if (!patch.dst || !patch.native || patch.direct || patch.width == 0 || patch.height == 0 ||
+              patch.width > 512 || patch.height > 512) {
+            continue;
+          }
+          auto it = std::find_if(patchBatches.begin(), patchBatches.end(), [&](const PatchBatch& batch) {
+            return batch.width == patch.width && batch.height == patch.height;
+          });
+          if (it == patchBatches.end()) {
+            patchBatches.push_back(PatchBatch{patch.width, patch.height, {}});
+            it = patchBatches.end() - 1;
+          }
+          it->items.emplace_back(i, j);
+        }
+      }
+    }
+    for (const auto& batch : patchBatches) {
+      const uint32_t cellW = batch.width;
+      const uint32_t cellH = batch.height;
+      const uint32_t cols = std::max<uint32_t>(1, 512 / cellW);
+      const uint32_t rows = std::max<uint32_t>(1, 512 / cellH);
+      const uint32_t capacity = cols * rows;
+      const auto grid = get_copy_grid(wgpu::TextureFormat::RGBA8Unorm, cols * cellW, rows * cellH);
+      static thread_local std::vector<tex_copy_conv::CellCopy> cells;
+      for (uint32_t start = 0; start < batch.items.size(); start += capacity) {
+        const auto count = std::min<uint32_t>(capacity, static_cast<uint32_t>(batch.items.size()) - start);
+        cells.clear();
+        for (uint32_t j = 0; j < count; ++j) {
+          const auto& op = passInfo.deferred[batch.items[start + j].first];
+          const auto& patch = op.patches[batch.items[start + j].second];
+          cells.push_back(tex_copy_conv::CellCopy{
+              .req =
+                  tex_copy_conv::ConvRequest{
+                      .fmt = GX_TF_RGBA8,
+                      .srcView = op.target->sampleTextureView,
+                      .uniformRange = patch.uniformRange,
+                      .dst = patch.dst,
+                      .sampleFilter = tex_copy_conv::SampleFilter::Linear,
+                  },
+              .x = (j % cols) * cellW,
+              .y = (j / cols) * cellH,
+              .width = cellW,
+              .height = cellH,
+          });
+        }
+        tex_copy_conv::run_cells(cmd, grid, false, cells.data(), cells.size());
+        for (uint32_t j = 0; j < count; ++j) {
+          const auto& patch = passInfo.deferred[batch.items[start + j].first].patches[batch.items[start + j].second];
+          patch.dst->materialize();
+          const wgpu::TexelCopyTextureInfo src{
+              .texture = grid->texture,
+              .origin = wgpu::Origin3D{.x = (j % cols) * cellW, .y = (j / cols) * cellH},
+          };
+          const wgpu::TexelCopyTextureInfo dst{
+              .texture = patch.dst->texture,
+              .origin = wgpu::Origin3D{.x = patch.x, .y = patch.y},
+          };
+          const wgpu::Extent3D size{cellW, cellH, 1};
+          cmd.CopyTextureToTexture(&src, &dst, &size);
+        }
+      }
+    }
     for (const auto& op : passInfo.deferred) {
       if (!op.target) {
         continue;
@@ -2222,6 +2300,9 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
           continue;
         }
         if (!patch.direct) {
+          if (copy_grid_enabled()) {
+            continue;  // batched above
+          }
           tex_copy_conv::blit(cmd, tex_copy_conv::ConvRequest{
                                        .fmt = GX_TF_RGBA8,
                                        .srcView = op.target->sampleTextureView,

@@ -1763,6 +1763,28 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
       g_queue.Submit(1, &buffer);
     }
     const auto submitEnd = WorkerStageClock::now();
+    // NSMBW: one-shot probe. If an empty buffer submitted right after the frame's buffer is
+    // cheap, the frame submit waited for the GPU; if it is also expensive, the cost is command
+    // replay and not a wait.
+    static const bool submitProbe = std::getenv("NSMBW_SUBMIT_PROBE") != nullptr;
+    static uint32_t submitProbeCount = 0;
+    if (submitProbe && (submitProbeCount++ % 64) == 0) {
+      const auto probeEncodeStart = WorkerStageClock::now();
+      const wgpu::CommandEncoderDescriptor probeEncoderDescriptor{.label = "Submit probe encoder"};
+      auto probeEncoder = g_device.CreateCommandEncoder(&probeEncoderDescriptor);
+      const auto probeBuffer = probeEncoder.Finish(&cmdBufDescriptor);
+      const auto probeSubmitStart = WorkerStageClock::now();
+      {
+        std::lock_guard submitLock(g_queueSubmitMutex);
+        g_queue.Submit(1, &probeBuffer);
+      }
+      const auto probeEnd = WorkerStageClock::now();
+      const auto msOf = [](WorkerStageClock::duration d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+      };
+      Log.info("submit probe: empty encode {:.3f} submit {:.3f} ms",
+               msOf(probeSubmitStart - probeEncodeStart), msOf(probeEnd - probeSubmitStart));
+    }
     worker_stage_add(3, fillStart, finishStart);
     worker_stage_add(4, finishStart, submitStart);
     worker_stage_add(5, submitStart, submitEnd);

@@ -901,6 +901,37 @@ the release build runs stats off and does not pay it. With stats light the measu
 includes roughly 2 ms of that, so the real guest is closer to 21 ms. `PausedNanoseconds` and the
 time base are not hot: no `mftb` or `GetTimeBase` samples appear.
 
+## The worker's submit stage
+
+The worker log's `submit` is a single `wgpu::Queue::Submit` call; `finish` is 0.02 ms and our own
+command recording is `record`. A one-shot probe (`NSMBW_SUBMIT_PROBE=1`) submits an empty command
+buffer right after the frame buffer and times both:
+
+```
+empty encode 0.016 ms, empty submit 0.15 ms
+frame submit 12.4-13.6 ms
+```
+
+So the frame submit is not waiting for the GPU (the GPU is idle at that point); it is Dawn's
+Vulkan command replay on the CPU. Skipping the GX draws (`NSMBW_GX_SKIP_DRAWS=1`) only took submit
+from 13.6 to 11.4, so most of the replay was not the game draws but the per-copy work.
+
+One frame of 8-3 issued 60+ atlas patches, each a blit render pass plus a texture copy. Batching
+the blits by patch size into one RGBA8 grid pass (the same trick as the strip resolves) and
+copying each cell into the atlas took the worker from 20.9 to 18.2 ms:
+
+```
+                   before   after
+record (ms)          6.9      5.6
+submit (ms)         13.6     10.8
+worker cycle (ms)   20.9     18.2
+p50 (ms)          26.4-27.0  25.4-27.2
+```
+
+The frame is now guest-bound for the first time: worker 18.2 ms, guest 23.4 ms. Further worker
+work will not raise the frame rate until the guest does. `NSMBW_GX_COPY_GRID=0` restores the old
+per-patch blits.
+
 
 `NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
 begin/end with its shape plus `slots N` and `slots used N/M`.
