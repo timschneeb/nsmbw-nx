@@ -854,6 +854,26 @@ guest CPU (ms)            25.3-26.3   24.0-25.2    23.8-24.4
 fps                       33.6-35.4   35.1-37.1    36.0-37.5
 ```
 
+A later pass force-inlined `PerfStats::GetLevel/Enabled`, which ran as an out-of-line call with a
+magic-static guard on every GX FIFO write, and gathered raw vertex words with one byte swap:
+guest 23.2-24.5, fifo 3.65, p50 26.4-27.0.
+
+### Batched copy grid
+
+The 60 tile copies were 60 render passes. They now render into cells of a scratch grid in one pass
+per (source, format, destination format, size) group, and the cells are copied into their own
+textures; patches and readbacks are unchanged. `NSMBW_GX_COPY_GRID=0` restores the old path. The
+worker's record stage fell 7.6 to 6.9 ms but submit rose 11.7 to 12.1 ms; net p50 is about 0.2 ms
+better, so this is a wash kept behind the switch rather than a real win.
+
+### Two-frame beat
+
+A steady 8-3 section alternates about 2 ms between frames (`26.0 24.3 26.1 25.4 ...`). The average
+does not move, so it is a pipeline cadence, not lost work. At 26 ms/frame and 5.33 ms audio blocks
+the mixer alternates between 4 and 5 blocks on core 2, which the GX decode shares; two staging
+buffers or presentation images are the other candidate. Standing still shows it because moving
+adds enough variance to hide it.
+
 
 `NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
 begin/end with its shape plus `slots N` and `slots used N/M`.
