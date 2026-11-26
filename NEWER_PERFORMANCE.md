@@ -1080,6 +1080,28 @@ instead of going through `RawBeginAppend`'s memcpy. `NSMBW_GX_RAW_FAST=0` restor
 About 0.4 ms off the guest, mostly in the FIFO path. Cumulative: guest 23.4 to 19.9 ms, p50
 25.4-27.2 to 22.8 ms.
 
+### Hot thread_locals and inline `threaded()`
+
+devkitA64 builds with `-mtp=soft`, so every `thread_local` access is a call to
+`__aarch64_read_tp`. The current `CpuContext` and the resolved dispatch memo now use an inline
+thread-pointer read and local-exec offset. `TranslatedFunctionRegistry::Finalize` checks both
+accessors against the compiler's own `&variable` before publishing. `fifo::threaded()` also moved
+inline, with its backend-cached answer.
+
+`__aarch64_read_tp` call sites in the ELF: 7,462 -> 829.
+
+`8-3`, stats light, six one-second windows:
+
+| | step 3 | step 5 |
+|---|---:|---:|
+| guest CPU | 19.2-20.5 ms (median 19.9) | 19.1-20.3 ms (median 19.6) |
+| worker cycle | 17.1-18.4 ms (median 18.3) | 17.9-18.5 ms (median 18.3) |
+| p50 | 22.8-23.2 ms (median 22.8) | 22.4-23.1 ms (median 22.7) |
+
+About 0.2-0.4 ms off the guest. The static call reduction is large but the dynamic share was
+smaller than the fork's call-site count suggested. Cumulative: guest 23.4 to 19.6 ms, p50
+25.4-27.2 to 22.7 ms.
+
 ## Other ports
 
 The analysis of schuler-ph's independently developed Switch fork, including the optimizations it

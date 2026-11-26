@@ -220,5 +220,6 @@ equivalent.
   22.8 ms, GX FIFO 3.77 to 3.44-3.68 ms. Keep.
 - Step 4, inline `threaded()`, and step 5, hot TLS: the raw `threaded()` call is
   gone from the setters, and `__aarch64_read_tp` call sites dropped from 7,462
-  to 829. Build `f5d4277c`, not yet measured.
+  to 829. Build `f5d4277c` measured on 8-3: guest 19.9 to 19.6 ms, p50 22.8 to
+  22.7 ms. Keep.
 - Step 7, magma HLE: separate experiment with deterministic captures.
