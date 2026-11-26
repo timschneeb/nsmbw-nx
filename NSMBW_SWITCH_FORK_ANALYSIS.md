@@ -61,7 +61,7 @@ Consequences:
 | Input path | Caches port to SDL gamepad and kind for 4 ms, drops on controller events; sets `SDL_HINT_INVALID_PARAM_CHECKS=1` | 1.4% plus 1.5% of game thread | Our Switch path still calls SDL per KPAD read, and we do not set the hint. |
 | Logging | 256 KiB ring buffer plus logger thread; SD writes leave the game thread | About 20 ms per line, 9-17% of game thread | Already fully buffered with a background flusher. No action. |
 | Helper thread placement | Wraps `__syscall_thread_create` and spreads helpers round-robin off the guest core; pipeline worker priority 0x3B, AX mix 0x2D, SDL audio 0x2B; 2 MiB stack floor | Fixed about 1,100 s prewarm and 25-220 ms game frames | We pin GX, frame and pipeline workers. General helper spread and audio priority are partly covered. |
-| Pipeline skipping | `NSMBW_SKIPUNREADY=all` skips unready pipelines even in non-recurring EFB copy passes, with drop and stale-sample logging | Removed a 1.7 s first-visit stall in airship 4-37 | We still wait in non-recurring copy passes. Worth adopting for hitches. |
+| Pipeline skipping | `NSMBW_SKIPUNREADY=all` skips unready pipelines even in non-recurring EFB copy passes, with drop and stale-sample logging | Removed a 1.7 s first-visit stall in airship 4-37 | Dropped. It targets first-visit hitches, not steady frame time, and is not needed here. |
 | Hot TLS | `MKW_HOT_TLS_ACCESSOR` inlines `mrs tpidrro_el0`, the thread pointer load and local-exec relocation | 47,945 call sites reduced to 616 | We still have 7,462 `bl __aarch64_read_tp` sites in `WiiCompiled.elf`. |
 | Indirect dispatch memo | 1,024 entries, Fibonacci index from the high bits | Unquantified; fixed a 4-1 two-player hot spot | Ours is 512 entries with low-bit masking, but the shared fast raw table covers most calls. Low priority. |
 | Code model | `-fPIE` objects plus hidden visibility for seven guest-memory tables | Removed about 195k GOT loads | We already build `-fPIE` and keep the flat base in x28. Ahead. |
@@ -178,8 +178,7 @@ optimization.
    queued raw draws. Our profile suggests about 0.5 to 0.8 ms.
 4. Inline `threaded()` in `fifo.hpp`, keeping the atomic slow path.
 5. Add hot TLS accessors for `g_guestThreadState` and the dispatch memo.
-6. Add `NSMBW_SKIPUNREADY=all` behavior for first-visit hitches.
-7. Investigate a magma HLE for 8-3 separately, with deterministic captures and a
+6. Investigate a magma HLE for 8-3 separately, with deterministic captures and a
    clear A/B. Treat it as a focused experiment, not a generic optimization.
 
 Not worth taking now:
@@ -222,12 +221,12 @@ equivalent.
   gone from the setters, and `__aarch64_read_tp` call sites dropped from 7,462
   to 829. Build `f5d4277c` measured on 8-3: guest 19.9 to 19.6 ms, p50 22.8 to
   22.7 ms. Keep.
-- Step 6, skip unready pipelines in persistent EFB copy passes: implemented,
-  opt-in with `NSMBW_SKIPUNREADY=all`. This targets first-visit hitches, not
-  steady 8-3, and our seed cache makes it hard to exercise.
-- Step 6b, indexed billboards: RAWINDEX takes indexed POS/TEX/colour draws
+- Step 6, indexed billboards: RAWINDEX takes indexed POS/TEX/colour draws
   through the raw path. Measured on 8-3: guest 19.6 to 19.3 ms, GX FIFO 3.5 to
   3.0 ms. General, not 8-3-specific. Keep.
-- Step 7, magma HLE: separate experiment with deterministic captures. The magma
-  loop is a 6-vertex triangle strip with extra TEV colours, not a copy of the
-  normal-water loop.
+- Step 7, magma HLE: `runtime/src/hle/nsmbw_magma_hle.cpp`, Newer-only. It
+  reproduces the magma preamble, including the two TEV colour writes, and draws
+  the two visible triangles of each six-vertex strip as one merged
+  `GX_TRIANGLES` batch. `NSMBW_MAGMAHLE=1` enables it; generated-newer now skips
+  0x8000D000 so the native dispatcher is the only definition. Console visual and
+  timing check pending.

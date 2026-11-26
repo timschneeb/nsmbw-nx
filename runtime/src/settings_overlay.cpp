@@ -1845,13 +1845,6 @@ void InitializeRuntimeSettings() noexcept {
     aurora_set_display_mode(static_cast<AuroraDisplayMode>(g_displayMode));
     g_displayMode = static_cast<int>(aurora_get_display_mode());
     aurora_set_disable_copy_filter(g_disableCopyFilter);
-    if (const char* skip = std::getenv("NSMBW_SKIPUNREADY"); skip != nullptr && skip[0] != '\0') {
-        const std::string_view mode{skip};
-        g_skipUnreadyPipelines = mode != "0";
-        aurora_set_skip_unready_persistent_passes(mode == "all");
-        RT_LOGF(RT_TAG_CONFIG, "NSMBW_SKIPUNREADY=%s: skip %s, persistent copies %s\n", skip,
-                g_skipUnreadyPipelines ? "on" : "off", mode == "all" ? "on" : "off");
-    }
     aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
     ResetBootShaderState();
     PADBlockInput(false);

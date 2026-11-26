@@ -82,7 +82,6 @@ static std::mutex g_pipelineMutex;
 static bool g_hasPipelineThread = false;
 static bool g_pipelineFrameActive = false;
 static std::atomic_bool g_skipUnreadyGxPipelines = false;
-static std::atomic_bool g_skipUnreadyPersistentPasses = false;
 static size_t g_pipelinesPerFrame = 0;
 // Keep first-use compilation bounded. The render command stream remains ordered;
 // it waits for a queued pipeline only when the corresponding draw is consumed.
@@ -1648,14 +1647,6 @@ void set_skip_unready_pipelines(bool enabled) noexcept {
 
 bool skip_unready_pipelines() noexcept { return g_skipUnreadyGxPipelines.load(std::memory_order_relaxed); }
 
-void set_skip_unready_persistent_passes(bool enabled) noexcept {
-  g_skipUnreadyPersistentPasses.store(enabled, std::memory_order_relaxed);
-}
-
-bool skip_unready_persistent_passes() noexcept {
-  return g_skipUnreadyPersistentPasses.load(std::memory_order_relaxed);
-}
-
 bool boot_pipelines_pending() noexcept {
   return g_prewarmActive.load(std::memory_order_relaxed) ||
          queuedPipelines.load(std::memory_order_relaxed) > 0;
@@ -1749,14 +1740,6 @@ bool wait_pipeline_for_persistent_pass(PipelineRef ref, wgpu::RenderPipeline& pi
 void aurora_set_skip_unready_pipelines(const bool enabled) { aurora::gfx::set_skip_unready_pipelines(enabled); }
 
 bool aurora_get_skip_unready_pipelines() { return aurora::gfx::skip_unready_pipelines(); }
-
-void aurora_set_skip_unready_persistent_passes(const bool enabled) {
-  aurora::gfx::set_skip_unready_persistent_passes(enabled);
-}
-
-bool aurora_get_skip_unready_persistent_passes() {
-  return aurora::gfx::skip_unready_persistent_passes();
-}
 
 uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipeline_count(); }
 

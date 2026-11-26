@@ -22,8 +22,6 @@ void begin_pipeline_frame();
 void end_pipeline_frame();
 void set_skip_unready_pipelines(bool enabled) noexcept;
 bool skip_unready_pipelines() noexcept;
-void set_skip_unready_persistent_passes(bool enabled) noexcept;
-bool skip_unready_persistent_passes() noexcept;
 uint32_t queued_pipeline_count() noexcept;
 bool prewarm_held() noexcept;
 void prewarm_release(uint32_t count) noexcept;
