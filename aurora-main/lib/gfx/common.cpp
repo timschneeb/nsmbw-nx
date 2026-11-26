@@ -2657,7 +2657,7 @@ bool bind_pipeline(PipelineRef ref, const wgpu::RenderPassEncoder& pass, Pipelin
   bool pipelineReady;
   if (!skip_unready_pipelines()) {
     pipelineReady = wait_pipeline(ref, pipeline);
-  } else if (requireReady) {
+  } else if (requireReady && !skip_unready_persistent_passes()) {
     // The pass resolves into a persistent texture (a one-shot bake such as MKW's minimap), so a
     // skipped draw would never be re-issued. These run behind loads, not mid-race.
     pipelineReady = wait_pipeline_for_persistent_pass(ref, pipeline);

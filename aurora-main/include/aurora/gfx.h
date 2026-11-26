@@ -97,6 +97,10 @@ uint32_t aurora_get_frame_interpolation_fps();
 // ready are skipped rather than stalling submission, and pick it up once compilation finishes.
 void aurora_set_skip_unready_pipelines(bool enabled);
 bool aurora_get_skip_unready_pipelines();
+// With skip_unready_pipelines: also skip in a pass whose EFB copy may be a one-shot bake (a color
+// copy not produced in the previous frame). Off by default; those passes otherwise wait.
+void aurora_set_skip_unready_persistent_passes(bool enabled);
+bool aurora_get_skip_unready_persistent_passes();
 uint32_t aurora_get_queued_pipeline_count();
 // True while the boot prewarm or any queued build is still outstanding.
 bool aurora_boot_pipelines_pending();

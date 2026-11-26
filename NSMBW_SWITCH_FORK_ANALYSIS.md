@@ -222,4 +222,9 @@ equivalent.
   gone from the setters, and `__aarch64_read_tp` call sites dropped from 7,462
   to 829. Build `f5d4277c` measured on 8-3: guest 19.9 to 19.6 ms, p50 22.8 to
   22.7 ms. Keep.
-- Step 7, magma HLE: separate experiment with deterministic captures.
+- Step 6, skip unready pipelines in persistent EFB copy passes: implemented,
+  opt-in with `NSMBW_SKIPUNREADY=all`. This targets first-visit hitches, not
+  steady 8-3, and our seed cache makes it hard to exercise.
+- Step 7, magma HLE: separate experiment with deterministic captures. The magma
+  loop is a 6-vertex triangle strip with extra TEV colours, not a copy of the
+  normal-water loop.
