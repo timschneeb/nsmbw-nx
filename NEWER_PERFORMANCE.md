@@ -788,9 +788,10 @@ worker record (ms)         19-25           6.4
 worker submit (ms)         17-20           11
 ```
 
-Background prewarm now pauses while scene 0x005 (stage) or 0x003 (world map) is on screen and
-resumes during boot, menus and scene transitions. `NSMBW_PREWARM=off` disables it entirely. The
-worker now has headroom.
+The pause is profiling-only. With `stats = "light"`, `stats = "full"` or `NSMBW_PROFILE` set, the
+prewarm pauses while scene 0x005 (stage) or 0x003 (world map) is on screen and resumes during boot,
+menus and scene transitions. A release run leaves the prewarm running. `NSMBW_PREWARM=off` disables
+it entirely. The table above is the profiling configuration; the worker has headroom there.
 
 ### Patch target address index
 

@@ -37,6 +37,7 @@
 #include <vector>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -615,6 +616,21 @@ void LogGuestModulesOnce() {
     }
 }
 
+// The prewarm pause is a profiling aid: background pipeline builds hold the Dawn device lock and
+// make worker timings noisy. Release runs keep the prewarm running; stats and the sampler opt in.
+static bool PrewarmPauseEnabled() {
+    static const bool enabled = [] {
+        const bool stats = PerfStats::Enabled();
+        const char* profile = std::getenv("NSMBW_PROFILE");
+        const bool profiling = profile != nullptr && profile[0] != '\0';
+        const bool on = stats || profiling;
+        RT_LOGF(RT_TAG_RUNTIME, "prewarm pause gate: %s\n",
+                on ? (stats ? "on (stats)" : "on (profile)") : "off (release)");
+        return on;
+    }();
+    return enabled;
+}
+
 // NSMBW: log every scene switch (boot, title, world map, stage, ...) with the game's own profile name,
 // so automated bring-up runs show how far the game got without screenshots. dScene_c::m_nextScene and
 // m_nowScene are adjacent halfwords at 0x80428730; dProf_getName reads names from a pointer table.
@@ -632,8 +648,13 @@ void LogSceneChanges() {
     GuestProfiler::NoteScene(now);
     NsmbwShadowSamplerSetScene(now);
     // Background shader prewarm contends for the GPU device lock; keep it off while a level or the
-    // world map is playable and let it run during boot and scene transitions.
-    aurora_set_prewarm_enabled(now != 0x005u && now != 0x003u);
+    // world map is playable and let it run during boot and scene transitions. This is profiling
+    // behavior only; release keeps the prewarm running.
+    if (PrewarmPauseEnabled()) {
+        aurora_set_prewarm_enabled(now != 0x005u && now != 0x003u);
+    } else {
+        aurora_set_prewarm_enabled(true);
+    }
     char name[48] = "?";
     uint32_t namePtr = 0;
     if (now < 0x300u && Memory::TryRead32(0x80320840u + now * 4u, namePtr) && namePtr != 0) {
