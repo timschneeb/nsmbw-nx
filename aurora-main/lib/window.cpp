@@ -561,6 +561,14 @@ bool initialize() {
       SDL_GetError());
   TRY(SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_VIDEO), "Error initializing SDL: {}", SDL_GetError());
 
+#if defined(MKW_PLATFORM_SWITCH)
+  // Every SDL gamepad call validates the object in SDL's hash table under a process-wide RW lock,
+  // and every unlock is a kernel call on Horizon. PADRead makes dozens of them per frame. "1"
+  // keeps SDL's NULL checks and skips only the lookup; closed handles are erased on removal.
+  TRY(SDL_SetHint(SDL_HINT_INVALID_PARAM_CHECKS, "1"), "Error setting {}: {}", SDL_HINT_INVALID_PARAM_CHECKS,
+      SDL_GetError());
+#endif
+
 #if !defined(_WIN32) && !defined(__APPLE__)
   TRY(SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0"), "Error setting {}: {}",
       SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, SDL_GetError());

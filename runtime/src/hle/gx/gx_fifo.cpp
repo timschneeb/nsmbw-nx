@@ -14,6 +14,18 @@ using namespace GxStream;
 HleGxState g_hleGxState;
 
 namespace {
+// Per-generation shortcuts for the raw immediate-mode path: NSMBW_GX_RAW_FAST=0 restores the
+// uncached scans and the per-float memcpy for A/B.
+bool RawFastEnabled() {
+    static const bool on = [] {
+        const char* value = std::getenv("NSMBW_GX_RAW_FAST");
+        return value == nullptr || value[0] != '0';
+    }();
+    return on;
+}
+} // namespace
+
+namespace {
 // Attributes the guest-thread FIFO translation cost to the stats line. Two
 // clock reads per write, so light mode stays comparable across builds.
 struct HleFifoStatScope {
@@ -64,6 +76,21 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
 }
 
 void HleGxState::ResetVertex() {
+    // The first enabled attribute only changes with the descriptor, and every descriptor change
+    // bumps vtxStateGeneration. GXBegin and every raw draw call this, some twice.
+    if (RawFastEnabled() && this == &g_hleGxState) {
+        static bool valid = false;
+        static uint32_t generation = 0;
+        static GXAttr first = GX_VA_NULL;
+        if (!valid || generation != vtxStateGeneration) {
+            first = NextEnabledAttr(GX_VA_PNMTXIDX - 1);
+            generation = vtxStateGeneration;
+            valid = true;
+        }
+        currentAttr = first;
+        currentComp = 0;
+        return;
+    }
     currentAttr = NextEnabledAttr(GX_VA_PNMTXIDX - 1);
     currentComp = 0;
 }
@@ -136,7 +163,7 @@ static uint32_t GetDirectAttrByteSizeForFifo(GXAttr attr, const VtxAttrFmt& fmt)
     return DirectAttrByteSize(attr, fmt, /*matrixAttrIsOneByte=*/true, /*fallbackComps=*/1u);
 }
 
-static bool TryGetRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
+static bool ComputeRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
     vertexSize = 0;
     if (fmt >= GX_MAX_VTXFMT) {
         return false;
@@ -161,6 +188,29 @@ static bool TryGetRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
     }
 
     return vertexSize != 0;
+}
+
+// The descriptor and the format row only change with vtxStateGeneration, so the 26-attribute walk
+// is reused until a real VCD/VAT mutation.
+static bool TryGetRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
+    if (!RawFastEnabled() || fmt >= GX_MAX_VTXFMT) {
+        return ComputeRawDirectFifoVertexSize(fmt, vertexSize);
+    }
+    struct Entry {
+        bool valid = false;
+        bool ok = false;
+        uint32_t generation = 0;
+        uint32_t size = 0;
+    };
+    static Entry cache[GX_MAX_VTXFMT];
+    Entry& entry = cache[fmt];
+    if (!entry.valid || entry.generation != g_hleGxState.vtxStateGeneration) {
+        entry.ok = ComputeRawDirectFifoVertexSize(fmt, entry.size);
+        entry.generation = g_hleGxState.vtxStateGeneration;
+        entry.valid = true;
+    }
+    vertexSize = entry.size;
+    return entry.ok;
 }
 
 static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetBytes, GXPrimitive prim,
@@ -499,6 +549,25 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
     }
     if (g_hleGxState.rawBegin) {
         const uint32_t count = sizeBytes == 0 ? 4u : std::min<uint32_t>(sizeBytes, 4u);
+        auto& s = g_hleGxState;
+        // A store that fits in the open packet goes straight in, without the per-float memcpy.
+        if (RawFastEnabled() && s.rawFilled <= s.rawExpected && s.rawExpected - s.rawFilled >= count) {
+            uint8_t* dst = s.rawPacket.data() + s.rawFilled;
+            if (count == 4u) {
+                BigEndian::Write32(dst, val);
+            } else if (count == 2u) {
+                BigEndian::Write16(dst, static_cast<uint16_t>(val));
+            } else {
+                for (uint32_t i = 0; i < count; ++i) {
+                    dst[i] = static_cast<uint8_t>(val >> (8u * (count - 1u - i)));
+                }
+            }
+            s.rawFilled += count;
+            if (s.rawFilled == s.rawExpected) {
+                RawBeginFinish();
+            }
+            return;
+        }
         if (count == 4) {
             // The FIFO is big-endian; one swap beats four byte extracts per vertex word.
             const uint32_t be = __builtin_bswap32(val);

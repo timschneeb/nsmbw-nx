@@ -223,6 +223,32 @@ struct PortMemory {
 };
 std::array<PortMemory, PAD_MAX_CONTROLLERS> g_ports{};
 
+// SDL_GetGamepadFromPlayerIndex and SDL_GetGamepadName take SDL's object lock, which is a kernel
+// call on Horizon. The KPAD path asks for the same four ports dozens of times per frame, so cache
+// the answers for a quarter of a frame and drop them on controller events. Guest thread only.
+struct PortGamepad {
+    SDL_Gamepad* gamepad = nullptr;
+    Kind kind = Kind::NotWii;
+};
+constexpr uint64_t kPortCacheNs = 4'000'000;
+std::array<PortGamepad, PAD_MAX_CONTROLLERS> g_portCache{};
+uint64_t g_portCacheNs = 0;
+bool g_portCacheValid = false;
+
+const PortGamepad& CachedPort(uint32_t port) {
+    const uint64_t now = SDL_GetTicksNS();
+    if (!g_portCacheValid || now - g_portCacheNs >= kPortCacheNs) {
+        for (uint32_t p = 0; p < PAD_MAX_CONTROLLERS; ++p) {
+            SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(p));
+            g_portCache[p].gamepad = gamepad;
+            g_portCache[p].kind = gamepad != nullptr ? KindForName(aurora::sdl::GetGamepadName(gamepad)) : Kind::NotWii;
+        }
+        g_portCacheNs = now;
+        g_portCacheValid = true;
+    }
+    return g_portCache[port];
+}
+
 bool g_wiiDriverEnabled = false;
 uint64_t g_lastScanMs = 0;
 uint32_t g_scanCount = 0;
@@ -433,7 +459,7 @@ void StepAccelCalibration() {
     if (!g_calibration.active) {
         return;
     }
-    SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(g_calibration.chan));
+    SDL_Gamepad* gamepad = CachedPort(g_calibration.chan).gamepad;
     if (gamepad == nullptr || !IsKpadKind(RealKind(g_calibration.chan))) {
         FinishAccelCalibration("Cancelled: the Wii Remote went away.");
         return;
@@ -675,12 +701,14 @@ Kind KindForName(const char* name) {
     return Kind::Remote;
 }
 
+void InvalidatePortCache() {
+    g_portCacheValid = false;
+}
+
 // Kind of the SDL gamepad assigned to a game port, NotWii when empty.
 Kind KindForPort(uint32_t port) {
     if (port >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
-    SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(port));
-    if (gamepad == nullptr) return Kind::NotWii;
-    return KindForName(aurora::sdl::GetGamepadName(gamepad));
+    return CachedPort(port).kind;
 }
 
 // Human-readable name of a Kind for the settings overlay.
@@ -705,8 +733,9 @@ static bool IsKpadKind(Kind kind) {
 static Kind RealKind(uint32_t chan) {
     if (chan >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
     PortMemory& memory = g_ports[chan];
-    SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(chan));
-    const Kind live = gamepad != nullptr ? KindForName(aurora::sdl::GetGamepadName(gamepad)) : Kind::NotWii;
+    const PortGamepad& port = CachedPort(chan);
+    SDL_Gamepad* gamepad = port.gamepad;
+    const Kind live = port.kind;
     const uint64_t now = SDL_GetTicks();
     if (live != Kind::NotWii) {
         memory.lastKind = live;
@@ -745,7 +774,7 @@ bool HasRealRemote(uint32_t chan) {
 
 bool SendRawReport(uint32_t chan, const uint8_t* data, int size) {
     if (!HasRealRemote(chan)) return false;
-    SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(chan));
+    SDL_Gamepad* gamepad = CachedPort(chan).gamepad;
     return gamepad != nullptr && aurora::sdl::SendGamepadEffect(gamepad, data, size);
 }
 
@@ -787,8 +816,9 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         PromptStyle::NoteWiiRemote(chan, sample.hold);  // a scripted remote is a Wii Remote's prompts
         return true;
     }
-    SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(chan));
-    const Kind kind = gamepad != nullptr ? KindForName(aurora::sdl::GetGamepadName(gamepad)) : Kind::NotWii;
+    const PortGamepad& port = CachedPort(chan);
+    SDL_Gamepad* gamepad = port.gamepad;
+    const Kind kind = port.kind;
     if (!IsKpadKind(kind)) {
         const Kind remembered = RealKind(chan);
         if (!IsKpadKind(remembered)) {
@@ -903,7 +933,7 @@ bool ReadAccelDebug(uint32_t chan, float sdlG[3], float kpadAcc[3]) {
     if (!IsKpadKind(RealKind(chan))) {
         return false;
     }
-    SDL_Gamepad* gamepad = aurora::sdl::GetGamepadFromPlayerIndex(static_cast<int>(chan));
+    SDL_Gamepad* gamepad = CachedPort(chan).gamepad;
     if (gamepad == nullptr) {
         return false;
     }

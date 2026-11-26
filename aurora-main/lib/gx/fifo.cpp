@@ -282,20 +282,18 @@ bool threaded_for(wgpu::BackendType backend) {
          backend != wgpu::BackendType::OpenGL && backend != wgpu::BackendType::OpenGLES;
 }
 
-// The answer for the backend it was last worked out for: (backend << 1) | on. Asked several times per
-// draw (the vertex-format setters), so the usual case is one compare; a backend change (a renderer
-// re-created after a lost device) works it out again.
-std::atomic<uint32_t> s_threadedFor{UINT32_MAX};
 } // namespace
 
-bool threaded() {
-  const auto backend = static_cast<uint32_t>(webgpu::g_backendType);
-  const uint32_t cached = s_threadedFor.load(std::memory_order_relaxed);
-  if ((cached >> 1) == backend) LIKELY {
-    return (cached & 1u) != 0;
-  }
-  const bool on = threaded_for(static_cast<wgpu::BackendType>(backend));
-  s_threadedFor.store((backend << 1) | (on ? 1u : 0u), std::memory_order_relaxed);
+namespace detail {
+// The answer for the backend it was last worked out for: (backend << 1) | on. Read inline from
+// fifo.hpp; a backend change (a renderer re-created after a lost device) works it out again.
+std::atomic<uint32_t> sThreadedFor{UINT32_MAX};
+} // namespace detail
+
+bool threaded_slow(wgpu::BackendType backend) {
+  const auto backendValue = static_cast<uint32_t>(backend);
+  const bool on = threaded_for(backend);
+  detail::sThreadedFor.store((backendValue << 1) | (on ? 1u : 0u), std::memory_order_relaxed);
   return on;
 }
 
@@ -309,7 +307,13 @@ bool async_copies() {
     if (value != nullptr && value[0] != '\0') {
       return value[0] == '1';
     }
+#if defined(MKW_PLATFORM_SWITCH)
+    // libstdc++ reports 0 hardware threads on Switch, so the old rule left this off. The GX
+    // thread has its own core there, and queuing the copy keeps the game thread moving.
+    return true;
+#else
     return std::thread::hardware_concurrency() >= 4;
+#endif
   }();
   return wanted && threaded();
 }
@@ -340,7 +344,13 @@ void sync_if_threaded() {
     if (value != nullptr && value[0] != '\0') {
       return value[0] == '1';
     }
+#if defined(MKW_PLATFORM_SWITCH)
+    // libstdc++ reports 0 hardware threads on Switch, so the old rule moved the GX tail back onto
+    // the game thread. The game thread is the critical path there; keep the decode on the worker.
+    return false;
+#else
     return std::thread::hardware_concurrency() < 4;
+#endif
   }();
   if (inlineWhenIdle) {
     std::unique_lock lock(t.mutex);

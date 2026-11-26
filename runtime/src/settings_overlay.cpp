@@ -1857,6 +1857,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     }
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
+            WiiRemoteInput::InvalidatePortCache();
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
             // Which pad each player's remote now reads (player 1 is Mario).
             std::string ports;
@@ -2646,7 +2647,12 @@ void RunShaderLoadingScreen() noexcept {
                 seconds(Clock::now() - start), frames);
         return;
     }
+#if defined(MKW_PLATFORM_SWITCH)
+    // libstdc++ reports 0 hardware threads on Switch; this process always gets three cores.
+    const double cores = 3.0;
+#else
     const double cores = std::max(2u, std::thread::hardware_concurrency());
+#endif
     const double busyCores = std::max(1.0, cores - 0.8);
     constexpr uint32_t batch = 192;
     constexpr auto kFrame = std::chrono::milliseconds(33);

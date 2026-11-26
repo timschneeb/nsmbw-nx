@@ -1,7 +1,9 @@
 #pragma once
 
 #include "../internal.hpp"
+#include "../webgpu/gpu.hpp"
 
+#include <atomic>
 #include <cstring>
 
 namespace aurora::gx::fifo {
@@ -14,6 +16,8 @@ extern bool sInDisplayList;
 extern uint8_t* sDlBuffer;
 extern uint32_t sDlSize;
 extern uint32_t sDlWritePos;
+// The backend the cached answer below belongs to: (backend << 1) | threaded.
+extern std::atomic<uint32_t> sThreadedFor;
 } // namespace detail
 
 void init();
@@ -86,7 +90,16 @@ void drain();
 // game thread carries on producing. Producers that only append commands call flush_async() where
 // they used to drain; anything that reads or writes decoded state directly calls drain() (or
 // sync_if_threaded()) first.
-bool threaded();
+// Every GX setter asks this, so the common case is inline: the backend and its cached answer.
+bool threaded_slow(wgpu::BackendType backend);
+inline bool threaded() {
+  const auto backend = static_cast<uint32_t>(webgpu::g_backendType);
+  const uint32_t cached = detail::sThreadedFor.load(std::memory_order_relaxed);
+  if ((cached >> 1) == backend) LIKELY {
+    return (cached & 1u) != 0;
+  }
+  return threaded_slow(static_cast<wgpu::BackendType>(backend));
+}
 // Hands what is buffered to the worker once enough has built up (threaded), else drains.
 void flush_async();
 // Waits for the worker to finish everything queued (threaded only; a no-op otherwise).

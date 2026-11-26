@@ -1018,3 +1018,33 @@ entries are host-side attribution spill. The remaining targets, in order of expe
 4. Newer-specific PGO is now measured: -14.0% guest CPU and +11.8 fps on `8-3`, -4.5% on the
    world map (short console A/B). The profile is collected and the NRO exists; re-record it after
    code changes that alter the hot paths.
+
+## Switch: libstdc++ reports zero cores
+
+devkitA64's libstdc++ returns 0 from `std::thread::hardware_concurrency()`. Two hot defaults used
+that value directly:
+
+- `async_copies()` required `>= 4`, so texture copies stayed on the game thread.
+- `inlineWhenIdle` required `< 4`, so the game thread decoded the GX tail itself whenever the GX
+  worker was idle.
+
+The Switch defaults now follow the fork: async copies on, inline decode off. `NSMBW_ASYNC_COPY=0`
+and `NSMBW_GX_INLINE_SYNC=1` restore the old path. `NSMBW_GX_THREAD` already had a Switch override,
+and `aurora::hardware_thread_count()` already returned 3; the remaining direct uses were checked.
+
+`8-3`, stats light, six one-second windows:
+
+| | before | after |
+|---|---:|---:|
+| guest CPU | 23.4 ms | 21.3-21.6 ms (median 21.4) |
+| worker cycle | 18.2 ms | 18.2 ms |
+| p50 | 25.4-27.2 ms | 23.3-24.0 ms (median 23.8) |
+
+The worker stayed at 18.2 ms, so this was guest-side. The frame is now about 1.6-3.4 ms faster in
+this sample.
+
+## Other ports
+
+The analysis of schuler-ph's independently developed Switch fork, including the optimizations it
+implements and which parts are worth porting, is in
+[NSMBW_SWITCH_FORK_ANALYSIS.md](NSMBW_SWITCH_FORK_ANALYSIS.md).
