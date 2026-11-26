@@ -224,9 +224,12 @@ equivalent.
 - Step 6, indexed billboards: RAWINDEX takes indexed POS/TEX/colour draws
   through the raw path. Measured on 8-3: guest 19.6 to 19.3 ms, GX FIFO 3.5 to
   3.0 ms. General, not 8-3-specific. Keep.
-- Step 7, magma HLE: `runtime/src/hle/nsmbw_magma_hle.cpp`, Newer-only. It
-  reproduces the magma preamble, including the two TEV colour writes, and draws
-  the two visible triangles of each six-vertex strip as one merged
-  `GX_TRIANGLES` batch. `NSMBW_MAGMAHLE=1` enables it; generated-newer now skips
-  0x8000D000 so the native dispatcher is the only definition. Console visual and
-  timing check pending.
+- Step 7, water HLE: `runtime/src/hle/nsmbw_water_hle.cpp` now has the fork's
+  validated normal-water path. Vanilla 4-1 at stock clocks measured a steady
+  20.0-20.4 ms versus 20.1-20.9 ms for the opts build, about 0.2-0.4 ms. Both
+  generated trees skip 0x8000D000 so the native dispatcher is the only
+  definition. `NSMBW_WATERHLE=1` enables the normal path.
+- The magma path remains in the same file behind `NSMBW_MAGMAHLE=1`. It cut guest
+  CPU from 19.3 to 16.4 ms but raised the worker to 22.0 ms and was still
+  visually wrong. It is not a keeper yet; the TEX0/TEX1 s-coordinate mapping was
+  fixed after the last test and needs a retest.

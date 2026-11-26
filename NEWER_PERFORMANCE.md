@@ -1121,6 +1121,37 @@ per-attribute path; `NSMBW_GX_RAW_FAST=0` disables it with the other raw shortcu
 About 0.3-0.5 ms off the guest, with the FIFO path down by about 0.4 ms. Cumulative: guest 23.4
 to 19.3 ms, p50 25.4-27.2 to 22.6 ms.
 
+## Vanilla 4-1 baseline
+
+Before the Switch optimizations, the vanilla `SMNE01` build (`6b8075a2e7fc77c7`) was run in
+4-1 (scene `0x005`), handheld, stock CPU, stats off. An old log line reported 1581 MHz, but the
+console was on stock clocks; that line was from a stale log and is disregarded. Stats off means
+there is no `p50` or guest-CPU line, only the slow-frame log (frames over 20 ms). The steady
+windows after each level entry were:
+
+| 4-1 entry | game time |
+|---|---:|
+| first | 20.44, 20.43, 20.95, 21.47, 21.08 ms |
+| later | 20.79, 20.19, 21.60, 20.09 ms |
+
+The 26 slow-frame samples in the level include entry hitches and a heavier later section: min
+20.09 ms, median 25.47 ms, p95 52.35 ms, max 164.38 ms. The steady water segment is about
+20.1-21.6 ms.
+
+The opts build (`f0e6a49176095f8e`) was run at the same stock clock. Its first entry window was
+20.18, 20.63, 20.76 and 21.72 ms; its later steady window was 20.85, 20.10, 20.14 and 28.51 ms.
+The 28.51 sample is a hitch, not the steady water. The windows are essentially unchanged from the
+baseline. This is expected: vanilla 4-1 was already around 20 ms, and the ported opts mainly remove
+Newer-specific guest and input overhead. The slow-frame median moved from 25.47 to 28.51 ms because
+the two runs hit different entry and route hitches, not because the steady water slowed down.
+
+The normal water HLE (`82991a5c26446619`) was then run with `NSMBW_WATERHLE=1` at the same stock
+clock. It reported `first water surface, 1100 quads in merged batches`. Its later steady window was
+19.99, 20.19, 20.37, 20.42, 20.28, 20.06, 19.99, 20.25 and 20.07 ms; the first entry window was
+20.42-21.28 ms before the heavier section. The 30 slow-frame samples had median 24.04, p95 51.79
+and max 119.47 ms, again dominated by entry and route hitches. The steady water is about 0.2-0.4 ms
+faster than the opts build, and the run completed without a reported visual problem.
+
 ## Other ports
 
 The analysis of schuler-ph's independently developed Switch fork, including the optimizations it

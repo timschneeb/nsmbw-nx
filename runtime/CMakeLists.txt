@@ -265,7 +265,8 @@ set(MKW_PPC_SEMANTIC_RUNTIME_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/src/fpu_helpers.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/ppc_quantized.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/hle/input/kpad.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/src/hle/nsmbw_camera.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/src/hle/nsmbw_camera.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/hle/nsmbw_water_hle.cpp")
 set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
     SKIP_UNITY_BUILD_INCLUSION ON
     SKIP_PRECOMPILE_HEADERS ON
@@ -457,6 +458,8 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 set(NSMBW_GAME_ID "SMNE01" CACHE STRING "Disc ID (boot.bin) of the game this build was translated for")
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/product/base_product.cpp" PROPERTIES
     COMPILE_DEFINITIONS "NSMBW_GAME_ID=\"${NSMBW_GAME_ID}\"")
+# The water HLE is registered by address and replaces the translated dispatcher. Both generated
+# trees skip 0x8000D000, so the native dispatcher is the only definition.
 if(MKW_PLATFORM_MACOS)
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp")
     if(MKW_PLATFORM_MACOS_ARM64)
