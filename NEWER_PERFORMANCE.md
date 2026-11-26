@@ -1152,6 +1152,10 @@ clock. It reported `first water surface, 1100 quads in merged batches`. Its late
 and max 119.47 ms, again dominated by entry and route hitches. The steady water is about 0.2-0.4 ms
 faster than the opts build, and the run completed without a reported visual problem.
 
+A magma HLE was also attempted. It reduced 8-3 guest CPU from 19.3 to 17.4 ms, but the
+below-surface gradient did not match the translated path, and p50 stayed flat because the worker
+became the limit. It was dropped; magma, poison and sand still use their translated functions.
+
 ## Other ports
 
 The analysis of schuler-ph's independently developed Switch fork, including the optimizations it

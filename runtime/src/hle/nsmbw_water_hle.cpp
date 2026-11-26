@@ -1,11 +1,13 @@
-// NSMBW magma surface: d3d::rtexQuadManyTwin_c::drawTexQuadManyTwinMagma (0x8000BA70).
+// NSMBW water surface: d3d::rtexQuadManyTwin_c::drawTexQuadManyTwinNormal (0x8000B530).
 //
-// The guest draws each step as a six-vertex triangle strip: A, B, D, C, D, C. The last two vertices
-// repeat D and C, so the final two triangles are degenerate. The visible geometry is the quad
-// A, B, D, C. With NSMBW_MAGMAHLE=1 the native code repeats the guest's GX state setup and writes
-// the two visible triangles of every step into one GX_TRIANGLES batch, instead of one GXBegin and
-// eight HLE FIFO stores per step. The vertex bytes are built with the same float conversions and
-// the same big-endian layout as the guest loop.
+// The guest draws one GXBegin(GX_QUADS) per quad, with every vertex component written through the
+// HLE FIFO. Nothing changes GX state between quads, so the native path repeats the guest's setup
+// and draws the whole surface as merged GX_QUADS batches. The vertex bytes use the same float
+// conversions and big-endian layout as the translated loop.
+//
+// The native dispatcher at 0x8000D000 also preserves the other surface kinds: magma, poison and
+// sand are still dispatched to their translated functions. NSMBW_WATERHLE=0 restores the
+// translated normal-water path.
 
 #include "abi_bridge.h"
 #include "hle_stubs.h"
@@ -25,7 +27,6 @@ extern "C" void GX_HLE_FIFO_WriteBurst(const uint8_t* data, uint32_t sizeBytes);
 
 namespace {
 
-constexpr uint32_t kDrawDispatcher = 0x8000D000u;
 constexpr uint32_t kDrawNormal = 0x8000B530u;
 constexpr uint32_t kDrawMagma = 0x8000BA70u;
 constexpr uint32_t kDrawMagmaHi = 0x8000C5C0u;
@@ -54,27 +55,14 @@ constexpr uint32_t kTexOfs0 = 52888;
 constexpr uint32_t kTexOfs1 = 52890;
 
 constexpr uint32_t kVertexBytes = 24u;  // POS xyz f32, CLR0 RGBA8, TEX0 st s16, TEX1 st s16
-constexpr int32_t kMaxQuadsPerBegin = 0xFFFF / 6;
-constexpr int32_t kMaxNormalQuadsPerBegin = 0xFFFF / 4;
-
-bool MagmaHleEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("NSMBW_MAGMAHLE");
-        const bool on = value != nullptr && value[0] == '1';
-        if (on) {
-            RT_LOGF(RT_TAG_GX, "NSMBW_MAGMAHLE=1: magma surface as merged triangle batches\n");
-        }
-        return on;
-    }();
-    return enabled;
-}
+constexpr int32_t kMaxQuadsPerBegin = 0xFFFF / 4;
 
 bool WaterHleEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("NSMBW_WATERHLE");
-        const bool on = value != nullptr && value[0] == '1';
+        const bool on = value == nullptr || value[0] != '0';
         if (on) {
-            RT_LOGF(RT_TAG_GX, "NSMBW_WATERHLE=1: water surface as merged quad batches\n");
+            RT_LOGF(RT_TAG_GX, "NSMBW_WATERHLE: water surface as merged quad batches\n");
         }
         return on;
     }();
@@ -110,21 +98,8 @@ void PutGuestFloat(uint8_t*& out, uint32_t address) {
     PutBe32(out, bits);
 }
 
-// One vertex exactly as the guest loop writes it for the visible quad.
-void PutVertex(uint8_t*& out, uint32_t position, uint32_t color, int32_t s0, int32_t s1, int32_t t0,
-               int32_t t1) {
-    PutGuestFloat(out, position);
-    PutGuestFloat(out, position + 4);
-    PutGuestFloat(out, position + 8);
-    PutBe32(out, color);
-    PutBe16(out, static_cast<uint32_t>(s0));
-    PutBe16(out, static_cast<uint32_t>(t0));
-    PutBe16(out, static_cast<uint32_t>(s1));
-    PutBe16(out, static_cast<uint32_t>(t1));
-}
-
-// Normal water: TEX0 and TEX1 use different s offsets and share the t coordinate.
-void PutNormalVertex(uint8_t*& out, uint32_t position, uint32_t color, int32_t s0, int32_t s1, int32_t t) {
+// One vertex as the guest loop writes it: position, colour, then TEX0 and TEX1.
+void PutVertex(uint8_t*& out, uint32_t position, uint32_t color, int32_t s0, int32_t s1, int32_t t) {
     PutGuestFloat(out, position);
     PutGuestFloat(out, position + 4);
     PutGuestFloat(out, position + 8);
@@ -135,7 +110,7 @@ void PutNormalVertex(uint8_t*& out, uint32_t position, uint32_t color, int32_t s
     PutBe16(out, static_cast<uint32_t>(t));
 }
 
-void DrawNormalQuads(CpuContext* ctx, uint32_t self) {
+void DrawQuads(CpuContext* ctx, uint32_t self) {
     const int32_t count = static_cast<int32_t>(MemoryInline::FlatRead32(self + kQuadCount));
     if (count <= 0) {
         return;
@@ -152,18 +127,18 @@ void DrawNormalQuads(CpuContext* ctx, uint32_t self) {
     constexpr int32_t kTop = 0;
     constexpr int32_t kBottom = 1023;
     static std::vector<uint8_t> bytes;
-    for (int32_t first = 0; first < count; first += kMaxNormalQuadsPerBegin) {
-        const int32_t quads = std::min(count - first, kMaxNormalQuadsPerBegin);
+    for (int32_t first = 0; first < count; first += kMaxQuadsPerBegin) {
+        const int32_t quads = std::min(count - first, kMaxQuadsPerBegin);
         bytes.resize(static_cast<size_t>(quads) * 4u * kVertexBytes);
         uint8_t* out = bytes.data();
         for (int32_t i = first; i < first + quads; ++i) {
             const int32_t left = (i % 11) * 93;
             const int32_t right = left + 92;
             const uint32_t step = static_cast<uint32_t>(i) * 12u;
-            PutNormalVertex(out, self + kCornerA + step, colorTop, left + ofs0, left + ofs1, kTop);
-            PutNormalVertex(out, self + kCornerB + step, colorTop, right + ofs0, right + ofs1, kTop);
-            PutNormalVertex(out, self + kCornerC + step, colorBottom, right + ofs0, right + ofs1, kBottom);
-            PutNormalVertex(out, self + kCornerD + step, colorBottom, left + ofs0, left + ofs1, kBottom);
+            PutVertex(out, self + kCornerA + step, colorTop, left + ofs0, left + ofs1, kTop);
+            PutVertex(out, self + kCornerB + step, colorTop, right + ofs0, right + ofs1, kTop);
+            PutVertex(out, self + kCornerC + step, colorBottom, right + ofs0, right + ofs1, kBottom);
+            PutVertex(out, self + kCornerD + step, colorBottom, left + ofs0, left + ofs1, kBottom);
         }
         SetArgs(ctx, {0x80u /* GX_QUADS */, 0u /* GX_VTXFMT0 */,
                       static_cast<uint32_t>(quads) * 4u});
@@ -172,47 +147,8 @@ void DrawNormalQuads(CpuContext* ctx, uint32_t self) {
     }
 }
 
-// A, B, D, B, D, C: the two non-degenerate triangles of the guest's six-vertex strip.
-void DrawMagmaTriangles(CpuContext* ctx, uint32_t self) {
-    const int32_t count = static_cast<int32_t>(MemoryInline::FlatRead32(self + kQuadCount));
-    if (count <= 0) {
-        return;
-    }
-    static bool logged = false;
-    if (!logged) {
-        logged = true;
-        RT_LOGF(RT_TAG_GX, "NSMBW_MAGMAHLE: first magma surface, %d quads in merged batches\n", count);
-    }
-    const int32_t ofs0 = static_cast<int16_t>(MemoryInline::FlatRead16(self + kTexOfs0));
-    constexpr uint32_t kColorAlphaZero = 0x000000FFu;  // black, alpha 255
-    constexpr uint32_t kColorWhite = 0xFFFFFFFFu;
-    static std::vector<uint8_t> bytes;
-    for (int32_t first = 0; first < count; first += kMaxQuadsPerBegin) {
-        const int32_t quads = std::min(count - first, kMaxQuadsPerBegin);
-        bytes.resize(static_cast<size_t>(quads) * 6u * kVertexBytes);
-        uint8_t* out = bytes.data();
-        for (int32_t i = first; i < first + quads; ++i) {
-            const int32_t s0 = (i % 6) * 170;
-            const int32_t s1 = s0 + 169;
-            const uint32_t step = static_cast<uint32_t>(i) * 12u;
-            PutVertex(out, self + kCornerA + step, kColorAlphaZero, s0, s0, 0, ofs0);
-            PutVertex(out, self + kCornerB + step, kColorAlphaZero, s1, s1, 0, ofs0);
-            PutVertex(out, self + kCornerD + step, kColorWhite, s0, s0, 511, ofs0 + 511);
-            PutVertex(out, self + kCornerB + step, kColorAlphaZero, s1, s1, 0, ofs0);
-            PutVertex(out, self + kCornerD + step, kColorWhite, s0, s0, 511, ofs0 + 511);
-            PutVertex(out, self + kCornerC + step, kColorWhite, s1, s1, 511, ofs0 + 511);
-        }
-        SetArgs(ctx, {0x90u /* GX_TRIANGLES */, 0u /* GX_VTXFMT0 */,
-                      static_cast<uint32_t>(quads) * 6u});
-        InvokeDirectCpu<kGxBegin>(ctx);
-        GX_HLE_FIFO_WriteBurst(bytes.data(), static_cast<uint32_t>(bytes.size()));
-    }
-}
-
-// drawTexQuadManyTwinNormal (0x8000B530) and drawTexQuadManyTwinMagma (0x8000BA70), call for call
-// up to the quad loop. The two functions share the GX setup except for the TEV stage arguments,
-// the depth write and magma's two TEV colour registers.
-void DrawSurfaceHle(CpuContext* ctx, bool magma) {
+// drawTexQuadManyTwinNormal (0x8000B530), call for call up to the quad loop.
+void DrawNormalHle(CpuContext* ctx) {
     const uint32_t self = ctx->gpr[3];
     const uint32_t callerSp = ctx->gpr[1];
     const uint32_t r2 = ctx->gpr[2];
@@ -228,10 +164,10 @@ void DrawSurfaceHle(CpuContext* ctx, bool magma) {
     ctx->gpr[21] = self;
 
     SetArgs(ctx, {self + kTexObj0, 0});
-    ctx->lr = magma ? 0x8000BAA0u : 0x8000B554u;
+    ctx->lr = 0x8000B554u;
     InvokeDirectCpu<0x801C74C0u>(ctx);  // GXLoadTexObj(&mTexObj0, GX_TEXMAP0)
     SetArgs(ctx, {self + kTexObj1, 1});
-    ctx->lr = magma ? 0x8000BAACu : 0x8000B560u;
+    ctx->lr = 0x8000B560u;
     InvokeDirectCpu<0x801C74C0u>(ctx);  // GXLoadTexObj(&mTexObj1, GX_TEXMAP1)
     InvokeDirectCpu<0x801C4070u>(ctx);  // GXClearVtxDesc
     SetArgs(ctx, {9, 1});
@@ -250,7 +186,7 @@ void DrawSurfaceHle(CpuContext* ctx, bool magma) {
     InvokeDirectCpu<0x801C40B0u>(ctx);  // TEX0, ST, S16
     SetArgs(ctx, {0, 14, 1, 3, 10});
     InvokeDirectCpu<0x801C40B0u>(ctx);  // TEX1, ST, S16
-    ctx->lr = magma ? 0x8000BB44u : 0x8000B5F8u;
+    ctx->lr = 0x8000B5F8u;
     InvokeIndirectCpu(kResetMaterial, ctx);
 
     SetArgs(ctx, {1});
@@ -260,10 +196,10 @@ void DrawSurfaceHle(CpuContext* ctx, bool magma) {
     SetArgs(ctx, {2});
     InvokeDirectCpu<0x801C4A20u>(ctx);  // GXSetNumTexGens(2)
     SetArgs(ctx, {0, 1, 4, 60, 0, 125});
-    ctx->lr = magma ? 0x8000BB90u : 0x8000B644u;
+    ctx->lr = 0x8000B644u;
     InvokeDirectCpu<0x801C47D0u>(ctx);  // TEXCOORD0
     SetArgs(ctx, {1, 1, 5, 60, 0, 125});
-    ctx->lr = magma ? 0x8000BBACu : 0x8000B660u;
+    ctx->lr = 0x8000B660u;
     InvokeDirectCpu<0x801C47D0u>(ctx);  // TEXCOORD1
     SetArgs(ctx, {2});
     InvokeDirectCpu<0x801C88F0u>(ctx);  // GXSetNumTevStages(2)
@@ -277,33 +213,17 @@ void DrawSurfaceHle(CpuContext* ctx, bool magma) {
     InvokeDirectCpu<0x801C82F0u>(ctx);  // GXSetTevColorIn(0)
     SetArgs(ctx, {0, 0, 0, 0, 1, 0});
     InvokeDirectCpu<0x801C8370u>(ctx);  // GXSetTevColorOp(0)
-    if (magma) {
-        SetArgs(ctx, {0, 7, 7, 7, 5});
-    } else {
-        SetArgs(ctx, {0, 7, 5, 4, 7});
-    }
+    SetArgs(ctx, {0, 7, 5, 4, 7});
     InvokeDirectCpu<0x801C8330u>(ctx);  // GXSetTevAlphaIn(0)
     SetArgs(ctx, {0, 0, 0, 0, 1, 0});
     InvokeDirectCpu<0x801C83D0u>(ctx);  // GXSetTevAlphaOp(0)
-    if (magma) {
-        SetArgs(ctx, {1, 1, 1, 255});
-    } else {
-        SetArgs(ctx, {1, 1, 1, 4});
-    }
+    SetArgs(ctx, {1, 1, 1, 4});
     InvokeDirectCpu<0x801C8790u>(ctx);  // GXSetTevOrder(1, ...)
-    if (magma) {
-        SetArgs(ctx, {1, 4, 2, 8, 0});
-    } else {
-        SetArgs(ctx, {1, 15, 0, 8, 10});
-    }
+    SetArgs(ctx, {1, 15, 0, 8, 10});
     InvokeDirectCpu<0x801C82F0u>(ctx);  // GXSetTevColorIn(1)
     SetArgs(ctx, {1, 0, 0, 0, 1, 0});
     InvokeDirectCpu<0x801C8370u>(ctx);  // GXSetTevColorOp(1)
-    if (magma) {
-        SetArgs(ctx, {1, 7, 7, 7, 0});
-    } else {
-        SetArgs(ctx, {1, 7, 0, 4, 7});
-    }
+    SetArgs(ctx, {1, 7, 0, 4, 7});
     InvokeDirectCpu<0x801C8330u>(ctx);  // GXSetTevAlphaIn(1)
     SetArgs(ctx, {1, 0, 0, 0, 1, 0});
     InvokeDirectCpu<0x801C83D0u>(ctx);  // GXSetTevAlphaOp(1)
@@ -311,26 +231,12 @@ void DrawSurfaceHle(CpuContext* ctx, bool magma) {
     InvokeDirectCpu<0x801C8EB0u>(ctx);  // GXSetZCompLoc(GX_FALSE)
     SetArgs(ctx, {1, 4, 5, 15});
     InvokeDirectCpu<0x801C8DC0u>(ctx);  // GXSetBlendMode
-    if (magma) {
-        SetArgs(ctx, {1, 3, 1});
-    } else {
-        SetArgs(ctx, {1, 3, 0});
-    }
+    SetArgs(ctx, {1, 3, 0});
     InvokeDirectCpu<0x801C8E70u>(ctx);  // GXSetZMode
     SetArgs(ctx, {4, 0, 1, 4, 0});
     InvokeDirectCpu<0x801C86C0u>(ctx);  // GXSetAlphaCompare
     SetArgs(ctx, {1});
     InvokeDirectCpu<0x801C9D60u>(ctx);  // GXSetClipMode(GX_CLIP_DISABLE)
-
-    if (magma) {
-        // Magma adds TEV colour 1 and 2 from the object's top and bottom colours.
-        MemoryInline::FlatWriteRam32(sp + 12u, MemoryInline::FlatRead32(self + kColorTop));
-        SetArgs(ctx, {1, sp + 12u});
-        InvokeDirectCpu<0x801C8430u>(ctx);  // GXSetTevColor(1, top)
-        MemoryInline::FlatWriteRam32(sp + 8u, MemoryInline::FlatRead32(self + kColorBottom));
-        SetArgs(ctx, {2, sp + 8u});
-        InvokeDirectCpu<0x801C8430u>(ctx);  // GXSetTevColor(2, bottom)
-    }
 
     // GXSetFog(GX_FOG_NONE, 0, 0, 0, 0, {0}).
     const double zero = MemoryInline::FlatReadFloat32(r2 - 32736u);
@@ -349,11 +255,11 @@ void DrawSurfaceHle(CpuContext* ctx, bool magma) {
     SetArgs(ctx, {1});
     InvokeDirectCpu<0x801C8F90u>(ctx);  // GXSetDither(GX_TRUE)
 
-    ctx->lr = magma ? 0x8000BD40u : 0x8000B814u;
+    ctx->lr = 0x8000B814u;
     InvokeIndirectCpu(kGetCurrentCamera, ctx);
     MemoryInline::FlatWriteRam32(sp + 12u, ctx->gpr[3]);
     SetArgs(ctx, {sp + 12u, sp + 64u});
-    ctx->lr = magma ? 0x8000BD50u : 0x8000B824u;
+    ctx->lr = 0x8000B824u;
     InvokeIndirectCpu(kGetCameraMtx, ctx);
     const double zeroAgain = MemoryInline::FlatReadFloat32(r2 - 32736u);
     ctx->fpr[0].d = zeroAgain;
@@ -361,7 +267,7 @@ void DrawSurfaceHle(CpuContext* ctx, bool magma) {
     MemoryInline::FlatWriteRamFloat32(sp + 92u, zeroAgain);
     MemoryInline::FlatWriteRamFloat32(sp + 108u, zeroAgain);
     SetArgs(ctx, {self, sp + 16u});
-    ctx->lr = magma ? 0x8000BD6Cu : 0x8000B840u;
+    ctx->lr = 0x8000B840u;
     InvokeIndirectCpu(kGetViewMtx, ctx);
     SetArgs(ctx, {sp + 16u, sp + 64u, sp + 16u});
     InvokeIndirectCpu(kPsMtxConcat, ctx);
@@ -370,11 +276,9 @@ void DrawSurfaceHle(CpuContext* ctx, bool magma) {
     SetArgs(ctx, {0});
     InvokeDirectCpu<0x801C9A60u>(ctx);  // GXSetCurrentMtx
 
-    if (magma) {
-        DrawMagmaTriangles(ctx, self);
-    } else {
-        DrawNormalQuads(ctx, self);
-    }
+    ctx->gpr[22] = 0;
+    ctx->gpr[28] = self + 0x10000u;
+    DrawQuads(ctx, self);
 
     SetArgs(ctx, {0});
     InvokeDirectCpu<0x801C9D60u>(ctx);  // GXSetClipMode(GX_CLIP_ENABLE)
@@ -413,7 +317,7 @@ extern "C" void RtexQuadManyTwinDraw_HLE_8000d000(CpuContext* ctx) {
             ctx->gpr[4] = r4;
             ctx->gpr[5] = r5;
             ctx->cr = cr;
-            DrawSurfaceHle(ctx, false);
+            DrawNormalHle(ctx);
         } else {
             CallTranslated(ctx, kDrawNormal, r0, r4, r5, cr);
         }
@@ -447,15 +351,7 @@ extern "C" void RtexQuadManyTwinDraw_HLE_8000d000(CpuContext* ctx) {
                 }
             }
         }
-        if (!hi && MagmaHleEnabled()) {
-            ctx->gpr[0] = r0;
-            ctx->gpr[4] = r4;
-            ctx->gpr[5] = r5;
-            ctx->cr = cr;
-            DrawSurfaceHle(ctx, true);
-        } else {
-            CallTranslated(ctx, hi ? kDrawMagmaHi : kDrawMagma, r0, r4, r5, cr);
-        }
+        CallTranslated(ctx, hi ? kDrawMagmaHi : kDrawMagma, r0, r4, r5, cr);
         return;
     }
     SetCRResident(cr, xer, 0, static_cast<int32_t>(r0), 2);

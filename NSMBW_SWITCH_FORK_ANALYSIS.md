@@ -55,7 +55,7 @@ Consequences:
 | `fifo::threaded()` | Inline in the header; wanted decision cached in plain bools | 1.1% of game thread before the fix | Ours is out-of-line with an atomic cache. Can be made inline. |
 | GX raw path (`NSMBW_GXFAST`) | Skips the per-draw vertex republish, caches vertex size and first enabled attribute per generation, writes FIFO stores directly into the raw packet, skips timing for queued draws | About 17% of the game thread on 4-1's water before the fix | We already skip the republish and immediate-mode publish. We still lack the generation caches and direct gather. Our last stats-full 8-3 profile: `TryGetRawDirectFifoVertexSize` 0.97%, `HleFifoWrite` 2.4%, `RawBeginAppend` 0.75%. |
 | Indexed billboards (`NSMBW_BEGINSKIP`, `NSMBW_RAWINDEX`) | Per-attribute GXBegins no longer publish twice; indexed POS/TEX/RGB8 draws take the raw path and expand indices at finish | Linux world map 3: game thread 7.20 to 6.07 ms (-15.7%) | We deliberately have no indexed raw path. Optional, scene-dependent. |
-| Water HLE (`NSMBW_WATERHLE`) | Native `drawTexQuadManyTwinNormal` builds one GXBegin for about 1,100 quads instead of one per quad | About one fifth of the game thread in 4-1, two players | Normal water only. The translated magma function is byte-identical in vanilla and Newer, so a magma HLE is feasible but not implemented. |
+| Water HLE (`NSMBW_WATERHLE`) | Native `drawTexQuadManyTwinNormal` builds one GXBegin for about 1,100 quads instead of one per quad | About one fifth of the game thread in 4-1, two players | Ported and default on. The magma HLE was attempted but dropped: the guest win was real, but the below-surface gradient did not match. |
 | Async texture copies | On by default on Switch; copies queue on the GX thread | 4-1 at 1785: game thread 12.2 to 12.4 -> 11.6 to 11.7 ms | Default is still off because `async_copies()` uses `std::thread::hardware_concurrency() >= 4`, which is 0 on Switch. |
 | GX inline sync | Forced off on Switch; the game thread does not decode the tail itself | Their comment: the Switch game thread is the critical path | Ours uses `hardware_concurrency() < 4`, which is true on Switch, so inline decode is on. This is the clearest untested trap in our port. |
 | Input path | Caches port to SDL gamepad and kind for 4 ms, drops on controller events; sets `SDL_HINT_INVALID_PARAM_CHECKS=1` | 1.4% plus 1.5% of game thread | Our Switch path still calls SDL per KPAD read, and we do not set the hint. |
@@ -149,10 +149,9 @@ So the correct statements are:
   offsets are the same.
 - It would only optimize normal water. Newer 8-3 uses the magma kind, which the
   fork left translated.
-- A native magma HLE is feasible with the same technique. It would need its own
-  native implementation, matching the magma preamble and any lava animation state,
-  plus byte-identical frame captures and determinism hashes against the translated
-  path.
+- A native magma HLE is feasible with the same technique, and one was implemented.
+  It cut guest CPU by about 1.9 ms, but the below-surface gradient did not match
+  and the worker became the wall, so it was dropped.
 - HLE is not inherently vanilla-only. Generic engine HLEs (GX, math, audio, DVD)
   already work in both games. Game-specific HLEs work in both when the guest
   function and its data layout are the same, but each one needs validation.
@@ -228,8 +227,9 @@ equivalent.
   validated normal-water path. Vanilla 4-1 at stock clocks measured a steady
   20.0-20.4 ms versus 20.1-20.9 ms for the opts build, about 0.2-0.4 ms. Both
   generated trees skip 0x8000D000 so the native dispatcher is the only
-  definition. `NSMBW_WATERHLE=1` enables the normal path.
-- The magma path remains in the same file behind `NSMBW_MAGMAHLE=1`. It cut guest
-  CPU from 19.3 to 16.4 ms but raised the worker to 22.0 ms and was still
-  visually wrong. It is not a keeper yet; the TEX0/TEX1 s-coordinate mapping was
-  fixed after the last test and needs a retest.
+  definition. The normal path is on by default; `NSMBW_WATERHLE=0` restores the
+  translated path.
+- The magma HLE was attempted and dropped. It cut guest CPU from 19.3 to
+  17.4 ms, but the below-surface gradient still did not match the translated
+  path, and p50 was flat because the worker became the wall. The translated
+  magma, poison and sand paths remain in the dispatcher.
