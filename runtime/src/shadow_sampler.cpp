@@ -203,11 +203,15 @@ void RunHostSampler(uint32_t targetScene, uint64_t startTick, uint64_t endTick) 
     RT_LOGF(RT_TAG_RUNTIME, "sample: host recording scene 0x%03X for %.1f s at %u Hz\n", targetScene,
             g_lengthSeconds, hz);
     auto nextSample = Clock::now();
+    // Write a partial report every few seconds so a run that is closed before the
+    // window ends still leaves samples behind.
+    uint64_t nextSnapshot = startTick + static_cast<uint64_t>(5.0 * g_tickFrequency);
     while (!g_stop.load(std::memory_order_relaxed) && NowTick() < endTick) {
         nextSample += std::chrono::microseconds(intervalUs);
         std::this_thread::sleep_until(nextSample);
         if (targetScene != 0 && g_scene.load(std::memory_order_relaxed) != targetScene) {
-            break;
+            // Skip menus and transitions; the window may start before the target scene loads.
+            continue;
         }
         if (R_FAILED(svcSetThreadActivity(thread, ThreadActivity_Paused))) {
             SleepMs(1);
@@ -246,6 +250,10 @@ void RunHostSampler(uint32_t targetScene, uint64_t startTick, uint64_t endTick) 
             continue;
         }
         samples.push_back(HostSample{NowTick(), frames});
+        if (NowTick() >= nextSnapshot) {
+            WriteHostReport(samples, startTick, NowTick());
+            nextSnapshot += static_cast<uint64_t>(5.0 * g_tickFrequency);
+        }
         if (samples.size() >= capacity) {
             break;
         }
@@ -313,6 +321,9 @@ void SamplerThread() {
             g_lengthSeconds, g_sampleHz);
 
     auto nextSample = Clock::now();
+    // Write a partial report every few seconds so a run that is closed before the
+    // window ends still leaves samples behind.
+    uint64_t nextSnapshot = startTick + static_cast<uint64_t>(5.0 * g_tickFrequency);
     while (!g_stop.load(std::memory_order_relaxed) && NowTick() < endTick) {
         nextSample += std::chrono::microseconds(g_sampleIntervalUs);
         std::this_thread::sleep_until(nextSample);

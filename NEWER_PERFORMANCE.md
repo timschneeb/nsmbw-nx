@@ -874,6 +874,33 @@ the mixer alternates between 4 and 5 blocks on core 2, which the GX decode share
 buffers or presentation images are the other candidate. Standing still shows it because moving
 adds enough variance to hide it.
 
+### 8-3 host profile after the copy work
+
+Sampler rerun at HEAD (1 MiB scan cache, zero-copy hand-off, copy grid, address index), 3079
+samples at 100 Hz over a 60 s window, stats light:
+
+| Sample | Before index | Now |
+|---|---:|---:|
+| `svcWaitProcessWideKeyAtomic` (worker wait) | 10.6% | 13.25% |
+| `steady_clock::now` + `clock_gettime` + `PerfStats` (stats overhead) | 10.3% | 9.6% |
+| futex lock / signal / unlock | 7.1% | 7.5% |
+| `memcpy` | 4.4% | 1.33% |
+| display-list scan | 4.3% | ~0.3% |
+| GX FIFO / vertex publish (all functions) | ~10% | 10.3% |
+| largest single game function | 2.5% | 2.66% |
+
+Grouped by category: game and engine code 30.9%, sync 21.5%, GX FIFO 10.3%, timing 9.6%,
+dispatch/fiber 3.1%, texture copy/decode 2.9%, memory/hash 2.3%. The memcpy and display-list scan
+costs from the earlier profile are gone; what remains is diffuse game code with no hot function.
+The largest are `dWaterWave_c::waveExecute` 2.66%, `drawTexQuadManyTwinMagma_c` 1.10%,
+`daFarBG_c::ReserveModel` 0.49%, `ef::ParticleManager::Calc` 0.45% and
+`fLiMgBa_c::searchNodeByID` 0.42%.
+
+The 9.6% timing share is stats instrumentation (17 k FIFO writes per frame, each timestamped);
+the release build runs stats off and does not pay it. With stats light the measured guest 23.3 ms
+includes roughly 2 ms of that, so the real guest is closer to 21 ms. `PausedNanoseconds` and the
+time base are not hot: no `mftb` or `GetTimeBase` samples appear.
+
 
 `NSMBW_GX_SCRATCH_SLOTS=0` restores the split-per-copy path. `NSMBW_LOG_STRIP=1` logs each strip
 begin/end with its shape plus `slots N` and `slots used N/M`.

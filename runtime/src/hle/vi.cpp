@@ -1315,6 +1315,24 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             times.slow += frame > slowFrameMs ? 1 : 0;
             ++times.frames;
             times.samples.push_back(frame);
+            static const bool logFrameTimes = std::getenv("NSMBW_LOG_FRAME_TIMES") != nullptr;
+            if (logFrameTimes) {
+                static std::vector<double> s_frames;
+                static std::vector<double> s_game;
+                s_frames.push_back(frame);
+                s_game.push_back(game);
+                if (s_frames.size() >= 60) {
+                    std::string line = "[frames]";
+                    char buffer[48];
+                    for (size_t i = 0; i < s_frames.size(); ++i) {
+                        std::snprintf(buffer, sizeof(buffer), " %.2f/%.2f", s_frames[i], s_game[i]);
+                        line += buffer;
+                    }
+                    FrameStats::Log("%s\n", line.c_str());
+                    s_frames.clear();
+                    s_game.clear();
+                }
+            }
         } else {
             times.windowStart = now;
         }
