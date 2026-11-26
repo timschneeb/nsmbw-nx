@@ -313,6 +313,7 @@ New Super Mario Bros. Wii, the Android app, and LAN play.
 
 - **[WiiCompiled](https://github.com/patchzyy/Wiicompiled)** by patchzyy and contributors - the
   static recompiler and runtime this port is built on.
+- **[schuler-ph's upstream fork](https://github.com/schuler-ph/nsmbw-switch)** - Water HLE implementation, Billboard indexing optimization, SDL gamepad input cache
 - **[KartPad](https://github.com/chrissotraidis/kartpad)** - WiiCompiled on Android, whose approach
   and game-file import steps this port follows.
 - **[aurora](https://github.com/encounter/aurora)** - the GX rendering/windowing backend. MIT
