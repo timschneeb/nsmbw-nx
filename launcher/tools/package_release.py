@@ -114,11 +114,11 @@ def release_url(repo: str, tag: str, pinned: bool, name: str) -> str:
     return "https://github.com/%s/releases/latest/download/%s" % (repo, name)
 
 
-def source_spec(args, version: str) -> dict:
+def source_spec(args, version: str, launcher_version: str) -> dict:
     return {
         "recomp_version": version,
         "launcher": {
-            "version": version,
+            "version": launcher_version,
             "file": str(args.launcher),
             "url": release_url(args.modules_repo, args.tag, args.pinned, "launcher.nro"),
         },
@@ -246,11 +246,14 @@ def main() -> int:
                         help="defaults to --newer-game-version")
     parser.add_argument("--region", default="U",
                         help="region the NROs were recompiled from (U, E, J, ...)")
+    parser.add_argument("--launcher-version", default="",
+                        help="launcher NACP version when it differs from VERSION (a game-only update)")
     args = parser.parse_args()
 
     version = read_version_file()
     if args.tag.lstrip("v") != version:
         raise ValueError("tag %s does not match VERSION %s" % (args.tag, version))
+    launcher_version = args.launcher_version or version
 
     required = [args.launcher, args.vanilla, args.banner]
     if not args.launcher_only:
@@ -263,19 +266,19 @@ def main() -> int:
             if not path.is_file():
                 raise ValueError("missing %s (use --skip-symbols to omit)" % path)
 
-    versioned = [args.launcher]
+    versioned = [(args.launcher, launcher_version)]
     if not args.launcher_only:
-        versioned += [args.vanilla, args.newer]
-    for path in versioned:
+        versioned += [(args.vanilla, version), (args.newer, version)]
+    for path, expected in versioned:
         actual = nro_version(path)
-        if actual != version:
-            raise ValueError("%s NACP is %s, expected VERSION %s" % (path, actual, version))
+        if actual != expected:
+            raise ValueError("%s NACP is %s, expected %s" % (path, actual, expected))
 
     if args.launcher_only:
         assets = json.loads(args.source_assets.read_text(encoding="utf-8"))
         assets["recomp_version"] = version
         assets["launcher"] = {
-            "version": version,
+            "version": launcher_version,
             "url": release_url(args.modules_repo, args.tag, args.pinned, "launcher.nro"),
             "sha256": sha256(args.launcher),
             "size": args.launcher.stat().st_size,
@@ -291,7 +294,7 @@ def main() -> int:
                 name = url.rsplit("/", 1)[-1]
                 component["url"] = release_url(args.modules_repo, args.game_tag, True, name)
     else:
-        assets = build_assets(source_spec(args, version))
+        assets = build_assets(source_spec(args, version, launcher_version))
 
     if args.out.exists():
         shutil.rmtree(args.out)
