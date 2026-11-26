@@ -1061,6 +1061,25 @@ object-table validation on each button and axis read, keeping the NULL checks.
 About 1.1 ms off the guest and 0.8 ms off p50. Cumulative from the pre-step-1 state: guest 23.4 to
 20.3 ms, p50 25.4-27.2 to 23.0 ms.
 
+### Raw GX vertex path
+
+`ResetVertex` scanned all 26 attributes on every GXBegin and every raw draw, some twice, and
+`TryGetRawDirectFifoVertexSize` walked the descriptor again. Both now cache their answer until
+`vtxStateGeneration` changes. A store that fits in the open raw packet is written straight into it
+instead of going through `RawBeginAppend`'s memcpy. `NSMBW_GX_RAW_FAST=0` restores the old path.
+
+`8-3`, stats light, six one-second windows (one window had a 1.26 s hitch, ignored for p50):
+
+| | step 2 | step 3 |
+|---|---:|---:|
+| guest CPU | 20.0-20.7 ms (median 20.3) | 19.2-20.5 ms (median 19.9) |
+| worker cycle | 18.4-18.6 ms (median 18.4) | 17.1-18.4 ms (median 18.3) |
+| p50 | 22.7-23.1 ms (median 23.0) | 22.8-23.2 ms (median 22.8) |
+| GX FIFO | 3.77 ms | 3.44-3.68 ms |
+
+About 0.4 ms off the guest, mostly in the FIFO path. Cumulative: guest 23.4 to 19.9 ms, p50
+25.4-27.2 to 22.8 ms.
+
 ## Other ports
 
 The analysis of schuler-ph's independently developed Switch fork, including the optimizations it

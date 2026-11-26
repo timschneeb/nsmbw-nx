@@ -216,7 +216,8 @@ equivalent.
   21.4 to 20.3 ms (median), p50 23.8 to 23.0 ms, worker 18.2 to 18.4 ms. Keep.
 - Step 3, GXFAST: per-generation first-attribute and vertex-size caches, and
   direct stores into the open raw packet. `NSMBW_GX_RAW_FAST=0` restores the old
-  path. Build `4f5c5ed9`, not yet measured.
+  path. Build `4f5c5ed9` measured on 8-3: guest 20.3 to 19.9 ms, p50 23.0 to
+  22.8 ms, GX FIFO 3.77 to 3.44-3.68 ms. Keep.
 - Step 4, inline `threaded()`, and step 5, hot TLS: the raw `threaded()` call is
   gone from the setters, and `__aarch64_read_tp` call sites dropped from 7,462
   to 829. Build `f5d4277c`, not yet measured.
