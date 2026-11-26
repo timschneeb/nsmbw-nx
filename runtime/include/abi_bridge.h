@@ -4,6 +4,7 @@
 #include "system_bridge.h"
 #include "game_graphics_options.h"
 #include "runtime_log.h"
+#include "isa/ppc_isa_tls.h"
 
 #include <array>
 #include <atomic>
@@ -322,6 +323,9 @@ struct IndirectResolvedDispatchMemoEntry {
 };
 inline thread_local IndirectResolvedDispatchMemoEntry
     g_indirectResolvedDispatchMemo[kIndirectDispatchCacheEntries]{};
+using IndirectResolvedDispatchMemo = IndirectResolvedDispatchMemoEntry[kIndirectDispatchCacheEntries];
+MKW_HOT_TLS_ACCESSOR(IndirectResolvedDispatchMemoTls, IndirectResolvedDispatchMemo,
+                     g_indirectResolvedDispatchMemo, "g_indirectResolvedDispatchMemo")
 
 // The indirect-call (bctrl/bctr) table: every guest address with a raw dispatch record, in one
 // open-addressed hash table built once when the registry is finalized and shared by all threads.
@@ -358,7 +362,7 @@ public:
             return FindByAddressPtrSlow(address);
         }
 
-        auto& cached = g_indirectResolvedDispatchMemo[
+        auto& cached = IndirectResolvedDispatchMemoTls()[
             ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
         if (cached.valid && cached.address == address) {
             return cached.info;

@@ -215,6 +215,8 @@ equivalent.
   `SDL_HINT_INVALID_PARAM_CHECKS=1`. Build `f246e54fad0a`, not yet measured.
 - Step 3, GXFAST: per-generation first-attribute and vertex-size caches, and
   direct stores into the open raw packet. `NSMBW_GX_RAW_FAST=0` restores the old
-  path. Build pending.
-- Step 4, inline `threaded()`, and step 5, hot TLS, follow.
+  path. Build `4f5c5ed9`, not yet measured.
+- Step 4, inline `threaded()`, and step 5, hot TLS: the raw `threaded()` call is
+  gone from the setters, and `__aarch64_read_tp` call sites dropped from 7,462
+  to 829. Build `f5d4277c`, not yet measured.
 - Step 7, magma HLE: separate experiment with deterministic captures.

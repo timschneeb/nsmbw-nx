@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "isa/ppc_isa_tls.h"
+
 struct CpuContext;
 
 // The thread-local state every guest call touches, kept in one thread_local. Android's build targets
@@ -15,3 +17,5 @@ struct GuestThreadState {
 
 // `inline thread_local` with a constant initializer: no per-access init guard.
 inline thread_local GuestThreadState g_guestThreadState;
+// Inline thread-pointer access on Switch; a plain reference elsewhere.
+MKW_HOT_TLS_ACCESSOR(GuestThreadStateTls, GuestThreadState, g_guestThreadState, "g_guestThreadState")

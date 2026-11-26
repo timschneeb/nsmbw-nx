@@ -1,4 +1,5 @@
 #include "abi_bridge.h"
+#include "guest_thread_state.h"
 
 #include <algorithm>
 #include <array>
@@ -335,7 +336,15 @@ void TranslatedFunctionRegistry::Register(TranslatedFunctionInfo info) {
     }
 }
 
+bool VerifyHotTlsAccessors() noexcept {
+    return &GuestThreadStateTls() == &g_guestThreadState &&
+           &IndirectResolvedDispatchMemoTls() == &g_indirectResolvedDispatchMemo;
+}
+
 void TranslatedFunctionRegistry::Finalize() {
+    if (!VerifyHotTlsAccessors()) {
+        throw std::runtime_error("[" RT_TAG_RUNTIME "] hot TLS accessor mismatch");
+    }
     if (const size_t overrides = PriorityOverrideCount(); overrides != 0) {
         RT_LOG(RT_TAG_RUNTIME) << overrides
                   << " registration(s) took over an address by priority" << std::endl;

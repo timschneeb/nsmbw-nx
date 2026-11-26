@@ -62,9 +62,9 @@ struct CpuContext {
 class CpuContextScope {
 public:
     explicit CpuContextScope(CpuContext* ctx)
-        : previous_(g_guestThreadState.currentCpuContext)
+        : previous_(GuestThreadStateTls().currentCpuContext)
     {
-        g_guestThreadState.currentCpuContext = ctx;
+        GuestThreadStateTls().currentCpuContext = ctx;
         // x28 is per-thread and only survives across calls because the whole program is built
         // with -ffixed-x28 and the cooperative switch saves it. A host thread or a fresh fiber
         // starts with whatever the stack had, so restore it here instead of on every dispatch.
@@ -77,7 +77,7 @@ public:
 
     ~CpuContextScope()
     {
-        g_guestThreadState.currentCpuContext = previous_;
+        GuestThreadStateTls().currentCpuContext = previous_;
         if (previous_ != nullptr)
             MkwApplyHostNiMode(previous_->fpscr);
         else
@@ -94,7 +94,7 @@ private:
 
 inline CpuContext* TryGetCpuContext() noexcept
 {
-    return g_guestThreadState.currentCpuContext;
+    return GuestThreadStateTls().currentCpuContext;
 }
 
 inline CpuContext* CurrentCpuContext()
