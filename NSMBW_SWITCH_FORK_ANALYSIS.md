@@ -225,6 +225,9 @@ equivalent.
 - Step 6, skip unready pipelines in persistent EFB copy passes: implemented,
   opt-in with `NSMBW_SKIPUNREADY=all`. This targets first-visit hitches, not
   steady 8-3, and our seed cache makes it hard to exercise.
+- Step 6b, indexed billboards: RAWINDEX takes indexed POS/TEX/colour draws
+  through the raw path. Measured on 8-3: guest 19.6 to 19.3 ms, GX FIFO 3.5 to
+  3.0 ms. General, not 8-3-specific. Keep.
 - Step 7, magma HLE: separate experiment with deterministic captures. The magma
   loop is a 6-vertex triangle strip with extra TEV colours, not a copy of the
   normal-water loop.

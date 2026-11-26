@@ -1102,6 +1102,25 @@ About 0.2-0.4 ms off the guest. The static call reduction is large but the dynam
 smaller than the fork's call-site count suggested. Cumulative: guest 23.4 to 19.6 ms, p50
 25.4-27.2 to 22.7 ms.
 
+### Indexed billboards on the raw path
+
+A GXBegin whose format is direct except for indexed positions, texture coordinates or RGB8/RGBA8
+colours now gathers its indices with the vertex bytes and replaces them with their array elements
+at finish. That is what the per-attribute path hands aurora. `NSMBW_RAWINDEX=0` restores the
+per-attribute path; `NSMBW_GX_RAW_FAST=0` disables it with the other raw shortcuts.
+
+`8-3`, stats light, six one-second windows:
+
+| | step 5 | RAWINDEX |
+|---|---:|---:|
+| guest CPU | 19.1-20.3 ms (median 19.6) | 18.7-20.4 ms (median 19.3) |
+| worker cycle | 17.9-18.5 ms (median 18.3) | 16.1-18.6 ms (median 17.9) |
+| p50 | 22.4-23.1 ms (median 22.7) | 21.6-23.1 ms (median 22.6) |
+| GX FIFO | 3.44-3.57 ms | 3.01-3.08 ms |
+
+About 0.3-0.5 ms off the guest, with the FIFO path down by about 0.4 ms. Cumulative: guest 23.4
+to 19.3 ms, p50 25.4-27.2 to 22.6 ms.
+
 ## Other ports
 
 The analysis of schuler-ph's independently developed Switch fork, including the optimizations it
