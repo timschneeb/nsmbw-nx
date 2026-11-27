@@ -420,12 +420,9 @@ function(mkw_configure_product target)
     set(MKW_INITIAL_PIPELINE_CACHE
         "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/initial_pipeline_cache.db")
     # Newer reuses most of the base renderer and ships its own captured pipeline cache.
-    # Holiday Special ships no initial cache so its shaders can be collected from scratch.
     if(NSMBW_PRODUCT STREQUAL "newer")
         set(MKW_INITIAL_PIPELINE_CACHE
             "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/newer_pipeline_cache.db")
-    elseif(NSMBW_PRODUCT STREQUAL "holiday")
-        set(MKW_INITIAL_PIPELINE_CACHE "")
     endif()
     if(MKW_INITIAL_PIPELINE_CACHE)
         if(NOT EXISTS "${MKW_INITIAL_PIPELINE_CACHE}")

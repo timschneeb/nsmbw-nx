@@ -201,9 +201,12 @@ Switch build with `-DNSMBW_PRODUCT=holiday -DNSMBW_GAME_ID=SMNE01
 `src/product/base_product.cpp`; it names the pack folder (`XmasNewer`), version file, save
 (`XmasNer.sav`) and desktop game folder (`game-holiday`).
 
-Holiday ships no initial pipeline cache: its NRO omits `initial_pipeline_cache.db` and the runtime
-does not copy the vanilla Dawn cache, so shaders are collected from scratch. `NSMBW_PRODUCT=holiday`
-selects that behavior in `runtime/cmake/PublicProducts.cmake` and `runtime/src/main.cpp`.
+Holiday uses the base game's initial pipeline cache and, on first boot, copies the vanilla
+`games/vanilla/data/Cache/dawn_cache.db` into its own cache. When that copy succeeds, small mods
+whose initial cache has no mod-specific shaders start the game immediately and let the shader
+prewarm finish in the background instead of holding the forced progress screen.
+`skipBootShaderWarmup` in `src/product/base_product.cpp` selects this per product; Holiday sets it,
+Newer does not because its initial cache contains Newer-specific shaders.
 
 The launcher entry is generated from [`mods/holiday.json`](mods/holiday.json) by
 `launcher/tools/package_release.py`. Pack the launcher's RomFS from the extracted pack:

@@ -125,6 +125,7 @@ void MkwStartPgoDumpTimer() {
 #include "ppc_runtime.h"
 #include "aurora_events.h"
 #include "display_settings.h"
+#include "settings_overlay.h"
 #include "graphics_info.h"
 #include "wii_remote_input.h"
 #include "discord_presence.h"
@@ -1990,10 +1991,9 @@ int RuntimeMain(int argc, char** argv) {
                       << rendererPathError.message() << std::endl;
         }
 #if defined(MKW_PLATFORM_SWITCH)
-        // Newer reuses the base game's shaders. Copy the vanilla Dawn cache once,
+        // Pack mods reuse the base game's shaders. Copy the vanilla Dawn cache once,
         // before the renderer opens it and the shader compile screen appears.
-        // Holiday Special deliberately starts with no cache.
-        if (RuntimeProduct::IsNewer()) {
+        if (RuntimeProduct::UsesPack()) {
             const auto dawnCache = rendererCacheDirectory / "dawn_cache.db";
             std::error_code dawnCacheError;
             if (!std::filesystem::exists(dawnCache, dawnCacheError)) {
@@ -2020,6 +2020,9 @@ int RuntimeMain(int argc, char** argv) {
                         if (ok) {
                             RT_LOG(RT_TAG_RUNTIME) << "copied the vanilla Dawn cache to "
                                       << RuntimeConfigFile::PathToUtf8(dawnCache) << std::endl;
+                            if (RuntimeProduct::Active().skipBootShaderWarmup) {
+                                settings_overlay::SkipBootShaderScreen();
+                            }
                         } else {
                             std::filesystem::remove(dawnCache, dawnCacheError);
                         }

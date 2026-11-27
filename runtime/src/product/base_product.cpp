@@ -54,6 +54,7 @@ constexpr Descriptor MakeDescriptor() {
             "title/00010000/534d4e45/data/XmasNer.sav",
             kHolidayUserDataFolder,
             "game-holiday",
+            true,
         };
     } else {
         return Descriptor{
