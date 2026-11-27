@@ -201,9 +201,17 @@ Switch build with `-DNSMBW_PRODUCT=holiday -DNSMBW_GAME_ID=SMNE01
 `src/product/base_product.cpp`; it names the pack folder (`XmasNewer`), version file, save
 (`XmasNer.sav`) and desktop game folder (`game-holiday`).
 
-Holiday uses the base game's initial pipeline cache and, on first boot, copies the vanilla
-`games/vanilla/data/Cache/dawn_cache.db` into its own cache. The forced shader prewarm screen still
-runs on first boot.
+Holiday ships `runtime/assets/pipeline/newer_holiday_pipeline_cache.db`: the vanilla base plus the
+shaders collected on the console. Merge a console cache with:
+
+```
+python3 projects/nsmbw/tools/make_pipeline_seed.py \
+    runtime/assets/pipeline/newer_holiday_pipeline_cache.db \
+    runtime/assets/pipeline/initial_pipeline_cache.db <collected Cache/pipeline_cache.db>
+```
+
+On first boot it also copies the vanilla `games/vanilla/data/Cache/dawn_cache.db` into its own
+cache. The forced shader prewarm screen still runs on first boot.
 
 The launcher entry is generated from [`mods/holiday.json`](mods/holiday.json) by
 `launcher/tools/package_release.py`. Pack the launcher's RomFS from the extracted pack:

@@ -57,8 +57,8 @@
           "recomp_version": "1.2.0",
           "game_version": "1.12",
           "region": "U",
-          "sha256": "394ef0a6deda5206de16f47624730ed99d73c09c004c562c41a68f1c0d89b586",
-          "size": 98281804,
+          "sha256": "79e506a1fcdba3853ca90fac953f6132dee82308992460f0b8645ac00f2d3722",
+          "size": 98339148,
           "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-holiday-game.nro"
         },
         "romfs": {
