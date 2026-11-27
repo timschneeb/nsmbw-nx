@@ -420,17 +420,22 @@ function(mkw_configure_product target)
     set(MKW_INITIAL_PIPELINE_CACHE
         "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/initial_pipeline_cache.db")
     # Newer reuses most of the base renderer and ships its own captured pipeline cache.
+    # Holiday Special ships no initial cache so its shaders can be collected from scratch.
     if(NSMBW_PRODUCT STREQUAL "newer")
         set(MKW_INITIAL_PIPELINE_CACHE
             "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/newer_pipeline_cache.db")
+    elseif(NSMBW_PRODUCT STREQUAL "holiday")
+        set(MKW_INITIAL_PIPELINE_CACHE "")
     endif()
-    if(NOT EXISTS "${MKW_INITIAL_PIPELINE_CACHE}")
-        message(FATAL_ERROR "Missing transferable Aurora pipeline cache: ${MKW_INITIAL_PIPELINE_CACHE}")
-    endif()
-    if(NOT MKW_PLATFORM_SWITCH)
-        add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${MKW_INITIAL_PIPELINE_CACHE}"
-            "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db")
+    if(MKW_INITIAL_PIPELINE_CACHE)
+        if(NOT EXISTS "${MKW_INITIAL_PIPELINE_CACHE}")
+            message(FATAL_ERROR "Missing transferable Aurora pipeline cache: ${MKW_INITIAL_PIPELINE_CACHE}")
+        endif()
+        if(NOT MKW_PLATFORM_SWITCH)
+            add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MKW_INITIAL_PIPELINE_CACHE}"
+                "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db")
+        endif()
     endif()
 
     # Non-Windows TLS (runtime/src/hle/net/network_ssl.cpp's mbed TLS path) needs a trusted root
@@ -455,6 +460,12 @@ function(mkw_configure_product target)
         # on the SD card on demand, so this costs no memory. One tree per product so parallel builds
         # never rewrite each other's.
         set(MKW_SWITCH_ROMFS_DIR "${CMAKE_BINARY_DIR}/romfs/${target}")
+        set(MKW_SWITCH_ROMFS_CACHE_COMMAND)
+        if(MKW_INITIAL_PIPELINE_CACHE)
+            set(MKW_SWITCH_ROMFS_CACHE_COMMAND
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${MKW_INITIAL_PIPELINE_CACHE}" "${MKW_SWITCH_ROMFS_DIR}/initial_pipeline_cache.db")
+        endif()
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E rm -rf "${MKW_SWITCH_ROMFS_DIR}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${MKW_SWITCH_ROMFS_DIR}/wii_bootstrap"
@@ -464,8 +475,7 @@ function(mkw_configure_product target)
                 "${MKW_CA_CERTIFICATE_BUNDLE}" "${MKW_SWITCH_ROMFS_DIR}/cacert.pem"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${MKW_DSP_COEFFICIENT_ROM}" "${MKW_SWITCH_ROMFS_DIR}/dsp_coef.bin"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MKW_INITIAL_PIPELINE_CACHE}" "${MKW_SWITCH_ROMFS_DIR}/initial_pipeline_cache.db"
+            ${MKW_SWITCH_ROMFS_CACHE_COMMAND}
             COMMENT "Staging the NRO RomFS"
             VERBATIM)
     endif()

@@ -201,6 +201,10 @@ Switch build with `-DNSMBW_PRODUCT=holiday -DNSMBW_GAME_ID=SMNE01
 `src/product/base_product.cpp`; it names the pack folder (`XmasNewer`), version file, save
 (`XmasNer.sav`) and desktop game folder (`game-holiday`).
 
+Holiday ships no initial pipeline cache: its NRO omits `initial_pipeline_cache.db` and the runtime
+does not copy the vanilla Dawn cache, so shaders are collected from scratch. `NSMBW_PRODUCT=holiday`
+selects that behavior in `runtime/cmake/PublicProducts.cmake` and `runtime/src/main.cpp`.
+
 The launcher entry is generated from [`mods/holiday.json`](mods/holiday.json) by
 `launcher/tools/package_release.py`. Pack the launcher's RomFS from the extracted pack:
 
