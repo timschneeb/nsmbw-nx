@@ -1,8 +1,9 @@
 {
   "id": "newersmbw-holiday",
-  "name": "Newer Super Mario Bros. Wii Holiday Special",
+  "name": "Newer: Holiday Special",
   "author": "Newer Team",
   "game_version": "1.12",
+  "release_version": "1.2.0",
   "product": "holiday",
   "game_id": "SMNE01",
   "project": "projects/nsmbw/recomp-holiday.yml",

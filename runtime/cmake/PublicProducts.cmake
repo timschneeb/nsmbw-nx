@@ -145,7 +145,13 @@ if(MKW_PLATFORM_SWITCH)
             NSMBW_BOOT_TITLE="Newer Super Mario Bros. Wii")
     elseif(NSMBW_PRODUCT STREQUAL "holiday")
         target_compile_definitions(mkw_runtime_common PRIVATE
-            NSMBW_BOOT_TITLE="Newer Holiday Special")
+            NSMBW_BOOT_TITLE="Newer: Holiday Special")
+    elseif(NSMBW_PRODUCT STREQUAL "fallingleaf")
+        target_compile_definitions(mkw_runtime_common PRIVATE
+            NSMBW_BOOT_TITLE="Newer: Falling Leaf")
+    elseif(NSMBW_PRODUCT STREQUAL "another")
+        target_compile_definitions(mkw_runtime_common PRIVATE
+            NSMBW_BOOT_TITLE="Another Super Mario Bros. Wii")
     else()
         target_compile_definitions(mkw_runtime_common PRIVATE
             NSMBW_BOOT_TITLE="New Super Mario Bros. Wii")
@@ -420,13 +426,16 @@ function(mkw_configure_product target)
     set(MKW_INITIAL_PIPELINE_CACHE
         "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/initial_pipeline_cache.db")
     # Newer reuses most of the base renderer and ships its own captured pipeline cache.
-    # Holiday Special ships the vanilla base plus the shaders collected on the console.
+    # Holiday Special and Falling Leaf ship the vanilla base plus the shaders collected on the console.
     if(NSMBW_PRODUCT STREQUAL "newer")
         set(MKW_INITIAL_PIPELINE_CACHE
             "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/newer_pipeline_cache.db")
     elseif(NSMBW_PRODUCT STREQUAL "holiday")
         set(MKW_INITIAL_PIPELINE_CACHE
             "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/newer_holiday_pipeline_cache.db")
+    elseif(NSMBW_PRODUCT STREQUAL "fallingleaf")
+        set(MKW_INITIAL_PIPELINE_CACHE
+            "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/newer_fallingleaf_pipeline_cache.db")
     endif()
     if(MKW_INITIAL_PIPELINE_CACHE)
         if(NOT EXISTS "${MKW_INITIAL_PIPELINE_CACHE}")
@@ -511,7 +520,11 @@ if(MKW_PLATFORM_SWITCH)
     if(NSMBW_PRODUCT STREQUAL "newer")
         set(MKW_SWITCH_NACP_NAME "Newer Super Mario Bros. Wii")
     elseif(NSMBW_PRODUCT STREQUAL "holiday")
-        set(MKW_SWITCH_NACP_NAME "Newer SMBW Holiday Special")
+        set(MKW_SWITCH_NACP_NAME "Newer: Holiday Special")
+    elseif(NSMBW_PRODUCT STREQUAL "fallingleaf")
+        set(MKW_SWITCH_NACP_NAME "Newer: Falling Leaf")
+    elseif(NSMBW_PRODUCT STREQUAL "another")
+        set(MKW_SWITCH_NACP_NAME "Another Super Mario Bros. Wii")
     else()
         set(MKW_SWITCH_NACP_NAME "New Super Mario Bros. Wii")
     endif()
@@ -528,6 +541,10 @@ if(MKW_PLATFORM_SWITCH)
         set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/newersmbw_icon.png")
     elseif(NSMBW_PRODUCT STREQUAL "holiday")
         set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/newersmbw-holiday_icon.png")
+    elseif(NSMBW_PRODUCT STREQUAL "fallingleaf")
+        set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/newersmbw-fallingleaf_icon.png")
+    elseif(NSMBW_PRODUCT STREQUAL "another")
+        set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/another_icon.png")
     elseif(NSMBW_PRODUCT STREQUAL "vanilla")
         set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/nsmbw_icon.png")
     else()

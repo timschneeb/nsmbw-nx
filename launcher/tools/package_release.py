@@ -59,9 +59,10 @@ INSTALL_TEXT = """New Super Mario Bros. Wii for Nintendo Switch
    .ciso, .wia or .rvz) next to launcher.nro. The launcher extracts the shared
    base game data to switch/nsmbw/discs/SMNE01.
 
-4. Mods such as Newer Super Mario Bros. Wii and Newer Holiday Special are
-   installed from "Download games" in the launcher. The base game data is
-   shared; each mod only adds its own NRO and resource image.
+4. Mods such as Newer Super Mario Bros. Wii, Newer: Holiday Special, Newer:
+   Falling Leaf and Another Super Mario Bros. Wii are installed from "Download
+   games" in the launcher. The base game data is shared; each mod only adds its
+   own NRO and resource image.
 """
 
 
@@ -168,7 +169,8 @@ def mod_source_spec(args, version: str, mods: list[dict]) -> dict:
     return {"recomp_version": version, "games": games}
 
 
-def load_base_assets(path: Path, modules_repo: str, base_tag: str, version: str) -> dict:
+def load_base_assets(path: Path, modules_repo: str, base_tag: str, version: str,
+                     pin_urls: bool = True) -> dict:
     assets = json.loads(path.read_text(encoding="utf-8"))
 
     def pin(component: dict) -> None:
@@ -176,12 +178,13 @@ def load_base_assets(path: Path, modules_repo: str, base_tag: str, version: str)
         if url:
             component["url"] = release_url(modules_repo, base_tag, True, url.rsplit("/", 1)[-1])
 
-    pin(assets["launcher"])
-    for game in assets.get("games", {}).values():
-        for component in game.get("components", {}).values():
-            pin(component)
-        if game.get("banner"):
-            pin(game["banner"])
+    if pin_urls:
+        pin(assets["launcher"])
+        for game in assets.get("games", {}).values():
+            for component in game.get("components", {}).values():
+                pin(component)
+            if game.get("banner"):
+                pin(game["banner"])
     assets["recomp_version"] = version
     return assets
 
@@ -270,7 +273,7 @@ def file_record(path: Path) -> dict:
 
 
 def gh_script(path: Path, repo: str, tag: str, files: list[Path], notes: str,
-              create_repo: bool = False) -> None:
+              create_repo: bool = False, title: str | None = None) -> None:
     names = " ".join(shlex.quote(str(f)) for f in files)
     lines = [
         "#!/usr/bin/env bash",
@@ -281,7 +284,7 @@ def gh_script(path: Path, repo: str, tag: str, files: list[Path], notes: str,
         lines.append("# Create the repository once if it does not exist:")
         lines.append("# gh repo create %s --public" % repo)
     lines.append("gh release create %s --repo %s --title %s --notes %s %s" % (
-        shlex.quote(tag), repo, shlex.quote(tag), shlex.quote(notes), names))
+        shlex.quote(tag), repo, shlex.quote(title or tag), shlex.quote(notes), names))
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
     path.chmod(0o755)
@@ -290,8 +293,12 @@ def gh_script(path: Path, repo: str, tag: str, files: list[Path], notes: str,
 def stage_mod_release(args, version: str) -> int:
     if args.base_assets is None or args.base_vanilla is None:
         raise ValueError("--mod-only needs --base-assets and --base-vanilla")
-    mods = load_mods()
-    base = load_base_assets(args.base_assets, args.modules_repo, args.base_tag, version)
+    all_mods = load_mods()
+    mods = [mod for mod in all_mods if mod.get("release_version", version) == version]
+    if not mods:
+        raise ValueError("no mods are marked for release %s" % version)
+    base = load_base_assets(args.base_assets, args.modules_repo, args.base_tag, version,
+                            pin_urls=not args.keep_base_urls)
     mod_spec = mod_source_spec(args, version, mods)
     mod_spec["launcher"] = {
         "version": base["launcher"].get("version", "1.0.0"),
@@ -322,6 +329,7 @@ def stage_mod_release(args, version: str) -> int:
         raise ValueError("the Newer banner is not the one in the base catalogue")
 
     required = [args.launcher, args.base_vanilla, args.banner]
+    required += [mod["banner_path"] for mod in all_mods]
     for mod in mods:
         required += [mod["nro_path"], mod["romfs_path"], mod["image_path"], mod["banner_path"]]
         if not args.skip_symbols:
@@ -350,7 +358,7 @@ def stage_mod_release(args, version: str) -> int:
             copy_checked(mod["symbols_path"], modules_dir / mod_assets["symbols"])
 
     banners = [("newersmbw", args.banner)]
-    banners += [(mod["id"], mod["banner_path"]) for mod in mods]
+    banners += [(mod["id"], mod["banner_path"]) for mod in all_mods]
     zip_path = stage_sd_zip(main_dir, args.out / ".stage", args.launcher,
                             main_dir / "assets.json", banners, args.base_vanilla)
 
@@ -370,6 +378,7 @@ def stage_mod_release(args, version: str) -> int:
         "modules_repo": args.modules_repo,
         "mod_only": True,
         "base_tag": args.base_tag,
+        "keep_base_urls": args.keep_base_urls,
         "main": [file_record(path) for path in main_files],
         "modules": [file_record(path) for path in modules_files],
         "catalogue": base,
@@ -378,10 +387,15 @@ def stage_mod_release(args, version: str) -> int:
                                            encoding="utf-8")
 
     gh_script(args.out / "upload-main.sh", args.main_repo, args.tag, main_files,
-              "NSMBW Switch 1.2.0: Newer Holiday Special. Launcher, NSMBW and Newer remain 1.1.0.")
+              f"NSMBW Switch {version}: Newer: Falling Leaf and Another Super Mario Bros. Wii. "
+              "Launcher, NSMBW, Newer and Holiday remain 1.0.0/1.1.0/1.1.0/1.2.0. "
+              "Holiday's catalogue name is now Newer: Holiday Special.",
+              title=f"NSMBW for Nintendo Switch {version}")
     gh_script(args.out / "upload-modules.sh", args.modules_repo, args.tag, modules_files,
-              "NSMBW Switch 1.2.0 Holiday Special runtime, resources and debug symbols.",
-              create_repo=True)
+              f"NSMBW Switch {version} Falling Leaf and Another runtimes, resources and "
+              "debug symbols.",
+              create_repo=True,
+              title=f"NSMBW Switch {version} Falling Leaf and Another")
 
     print("version    %s" % version)
     print("catalogue  %s" % (main_dir / "assets.json"))
@@ -419,6 +433,8 @@ def main() -> int:
                         help="base catalogue to preserve, for example the v1.1.0 assets.json")
     parser.add_argument("--base-tag", default="v1.1.0",
                         help="modules tag that keeps the unchanged base assets")
+    parser.add_argument("--keep-base-urls", action="store_true",
+                        help="preserve each base catalogue URL instead of pinning all to --base-tag")
     parser.add_argument("--base-vanilla", type=Path,
                         help="unchanged vanilla NRO copied into the main ZIP")
     parser.add_argument("--base-vanilla-version", default="1.1.0",

@@ -6,7 +6,7 @@ workspace_root: ../..
 # patches, its Loader.bin at 0x80001800, the prelinked REL and the linked DLCode blob appended.
 project:
   id: nsmbw-holiday-smne01
-  display_name: Newer Super Mario Bros. Wii Holiday Special (on USA rev 1)
+  display_name: "Newer: Holiday Special (on USA rev 1)"
   game_id: SMNE01
   region: E
   base_manifest_format: nsmbw-recomp-base-manifest

@@ -95,8 +95,8 @@ def main():
             continue
 
         _, off = hit
-        original = node.get("original")
-        if original and dol.data[off:off + len(data)] != bytes.fromhex(original):
+        original = bytes.fromhex(node.get("original", "")) if node.get("original") else b""
+        if original and dol.data[off:off + len(original)] != original:
             skipped += 1
             continue
 

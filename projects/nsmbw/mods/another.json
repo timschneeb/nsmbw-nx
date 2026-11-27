@@ -1,0 +1,35 @@
+{
+  "id": "another",
+  "name": "Another Super Mario Bros. Wii",
+  "author": "Skawo",
+  "game_version": "3.2",
+  "release_version": "1.3.0",
+  "product": "another",
+  "game_id": "SMNE01",
+  "project": "projects/nsmbw/recomp-another.yml",
+  "generated": "generated-another",
+  "build_dir": "build-switch-another",
+  "pack": {
+    "folder": "Another",
+    "xml": "riivolution/Another.xml",
+    "loader": "Another/Loader.bin",
+    "version_file": "NewerRes/DLCodeUS_1.bin",
+    "version_size": 8116,
+    "dlcode_addr": "0x80DF8FC0",
+    "newer_fixes": false,
+    "pad_size": 0
+  },
+  "assets": {
+    "nro": "another-game.nro",
+    "romfs": "another.romfs.zst",
+    "banner": "another-banner.png",
+    "symbols": "another-debug-symbols.zip"
+  },
+  "nro": "build-switch-another/NSMBW.nro",
+  "symbols": "build-switch-another/dist/debug-symbols.zip",
+  "romfs_zst": "/tmp/opencode/another.romfs.zst",
+  "image": "/tmp/opencode/another.romfs",
+  "banner_file": "launcher/assets/banners/another.png",
+  "icon_file": "runtime/src/platform/switch/another_icon.png",
+  "logo_file": "runtime/src/platform/switch/another_logo.png"
+}

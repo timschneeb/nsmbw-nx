@@ -25,7 +25,9 @@ namespace Translator.Core.Translation;
 /// </summary>
 public sealed record TranslationOptions(
     string? PreferredName = null,
-    int MaxInstructions = 8192,
+    // 16K instructions fills the 64 KB byte cap. Newer: Falling Leaf has a static initializer of
+    // 11,989 instructions; 8K skipped it and the game jumped into an untranslated .ctors entry.
+    int MaxInstructions = 16384,
     int MaxBytes = 0x10000,
     bool AllowUnsupportedInstructions = false,
     bool EmitModRegistration = false,

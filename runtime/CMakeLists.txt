@@ -518,12 +518,22 @@ else()
         elseif(NSMBW_PRODUCT STREQUAL "holiday")
             set(MKW_SWITCH_BOOT_LOGO
                 "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/newersmbw-holiday_logo.png")
+        elseif(NSMBW_PRODUCT STREQUAL "fallingleaf")
+            set(MKW_SWITCH_BOOT_LOGO
+                "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/newersmbw-fallingleaf_logo.png")
+        elseif(NSMBW_PRODUCT STREQUAL "another")
+            set(MKW_SWITCH_BOOT_LOGO
+                "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/another_logo.png")
         else()
             set(MKW_SWITCH_BOOT_LOGO
                 "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/nsmbw_logo.png")
         endif()
         configure_file("${MKW_SWITCH_BOOT_LOGO}" "${CMAKE_CURRENT_BINARY_DIR}/boot_logo.png" COPYONLY)
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/boot_logo.S")
+        # boot_logo.S .incbin's the build-root PNG, which the assembler dependency scanner cannot see.
+        set_source_files_properties(
+            "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/boot_logo.S"
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/boot_logo.png")
 
     endif()
 endif()
@@ -690,7 +700,8 @@ if(MKW_BUILD_PRODUCTS)
     if(NSMBW_PRODUCT AND EXISTS "${MKW_GENERATED_DIR}/RuntimeConfig.h")
         file(STRINGS "${MKW_GENERATED_DIR}/RuntimeConfig.h" MKW_GENERATED_PRODUCT LIMIT_COUNT 1)
         if(NSMBW_PRODUCT STREQUAL "newer")
-            if(NOT MKW_GENERATED_PRODUCT MATCHES "Newer" OR MKW_GENERATED_PRODUCT MATCHES "Holiday")
+            if(NOT MKW_GENERATED_PRODUCT MATCHES "Newer" OR MKW_GENERATED_PRODUCT MATCHES "Holiday"
+               OR MKW_GENERATED_PRODUCT MATCHES "Falling Leaf" OR MKW_GENERATED_PRODUCT MATCHES "Another")
                 message(FATAL_ERROR
                     "${MKW_GENERATED_DIR} does not contain the Newer translation. "
                     "Use generated-newer/ for NSMBW_PRODUCT=newer.")
@@ -701,10 +712,22 @@ if(MKW_BUILD_PRODUCTS)
                     "${MKW_GENERATED_DIR} does not contain the Holiday Special translation. "
                     "Use generated-holiday/ for NSMBW_PRODUCT=holiday.")
             endif()
-        elseif(NSMBW_PRODUCT STREQUAL "vanilla")
-            if(MKW_GENERATED_PRODUCT MATCHES "Newer")
+        elseif(NSMBW_PRODUCT STREQUAL "fallingleaf")
+            if(NOT MKW_GENERATED_PRODUCT MATCHES "Falling Leaf")
                 message(FATAL_ERROR
-                    "${MKW_GENERATED_DIR} contains a Newer translation. "
+                    "${MKW_GENERATED_DIR} does not contain the Falling Leaf translation. "
+                    "Use generated-fallingleaf/ for NSMBW_PRODUCT=fallingleaf.")
+            endif()
+        elseif(NSMBW_PRODUCT STREQUAL "another")
+            if(NOT MKW_GENERATED_PRODUCT MATCHES "Another")
+                message(FATAL_ERROR
+                    "${MKW_GENERATED_DIR} does not contain the Another translation. "
+                    "Use generated-another/ for NSMBW_PRODUCT=another.")
+            endif()
+        elseif(NSMBW_PRODUCT STREQUAL "vanilla")
+            if(MKW_GENERATED_PRODUCT MATCHES "Newer" OR MKW_GENERATED_PRODUCT MATCHES "Another")
+                message(FATAL_ERROR
+                    "${MKW_GENERATED_DIR} contains a mod translation. "
                     "Use generated/ for the base game.")
             endif()
         endif()

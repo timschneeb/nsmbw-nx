@@ -1,0 +1,35 @@
+{
+  "id": "newersmbw-fallingleaf",
+  "name": "Newer: Falling Leaf",
+  "author": "Newer Team",
+  "game_version": "1.12",
+  "release_version": "1.3.0",
+  "product": "fallingleaf",
+  "game_id": "SMNE01",
+  "project": "projects/nsmbw/recomp-fallingleaf.yml",
+  "generated": "generated-fallingleaf",
+  "build_dir": "build-switch-fallingleaf",
+  "pack": {
+    "folder": "NewerFL",
+    "xml": "riivolution/NewerFALLING.xml",
+    "loader": "NewerFL/Loader.bin",
+    "version_file": "NewerRes/DLCodeUS_1.bin",
+    "version_size": 496356,
+    "dlcode_addr": "0x80DF8FC0",
+    "newer_fixes": true,
+    "pad_size": 0
+  },
+  "assets": {
+    "nro": "newersmbw-fallingleaf-game.nro",
+    "romfs": "newersmbw-fallingleaf.romfs.zst",
+    "banner": "newersmbw-fallingleaf-banner.png",
+    "symbols": "newersmbw-fallingleaf-debug-symbols.zip"
+  },
+  "nro": "build-switch-fallingleaf/NSMBW.nro",
+  "symbols": "build-switch-fallingleaf/dist/debug-symbols.zip",
+  "romfs_zst": "/tmp/opencode/newersmbw-fallingleaf.romfs.zst",
+  "image": "/tmp/opencode/newersmbw-fallingleaf.romfs",
+  "banner_file": "launcher/assets/banners/newersmbw-fallingleaf.png",
+  "icon_file": "runtime/src/platform/switch/newersmbw-fallingleaf_icon.png",
+  "logo_file": "runtime/src/platform/switch/newersmbw-fallingleaf_logo.png"
+}

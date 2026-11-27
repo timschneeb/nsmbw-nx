@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "recomp_version": "1.2.0",
+  "recomp_version": "1.3.0",
   "launcher": {
     "version": "1.0.0",
     "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.1.0/launcher.nro",
@@ -51,7 +51,7 @@
       }
     },
     "newersmbw-holiday": {
-      "name": "Newer Super Mario Bros. Wii Holiday Special",
+      "name": "Newer: Holiday Special",
       "components": {
         "nro": {
           "recomp_version": "1.2.0",
@@ -76,6 +76,62 @@
         "sha256": "2510005d3884c3db8f3d32e0d5504617b3e2ed845cc57531cb95fb1ea4e17ed7",
         "size": 301422,
         "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.2.0/newersmbw-holiday-banner.png"
+      }
+    },
+    "another": {
+      "name": "Another Super Mario Bros. Wii",
+      "components": {
+        "nro": {
+          "recomp_version": "1.3.0",
+          "game_version": "3.2",
+          "region": "U",
+          "sha256": "34ad156ff8e632b3a4e47eb6d95329cdd47deb7119f512cc754898260563c6b3",
+          "size": 98053507,
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.3.0/another-game.nro"
+        },
+        "romfs": {
+          "game_version": "3.2",
+          "region": "U",
+          "sha256": "fe5eb5a532ed51daff23a2e0615a74ecb3637cb5a110e2b1cf54c8c9eec1941a",
+          "size": 37284337,
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.3.0/another.romfs.zst",
+          "image_sha256": "75bf1263faddf5e10ab86632db3c807a9d87df1706a81fdc0bb2d6f302c1bd96",
+          "image_size": 48233564
+        }
+      },
+      "author": "Skawo",
+      "banner": {
+        "sha256": "18e9c70ffeb705bbfcae4defcfe17270fac8fad206a6e13caffd811ae67c86bb",
+        "size": 100533,
+        "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.3.0/another-banner.png"
+      }
+    },
+    "newersmbw-fallingleaf": {
+      "name": "Newer: Falling Leaf",
+      "components": {
+        "nro": {
+          "recomp_version": "1.3.0",
+          "game_version": "1.12",
+          "region": "U",
+          "sha256": "60406049ccdbbfb5118ea9afbd5405237af813bc7528afb6e966cbec089160b7",
+          "size": 100439334,
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.3.0/newersmbw-fallingleaf-game.nro"
+        },
+        "romfs": {
+          "game_version": "1.12",
+          "region": "U",
+          "sha256": "7ffb2505fd675fe988c04ed4aa7272830ed47f935e79db0afc9014df015bced4",
+          "size": 137501057,
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.3.0/newersmbw-fallingleaf.romfs.zst",
+          "image_sha256": "3646ac73d1008fdd265636d121adef16e0b56cb987729c79a4d218aff9b15a49",
+          "image_size": 171346380
+        }
+      },
+      "author": "Newer Team",
+      "banner": {
+        "sha256": "8d6af403a1fad41ff971559fe9b81ec52ccf35e424813890139270cc58178c88",
+        "size": 62888,
+        "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.3.0/newersmbw-fallingleaf-banner.png"
       }
     }
   }

@@ -376,6 +376,12 @@ def main():
     for typ, _target, value, sym_in_blob, _dst in hooks:
         if sym_in_blob and text_lo <= value < text_hi and typ in (R_REL24, R_ADDR32, R_ADDR16_LO):
             starts.add(value)
+    # The blob's data holds function pointers and vtables. Some are absolute addresses without a
+    # relocation, so add every aligned data word that lands in its code.
+    for off in range(text_end, len(blob) - 3, 4):
+        value = struct.unpack_from(">I", blob, off)[0]
+        if text_lo <= value < text_hi:
+            starts.add(value)
 
     # A bl hook whose stub returns for the hooked function (its epilogue: mtlr + blr past the bl)
     # works on hardware but not as a translated call, which comes back and runs that epilogue again.
