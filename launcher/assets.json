@@ -3,7 +3,7 @@
   "recomp_version": "1.2.0",
   "launcher": {
     "version": "1.0.0",
-    "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/launcher.nro",
+    "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.1.0/launcher.nro",
     "sha256": "67c0eb410818a8df62f4ee6680411db45ce5cb0cffeabc02f3747bececcc3c02",
     "size": 2568959
   },
@@ -12,12 +12,12 @@
       "name": "New Super Mario Bros. Wii",
       "components": {
         "nro": {
-          "recomp_version": "1.2.0",
+          "recomp_version": "1.1.0",
           "game_version": "1.0.0",
           "region": "U",
-          "sha256": "b6d8e5287c41b9b3c5ddee9504e7022bc6ea147e628d4c8bf22e472ca45a657d",
+          "sha256": "1508369e42ce9f22cd0726a8ebb7634a4e3638bbc2af0a09be5cb3841ce90624",
           "size": 95429167,
-          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/vanilla-game.nro"
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.1.0/vanilla-game.nro"
         }
       },
       "author": "Nintendo"
@@ -26,19 +26,19 @@
       "name": "Newer Super Mario Bros. Wii",
       "components": {
         "nro": {
-          "recomp_version": "1.2.0",
+          "recomp_version": "1.1.0",
           "game_version": "1.30",
           "region": "U",
-          "sha256": "8eed7b9dda4cb807f6dbfd488d9dd1f50b6d67fdf66b1bdd2990c8cb92bf9f7f",
+          "sha256": "244a1a387e2c913046060bbdb898b93a85282146dd193735ad70c0489f6273b5",
           "size": 101236517,
-          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-game.nro"
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.1.0/newersmbw-game.nro"
         },
         "romfs": {
           "game_version": "1.30",
           "region": "U",
           "sha256": "9f07de634e4d0e70db77985852f48948d025e8e15c0e7bcbbbe4b0b7b6cf49b1",
           "size": 488610188,
-          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw.romfs.zst",
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.1.0/newersmbw.romfs.zst",
           "image_sha256": "22fb2676935f5ff45f8d5b0437ad1c2a12e15f46b34d7adc293b6fa5fff2c961",
           "image_size": 586327032
         }
@@ -47,7 +47,7 @@
       "banner": {
         "sha256": "b0bbdad3f4b0d8d4d9ff57c68184ac1067f75285f5af147136cc4f359e81ce92",
         "size": 229807,
-        "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-banner.png"
+        "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.1.0/newersmbw-banner.png"
       }
     },
     "newersmbw-holiday": {
@@ -59,14 +59,14 @@
           "region": "U",
           "sha256": "79e506a1fcdba3853ca90fac953f6132dee82308992460f0b8645ac00f2d3722",
           "size": 98339148,
-          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-holiday-game.nro"
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.2.0/newersmbw-holiday-game.nro"
         },
         "romfs": {
           "game_version": "1.12",
           "region": "U",
           "sha256": "d8264ee8406cf09aef0e512a54ef79a958cfd572c3e72a727b5c02c050f27f15",
           "size": 57030059,
-          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-holiday.romfs.zst",
+          "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.2.0/newersmbw-holiday.romfs.zst",
           "image_sha256": "e9d10d00e122b207aebb3db82bd2e04145071726d78b6589a873af6fb230378d",
           "image_size": 72980284
         }
@@ -75,7 +75,7 @@
       "banner": {
         "sha256": "2510005d3884c3db8f3d32e0d5504617b3e2ed845cc57531cb95fb1ea4e17ed7",
         "size": 301422,
-        "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-holiday-banner.png"
+        "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/download/v1.2.0/newersmbw-holiday-banner.png"
       }
     }
   }

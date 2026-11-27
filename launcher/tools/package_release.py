@@ -139,6 +139,53 @@ def load_mods() -> list[dict]:
     return mods
 
 
+def mod_source_spec(args, version: str, mods: list[dict]) -> dict:
+    games = {}
+    for mod in mods:
+        assets = mod["assets"]
+        games[mod["id"]] = {
+            "name": mod["name"],
+            "author": mod["author"],
+            "nro": {
+                "recomp_version": version,
+                "game_version": mod["game_version"],
+                "region": args.region,
+                "file": str(mod["nro_path"]),
+                "url": release_url(args.modules_repo, args.tag, True, assets["nro"]),
+            },
+            "romfs": {
+                "game_version": mod["game_version"],
+                "region": args.region,
+                "file": str(mod["romfs_path"]),
+                "image": str(mod["image_path"]),
+                "url": release_url(args.modules_repo, args.tag, True, assets["romfs"]),
+            },
+            "banner": {
+                "file": str(mod["banner_path"]),
+                "url": release_url(args.modules_repo, args.tag, True, assets["banner"]),
+            },
+        }
+    return {"recomp_version": version, "games": games}
+
+
+def load_base_assets(path: Path, modules_repo: str, base_tag: str, version: str) -> dict:
+    assets = json.loads(path.read_text(encoding="utf-8"))
+
+    def pin(component: dict) -> None:
+        url = component.get("url", "")
+        if url:
+            component["url"] = release_url(modules_repo, base_tag, True, url.rsplit("/", 1)[-1])
+
+    pin(assets["launcher"])
+    for game in assets.get("games", {}).values():
+        for component in game.get("components", {}).values():
+            pin(component)
+        if game.get("banner"):
+            pin(game["banner"])
+    assets["recomp_version"] = version
+    return assets
+
+
 def source_spec(args, version: str, launcher_version: str, mods: list[dict]) -> dict:
     games = {
         "vanilla": {
@@ -178,30 +225,7 @@ def source_spec(args, version: str, launcher_version: str, mods: list[dict]) -> 
             },
         },
     }
-    for mod in mods:
-        assets = mod["assets"]
-        games[mod["id"]] = {
-            "name": mod["name"],
-            "author": mod["author"],
-            "nro": {
-                "recomp_version": version,
-                "game_version": mod["game_version"],
-                "region": args.region,
-                "file": str(mod["nro_path"]),
-                "url": release_url(args.modules_repo, args.tag, args.pinned, assets["nro"]),
-            },
-            "romfs": {
-                "game_version": mod["game_version"],
-                "region": args.region,
-                "file": str(mod["romfs_path"]),
-                "image": str(mod["image_path"]),
-                "url": release_url(args.modules_repo, args.tag, args.pinned, assets["romfs"]),
-            },
-            "banner": {
-                "file": str(mod["banner_path"]),
-                "url": release_url(args.modules_repo, args.tag, args.pinned, assets["banner"]),
-            },
-        }
+    games.update(mod_source_spec(args, version, mods)["games"])
     return {
         "recomp_version": version,
         "launcher": {
@@ -263,6 +287,113 @@ def gh_script(path: Path, repo: str, tag: str, files: list[Path], notes: str,
     path.chmod(0o755)
 
 
+def stage_mod_release(args, version: str) -> int:
+    if args.base_assets is None or args.base_vanilla is None:
+        raise ValueError("--mod-only needs --base-assets and --base-vanilla")
+    mods = load_mods()
+    base = load_base_assets(args.base_assets, args.modules_repo, args.base_tag, version)
+    mod_spec = mod_source_spec(args, version, mods)
+    mod_spec["launcher"] = {
+        "version": base["launcher"].get("version", "1.0.0"),
+        "file": str(args.launcher),
+        "url": base["launcher"].get("url", ""),
+    }
+    mod_games = build_assets(mod_spec)["games"]
+    base["games"].update(mod_games)
+    launcher_version = args.launcher_version or base["launcher"].get("version")
+    if not launcher_version:
+        raise ValueError("no launcher version in the base catalogue")
+
+    def expect_nro(path: Path, expected: str) -> None:
+        actual = nro_version(path)
+        if actual != expected:
+            raise ValueError("%s NACP is %s, expected %s" % (path, actual, expected))
+
+    expect_nro(args.launcher, launcher_version)
+    expect_nro(args.base_vanilla, args.base_vanilla_version)
+    for mod in mods:
+        expect_nro(mod["nro_path"], version)
+
+    if sha256(args.launcher) != base["launcher"]["sha256"]:
+        raise ValueError("the launcher is not the one in the base catalogue")
+    if sha256(args.base_vanilla) != base["games"]["vanilla"]["components"]["nro"]["sha256"]:
+        raise ValueError("the base vanilla NRO is not the one in the base catalogue")
+    if sha256(args.banner) != base["games"]["newersmbw"]["banner"]["sha256"]:
+        raise ValueError("the Newer banner is not the one in the base catalogue")
+
+    required = [args.launcher, args.base_vanilla, args.banner]
+    for mod in mods:
+        required += [mod["nro_path"], mod["romfs_path"], mod["image_path"], mod["banner_path"]]
+        if not args.skip_symbols:
+            required.append(mod["symbols_path"])
+    for path in required:
+        if not path.is_file():
+            raise ValueError("missing %s" % path)
+
+    if args.out.exists():
+        shutil.rmtree(args.out)
+    main_dir = args.out / "main"
+    modules_dir = args.out / "modules"
+    main_dir.mkdir(parents=True)
+    modules_dir.mkdir(parents=True)
+
+    write_assets(base, main_dir / "assets.json")
+    if not args.no_update_source:
+        write_assets(base, args.source_assets)
+
+    for mod in mods:
+        mod_assets = mod["assets"]
+        copy_checked(mod["nro_path"], modules_dir / mod_assets["nro"])
+        copy_checked(mod["romfs_path"], modules_dir / mod_assets["romfs"])
+        copy_checked(mod["banner_path"], modules_dir / mod_assets["banner"])
+        if not args.skip_symbols:
+            copy_checked(mod["symbols_path"], modules_dir / mod_assets["symbols"])
+
+    banners = [("newersmbw", args.banner)]
+    banners += [(mod["id"], mod["banner_path"]) for mod in mods]
+    zip_path = stage_sd_zip(main_dir, args.out / ".stage", args.launcher,
+                            main_dir / "assets.json", banners, args.base_vanilla)
+
+    main_files = [zip_path, main_dir / "assets.json"]
+    modules_files = []
+    for mod in mods:
+        mod_assets = mod["assets"]
+        modules_files += [modules_dir / mod_assets["nro"], modules_dir / mod_assets["romfs"],
+                          modules_dir / mod_assets["banner"]]
+        if not args.skip_symbols:
+            modules_files.append(modules_dir / mod_assets["symbols"])
+
+    manifest = {
+        "tag": args.tag,
+        "version": version,
+        "main_repo": args.main_repo,
+        "modules_repo": args.modules_repo,
+        "mod_only": True,
+        "base_tag": args.base_tag,
+        "main": [file_record(path) for path in main_files],
+        "modules": [file_record(path) for path in modules_files],
+        "catalogue": base,
+    }
+    (args.out / "release.json").write_text(json.dumps(manifest, indent=2) + "\n",
+                                           encoding="utf-8")
+
+    gh_script(args.out / "upload-main.sh", args.main_repo, args.tag, main_files,
+              "NSMBW Switch 1.2.0: Newer Holiday Special. Launcher, NSMBW and Newer remain 1.1.0.")
+    gh_script(args.out / "upload-modules.sh", args.modules_repo, args.tag, modules_files,
+              "NSMBW Switch 1.2.0 Holiday Special runtime, resources and debug symbols.",
+              create_repo=True)
+
+    print("version    %s" % version)
+    print("catalogue  %s" % (main_dir / "assets.json"))
+    print("zip        %s" % zip_path)
+    for path in main_files + modules_files:
+        print("asset      %s  %d bytes" % (path, path.stat().st_size))
+    print("manifest   %s" % (args.out / "release.json"))
+    print("upload     %s" % (args.out / "upload-main.sh"))
+    print("upload     %s" % (args.out / "upload-modules.sh"))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "dist" / "release")
@@ -282,6 +413,16 @@ def main() -> int:
                         help="publish only the launcher and catalogue, keep game assets on --game-tag")
     parser.add_argument("--game-tag", default="v0.0.1",
                         help="modules tag that keeps the game assets for --launcher-only")
+    parser.add_argument("--mod-only", action="store_true",
+                        help="publish only mod assets and preserve the base catalogue")
+    parser.add_argument("--base-assets", type=Path,
+                        help="base catalogue to preserve, for example the v1.1.0 assets.json")
+    parser.add_argument("--base-tag", default="v1.1.0",
+                        help="modules tag that keeps the unchanged base assets")
+    parser.add_argument("--base-vanilla", type=Path,
+                        help="unchanged vanilla NRO copied into the main ZIP")
+    parser.add_argument("--base-vanilla-version", default="1.1.0",
+                        help="NACP version of the unchanged vanilla NRO")
     parser.add_argument("--source-assets", type=Path, default=DEFAULT_SOURCE_ASSETS,
                         help="launcher/assets.json to update")
     parser.add_argument("--no-update-source", action="store_true",
@@ -304,6 +445,8 @@ def main() -> int:
     version = read_version_file()
     if args.tag.lstrip("v") != version:
         raise ValueError("tag %s does not match VERSION %s" % (args.tag, version))
+    if args.mod_only:
+        return stage_mod_release(args, version)
     launcher_version = args.launcher_version or version
     mods = [] if args.launcher_only else load_mods()
 
