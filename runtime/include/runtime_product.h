@@ -30,10 +30,6 @@ struct Descriptor {
     // Windows and Linux: the extracted game in a folder of this name beside the program is used by
     // itself (game_folder.cpp), so a mod's own program, in the same folder, never takes the base game's.
     std::string_view programGameFolder = "game";
-    // Small mods whose initial cache has no mod-specific shaders can start straight into the game
-    // after copying the vanilla Dawn cache. Newer keeps the forced prewarm screen for its own
-    // shaders.
-    bool skipBootShaderWarmup = false;
 };
 
 // Each public executable links exactly one small provider definition. Keeping

@@ -17,9 +17,6 @@ bool StartupScreenVisible() noexcept;
 bool BootShadersPending() noexcept;
 // True while the startup screen should show the shader count.
 bool BootShaderNoticeActive() noexcept;
-// The vanilla Dawn cache was copied on first boot: start the game immediately and let the
-// background prewarm finish instead of holding the forced shader screen.
-void SkipBootShaderScreen() noexcept;
 // Resets the startup screen and prewarm gate for this run; call once at startup.
 void ResetBootShaderState() noexcept;
 // Advances the startup screen and prewarm gate; call once per presented frame.

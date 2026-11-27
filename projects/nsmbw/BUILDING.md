@@ -202,11 +202,8 @@ Switch build with `-DNSMBW_PRODUCT=holiday -DNSMBW_GAME_ID=SMNE01
 (`XmasNer.sav`) and desktop game folder (`game-holiday`).
 
 Holiday uses the base game's initial pipeline cache and, on first boot, copies the vanilla
-`games/vanilla/data/Cache/dawn_cache.db` into its own cache. When that copy succeeds, small mods
-whose initial cache has no mod-specific shaders start the game immediately and let the shader
-prewarm finish in the background instead of holding the forced progress screen.
-`skipBootShaderWarmup` in `src/product/base_product.cpp` selects this per product; Holiday sets it,
-Newer does not because its initial cache contains Newer-specific shaders.
+`games/vanilla/data/Cache/dawn_cache.db` into its own cache. The forced shader prewarm screen still
+runs on first boot.
 
 The launcher entry is generated from [`mods/holiday.json`](mods/holiday.json) by
 `launcher/tools/package_release.py`. Pack the launcher's RomFS from the extracted pack:

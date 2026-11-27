@@ -29,9 +29,6 @@ constexpr uint64_t kStrapTransitionCoverFrames = 60;
 
 std::atomic_bool g_bootShadersReady{false};
 bool g_bootShaderNotice = false;
-// Set when the vanilla Dawn cache was copied on first boot. The pipeline prewarm can then run
-// in the background instead of holding the startup screen.
-bool g_skipBootShaderScreen = false;
 // On the run that builds the pipeline cache, wait for the prewarm queue to appear
 // before accepting a drain. Otherwise the queue is still empty when the guest
 // starts, the gate opens, and the shader screen never shows.
@@ -107,10 +104,6 @@ bool BootShaderNoticeActive() noexcept {
     return g_bootShaderNotice && BootShadersPending();
 }
 
-void SkipBootShaderScreen() noexcept {
-    g_skipBootShaderScreen = true;
-}
-
 void ResetBootShaderState() noexcept {
     g_strapInputAccepted.store(false, std::memory_order_relaxed);
     g_startupDismissFrame.store(UINT64_MAX, std::memory_order_relaxed);
@@ -123,7 +116,7 @@ void ResetBootShaderState() noexcept {
     // The boot screen is only for the first run that builds the pipeline cache. Once the prewarm
     // has drained on this cache, boot straight into the game and compile anything new in the
     // background.
-    g_bootShaderFirstRun = !g_skipBootShaderScreen && !aurora_boot_prewarm_compiled();
+    g_bootShaderFirstRun = !aurora_boot_prewarm_compiled();
     if (aurora_dawn_cache_was_reset()) {
         // The blob cache was deleted, so every prewarm recipe must be parsed from WGSL again.
         // Run the full blocking warmup rather than letting it grow in the background.

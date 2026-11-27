@@ -2020,14 +2020,20 @@ int RuntimeMain(int argc, char** argv) {
                         if (ok) {
                             RT_LOG(RT_TAG_RUNTIME) << "copied the vanilla Dawn cache to "
                                       << RuntimeConfigFile::PathToUtf8(dawnCache) << std::endl;
-                            if (RuntimeProduct::Active().skipBootShaderWarmup) {
-                                settings_overlay::SkipBootShaderScreen();
-                            }
                         } else {
+                            RT_LOG(RT_TAG_RUNTIME) << "could not copy the vanilla Dawn cache to "
+                                      << RuntimeConfigFile::PathToUtf8(dawnCache) << std::endl;
                             std::filesystem::remove(dawnCache, dawnCacheError);
                         }
+                    } else {
+                        RT_LOG(RT_TAG_RUNTIME) << "no vanilla Dawn cache at "
+                                  << RuntimeConfigFile::PathToUtf8(source) << std::endl;
                     }
                 }
+            } else {
+                RT_LOG(RT_TAG_RUNTIME) << "Dawn cache already exists at "
+                          << RuntimeConfigFile::PathToUtf8(dawnCache)
+                          << "; not copying the vanilla cache" << std::endl;
             }
         }
 #endif
