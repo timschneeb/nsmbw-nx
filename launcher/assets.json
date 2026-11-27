@@ -57,8 +57,8 @@
           "recomp_version": "1.2.0",
           "game_version": "1.12",
           "region": "U",
-          "sha256": "078f908cca1ee6af332751a6a3d7529a52fb94fcd3ccb55b76a56bf7f45cdced",
-          "size": 98285900,
+          "sha256": "0f113d19609c2f3bc9633bde3e8058c574894bcccf63179d421a9b4c9a4c9d1d",
+          "size": 98380108,
           "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-holiday-game.nro"
         },
         "romfs": {
@@ -73,8 +73,8 @@
       },
       "author": "Newer Team",
       "banner": {
-        "sha256": "504c45d24492b6e1a8372dba11ad1ef4ee4e5087beb2b496e2a1cbee50f3afe0",
-        "size": 304317,
+        "sha256": "4f94ee2e32559d0dc215352759f1d79157b4c88280981737d9df680c34419662",
+        "size": 397295,
         "url": "https://github.com/timschneeb/nsmbw-nx-modules/releases/latest/download/newersmbw-holiday-banner.png"
       }
     }
