@@ -456,8 +456,18 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 # mod's patched code (projects/nsmbw/recomp-newer.yml, Newer is SMNE03) accepts that mod's disc;
 # src/product/base_product.cpp names the game and the disc it needs from it.
 set(NSMBW_GAME_ID "SMNE01" CACHE STRING "Disc ID (boot.bin) of the game this build was translated for")
+# Product identity for src/product/base_product.cpp: vanilla, newer or holiday. Empty keeps the
+# historical mapping from the disc ID, so existing Newer build directories still work.
+set(NSMBW_PRODUCT "" CACHE STRING "Product identity (vanilla, newer, holiday); derived from NSMBW_GAME_ID when empty")
+if(NSMBW_PRODUCT STREQUAL "")
+    if(NSMBW_GAME_ID STREQUAL "SMNE03")
+        set(NSMBW_PRODUCT "newer")
+    else()
+        set(NSMBW_PRODUCT "vanilla")
+    endif()
+endif()
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/product/base_product.cpp" PROPERTIES
-    COMPILE_DEFINITIONS "NSMBW_GAME_ID=\"${NSMBW_GAME_ID}\"")
+    COMPILE_DEFINITIONS "NSMBW_GAME_ID=\"${NSMBW_GAME_ID}\";NSMBW_PRODUCT=\"${NSMBW_PRODUCT}\"")
 # The water HLE is registered by address and replaces the translated dispatcher. Both generated
 # trees skip 0x8000D000, so the native dispatcher is the only definition.
 if(MKW_PLATFORM_MACOS)
@@ -501,10 +511,13 @@ else()
         # Strong __libnx_exception_entry for fault-driven guest MMIO loads.
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/fastmem_entry.S")
         # Boot splash logo, embedded as PNG and decoded at startup. The assembler reads it from
-        # the build root. Newer builds use the Newer banner.
-        if(NSMBW_GAME_ID STREQUAL "SMNE03")
+        # the build root. Mod builds use their own banner.
+        if(NSMBW_PRODUCT STREQUAL "newer")
             set(MKW_SWITCH_BOOT_LOGO
                 "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/newersmbw_logo.png")
+        elseif(NSMBW_PRODUCT STREQUAL "holiday")
+            set(MKW_SWITCH_BOOT_LOGO
+                "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/newersmbw-holiday_logo.png")
         else()
             set(MKW_SWITCH_BOOT_LOGO
                 "${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/nsmbw_logo.png")
@@ -674,18 +687,24 @@ endif()
 if(MKW_BUILD_PRODUCTS)
     set(MKW_GENERATED_DIR "${CMAKE_CURRENT_LIST_DIR}/../generated"
         CACHE PATH "Directory holding the translator output for this product")
-    if(NSMBW_GAME_ID AND EXISTS "${MKW_GENERATED_DIR}/RuntimeConfig.h")
+    if(NSMBW_PRODUCT AND EXISTS "${MKW_GENERATED_DIR}/RuntimeConfig.h")
         file(STRINGS "${MKW_GENERATED_DIR}/RuntimeConfig.h" MKW_GENERATED_PRODUCT LIMIT_COUNT 1)
-        if(NSMBW_GAME_ID STREQUAL "SMNE03")
-            if(NOT MKW_GENERATED_PRODUCT MATCHES "Newer")
+        if(NSMBW_PRODUCT STREQUAL "newer")
+            if(NOT MKW_GENERATED_PRODUCT MATCHES "Newer" OR MKW_GENERATED_PRODUCT MATCHES "Holiday")
                 message(FATAL_ERROR
                     "${MKW_GENERATED_DIR} does not contain the Newer translation. "
-                    "Use generated-newer/ for NSMBW_GAME_ID=SMNE03.")
+                    "Use generated-newer/ for NSMBW_PRODUCT=newer.")
             endif()
-        elseif(NSMBW_GAME_ID STREQUAL "SMNE01")
+        elseif(NSMBW_PRODUCT STREQUAL "holiday")
+            if(NOT MKW_GENERATED_PRODUCT MATCHES "Holiday")
+                message(FATAL_ERROR
+                    "${MKW_GENERATED_DIR} does not contain the Holiday Special translation. "
+                    "Use generated-holiday/ for NSMBW_PRODUCT=holiday.")
+            endif()
+        elseif(NSMBW_PRODUCT STREQUAL "vanilla")
             if(MKW_GENERATED_PRODUCT MATCHES "Newer")
                 message(FATAL_ERROR
-                    "${MKW_GENERATED_DIR} contains the Newer translation. "
+                    "${MKW_GENERATED_DIR} contains a Newer translation. "
                     "Use generated/ for the base game.")
             endif()
         endif()

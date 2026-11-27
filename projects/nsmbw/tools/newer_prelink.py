@@ -16,6 +16,7 @@ recompilation never runs patched code, so this script does the same work offline
 The loader still runs at runtime, so the guest heap must hand it DLCODE_ADDR: its "DLCode @"
 OSReport line in the log shows where it really went. Run prelink_rels.py on the clean game first.
 """
+import argparse
 import hashlib
 import json
 import struct
@@ -34,6 +35,8 @@ OUT = Path(sys.argv[3]) if len(sys.argv) > 3 else REPO.parent / "game-newer"
 DLCODE_ADDR = 0x80DF8FC0
 # The loader's region check: halfword at 0x80768D50 (d_profileNP) is 0x6CA1 on SMNE01 rev 1.
 VARIANT = "US_1"
+# Newer's replay heap and DVDDiskCheck fixes. Mods built on the unmodified game skip them.
+APPLY_NEWER_FIXES = True
 LOADER = (0x803482C0, 0x80348410, 0x80348850, 0x80348B40, 0x80348BE8)
 PHASE_SLOT, ORIGINAL_PHASE = 0x80328130, 0x8015BB20
 
@@ -298,11 +301,30 @@ def blob_text_end(blob, hooks):
 
 
 def main():
-    if len(sys.argv) < 2:
-        sys.exit(__doc__)
-    root = find_root(Path(sys.argv[1]))
+    global APPLY_NEWER_FIXES, CLEAN, DLCODE_ADDR, OUT, VARIANT
+
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("pack", help="extracted mod folder holding sys/ and files/")
+    parser.add_argument("clean", nargs="?", help="clean SMNE01 folder (default: ../game)")
+    parser.add_argument("output", nargs="?", help="output folder (default: ../game-newer)")
+    parser.add_argument("--dlcode-addr", default="0x80DF8FC0",
+                        help="guest address the loader allocates DLCode at (default: 0x80DF8FC0)")
+    parser.add_argument("--variant", default="US_1", help="NewerRes region suffix (default: US_1)")
+    parser.add_argument("--no-newer-fixes", action="store_true",
+                        help="skip Newer's replay-heap and DVDDiskCheck patches")
+    args = parser.parse_args()
+    if args.clean:
+        CLEAN = Path(args.clean)
+    if args.output:
+        OUT = Path(args.output)
+    DLCODE_ADDR = int(args.dlcode_addr, 16)
+    VARIANT = args.variant
+    APPLY_NEWER_FIXES = not args.no_newer_fixes
+
+    root = find_root(Path(args.pack))
     res = root / "files" / "NewerRes"
-    for name in ("SystemUS_1.bin", "DLCodeUS_1.bin", "DLRelocsUS_1.bin"):
+    for name in (f"System{VARIANT}.bin", f"DLCode{VARIANT}.bin", f"DLRelocs{VARIANT}.bin"):
         if not (res / name).is_file():
             sys.exit(f"{res / name} is missing: is this Newer Super Mario Bros. Wii?")
     rels_dir = root / "files" / "rels"
@@ -387,18 +409,19 @@ def main():
     # while the replay holds its own, so the fourth player of a 4-player demo gets no chunk and
     # keeps raw compressed data: garbage header, garbage power-up, crash. Five units of 0x60000
     # (the biggest replay, otehon/08-24_N_1.bin, is 0x5EC24) instead of four of 0x70800.
-    for addr, old, new in ((0x800E4AE4, 0x3C80001C, 0x3C80001E),   # lis r4, 0x1C -> 0x1E
-                           (0x800E4AEC, 0x38842000, 0x38840000),   # addi r4, r4, 0x2000 -> 0
-                           (0x800E4AF0, 0x38A00004, 0x38A00005)):  # li r5, 4 -> 5
-        if img.rd32(addr) != old:
-            sys.exit(f"0x{addr:08X} holds 0x{img.rd32(addr):08X}, not dSys_c::create's replay heap size")
-        img.wr32(addr, new)
+    if APPLY_NEWER_FIXES:
+        for addr, old, new in ((0x800E4AE4, 0x3C80001C, 0x3C80001E),   # lis r4, 0x1C -> 0x1E
+                               (0x800E4AEC, 0x38842000, 0x38840000),   # addi r4, r4, 0x2000 -> 0
+                               (0x800E4AF0, 0x38A00004, 0x38A00005)):  # li r5, 4 -> 5
+            if img.rd32(addr) != old:
+                sys.exit(f"0x{addr:08X} holds 0x{img.rd32(addr):08X}, not dSys_c::create's replay heap size")
+            img.wr32(addr, new)
 
-    # Newer's main.dol calls DVDDiskCheck (the disc's BCA, read over the drive interface) from main,
-    # where the retail game has a nop; there is no drive here, so the check fails the disc. The
-    # retail nop again.
-    if img.rd32(0x800C9FC8) == encode_b(0x800C9FC8, 0x80006780, link=True):
-        img.wr32(0x800C9FC8, 0x60000000)
+        # Newer's main.dol calls DVDDiskCheck (the disc's BCA, read over the drive interface) from
+        # main, where the retail game has a nop; there is no drive here, so the check fails the disc.
+        # The retail nop again.
+        if img.rd32(0x800C9FC8) == encode_b(0x800C9FC8, 0x80006780, link=True):
+            img.wr32(0x800C9FC8, 0x60000000)
 
     base_map =(REPO / "projects" / "nsmbw" / "MAP.txt").read_text()
     lines = [base_map.rstrip("\n"), "# Newer Super Mario Bros. Wii loader (main.dol .data) and blob"]

@@ -11,7 +11,7 @@ A native port of New Super Mario Bros. Wii for the Nintendo Switch made with
 static recompilation. 
 This version has been specifically optimized for the Nintendo Switch and runs well at stock CPU clock speed, though a moderate overclock is recommended for stable 60fps in heavier levels.
 
-Newer Super Mario Bros. Wii is supported too. It installs from the launcher and shares the base disc.
+Newer Super Mario Bros. Wii and Newer Holiday Special are supported too. They install from the launcher and share the base disc.
 
 > [!NOTE]
 > **This port is directly based on [WitherBlitz](https://github.com/WitherBlitz)'s NSMBW recomp for PC and Android: https://github.com/WitherBlitz/NSMB-Wii-Recompilation**
@@ -51,7 +51,7 @@ Newer Super Mario Bros. Wii is supported too. It installs from the launcher and 
 ## Features
 
 * Launcher with the game catalogue, downloads, per-game updates and Update all
-* Newer Super Mario Bros. Wii installed from the launcher, sharing the base disc
+* Newer Super Mario Bros. Wii and Newer Holiday Special installed from the launcher, sharing the base disc
 * Display styles: Detail, Banner Grid and Detail Grid
 * Per-game home menu icons and launcher banners
 * Version-only update detection with **Update available** chips
@@ -78,8 +78,8 @@ Newer Super Mario Bros. Wii is supported too. It installs from the launcher and 
 - Network access for the catalogue, Newer and updates.
 
 Only the USA disc, revision 1 works currently. Other regions and revisions put the game's code at other
-addresses, so the app checks the disc and refuses anything else. Newer does not need a Newer disc: the
-launcher downloads its pack and uses the base game's disc.
+addresses, so the app checks the disc and refuses anything else. Mods such as Newer and Holiday
+Special do not need their own discs: the launcher downloads their packs and uses the base game's disc.
 
 > [!NOTE]
 > Dumping your own disc is your responsibility, and links to
@@ -102,8 +102,8 @@ page.
    base game to `/switch/nsmbw/discs/SMNE01/` on first start.
 4. Open 'NSMBW Launcher' in the hbmenu.
 5. Optional: Open the `Download community mods & games` row to fetch the catalogue and install mods
-   such as Newer. Press Minus to open Settings for Update all and Check launcher update. Newer reuses
-   `discs/SMNE01` and keeps its data in `games/newersmbw/data/`. [Mods can also be manually installed.](https://github.com/timschneeb/nsmbw-nx-modules/#manual-installation)
+   such as Newer and Holiday Special. Press Minus to open Settings for Update all and Check launcher update. Mods reuse
+   `discs/SMNE01` and keep their data in `games/<id>/data/`. [Mods can also be manually installed.](https://github.com/timschneeb/nsmbw-nx-modules/#manual-installation)
 6. Consider overclocking if you're planning to increase resolution or using the HD texture pack. See [Performance and overclocking](#performance-and-overclocking). The NewerSMBW mod has performance issues in some later levels, so a high overclock and FPS limit is needed in some parts. This will be fixed in the future.
 
 > [!NOTE]
@@ -120,8 +120,13 @@ page.
 </p>
 
 `/switch/nsmbw/launcher.nro` is the entry point. It lists installed games under
-`/switch/nsmbw/games/`, downloads the catalogue, installs Newer, checks for updates and chainloads
+`/switch/nsmbw/games/`, downloads the catalogue, installs Newer and Holiday Special, checks for updates and chainloads
 the selected game. The games are separate NROs, which allows you to create direct forwarders for them using an app like Sphaira.
+
+### Newer Holiday Special
+
+The Holiday Special pack (v1.12) installs from the launcher like Newer and uses the same base disc.
+It keeps its saves under `games/newersmbw-holiday/data/`.
 
 ## Performance and overclocking
 
@@ -269,7 +274,7 @@ No. Don't ask.
 
 **Which game version works?**
 USA `SMNE01`, revision 1. Other regions and revisions are **rejected**: their code sits at other
-addresses, and this port's runtime hooks the game at exact addresses. For Newer, v1.30 (USA,
+addresses, and this port's runtime hooks the game at exact addresses. For Newer, v1.30 and Holiday Special v1.12 (USA,
 `SMNE03`).
 
 **Will you fix original bugs?**

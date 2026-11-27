@@ -48,12 +48,12 @@ struct SaveRedirect {
     bool clone = false;
 };
 
-// Newer ships its resources as one RomFS image beside the NRO. Mounts
+// A mod ships its resources as one RomFS image beside the NRO. Mounts
 // it as "pak" once; safe to call before the DVD layer initialises.
-bool MountNewerPack();
+bool MountGamePack();
 // True when the mounted pack carries the product's version file (NewerRes/...)
 // at the expected size.
-bool NewerPackVersionFileValid(uintmax_t expected);
+bool PackVersionFileValid(uintmax_t expected);
 
 // Discovered overlay roots in precedence order (highest priority first), each
 // with its active Riivolution mappings. Loaded once, thread-safe.

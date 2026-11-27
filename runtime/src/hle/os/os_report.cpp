@@ -8,6 +8,8 @@
 
 #include "abi_bridge.h"
 #include "memory.h"
+#include "perf_stats.h"
+#include "runtime_log.h"
 #include "hle_stubs.h"
 #include "hle/guest_printf.h"
 #include "ppc_runtime.h"
@@ -126,6 +128,14 @@ static void HLE_LogOSReport(CpuContext* cpu, const char* fmt)
     }
 
     std::cout << "[OSReport] " << buffer;
+    // Profiling runs keep a copy in the captured log: on the console stdout may not be visible,
+    // and mod loaders report their DLCode address here.
+    if (PerfStats::Enabled()) {
+        RT_LOGF(RT_TAG_RUNTIME, "[OSReport] %s", buffer.c_str());
+        if (buffer.empty() || buffer.back() != '\n') {
+            std::fputc('\n', stderr);
+        }
+    }
 
     // OSReport strings don't always end in \n. On the Switch, stdout is buffered and flushed by
     // the background log thread: a per-report flush here is a blocking SD write on the guest

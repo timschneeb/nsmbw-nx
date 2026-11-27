@@ -95,3 +95,6 @@ build-switch-hermetic/
 # Python cache
 __pycache__/
 *.pyc
+
+# Translated mod trees
+/generated-*/

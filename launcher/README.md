@@ -27,12 +27,15 @@ See `launcher/tests/pc/README.md` for coverage, screenshots and limitations.
 
 ## Generated translation folders
 
-The base game and Newer use separate translator output folders: `generated/` for the base game and
-`generated-newer/` for Newer. Configure the runtime build with the matching folder:
+The base game and each mod use separate translator output folders: `generated/`, `generated-newer/`
+and `generated-holiday/`. Configure the runtime build with the matching folder and product:
 
 ```
 cmake -S runtime -B build-switch-product -DMKW_GENERATED_DIR="$PWD/generated" ...
-cmake -S runtime -B build-switch-newer -DMKW_GENERATED_DIR="$PWD/generated-newer" ...
+cmake -S runtime -B build-switch-newer -DMKW_GENERATED_DIR="$PWD/generated-newer" \
+  -DNSMBW_PRODUCT=newer -DNSMBW_GAME_ID=SMNE03 ...
+cmake -S runtime -B build-switch-holiday -DMKW_GENERATED_DIR="$PWD/generated-holiday" \
+  -DNSMBW_PRODUCT=holiday -DNSMBW_GAME_ID=SMNE01 ...
 ```
 
 `projects/nsmbw/tools/build-linux.sh` selects the folder automatically.
@@ -145,8 +148,9 @@ catalogue before reporting.
 
 `recomp_version` is the release/bundle version shared by the main and modules repositories. Each NRO
 also carries its own `recomp_version` and a `game_version`, plus the `region` it was recompiled from
-(`U` for USA, `E` for Europe, `J` for Japan). Vanilla `1.0.0` is USA revision 1. The Newer RomFS is a
-pack, so it has `game_version` and `region` but no `recomp_version`. The old single `version` field
+(`U` for USA, `E` for Europe, `J` for Japan). Vanilla `1.0.0` is USA revision 1, Newer `1.30` and
+Holiday Special `1.12`. A mod RomFS is a pack, so it has `game_version` and `region` but no
+`recomp_version`. The old single `version` field
 is still accepted as a compatibility fallback.
 
 Components may use `url` (HTTP) or `path` (SD card). Each component has its own version, so an NRO
@@ -154,7 +158,7 @@ bump with an unchanged RomFS downloads only the NRO. `vanilla` has no RomFS comp
 launcher deliver runtime updates without a new ZIP.
 
 The `banner` is optional. Banners are downloaded when the catalogue is fetched. The release ZIP also
-contains the Newer banner as an offline fallback, so a fresh or offline launcher shows it before the
+contains the mod banners as offline fallbacks, so a fresh or offline launcher shows them before the
 first fetch. The launcher replaces the cached image when the catalogue checksum changes.
 
 Use `tools/make_assets.py` to fill in the hashes from the built files:
@@ -261,13 +265,13 @@ GitHub is fetched over verified TLS using the root bundle embedded in the launch
 ## Release assets
 
 The main repository release carries only `NSMBW-switch.zip` and `assets.json`. The ZIP contains
-`switch/nsmbw/launcher.nro`, `assets.json`, the banner and `games/vanilla/game.nro`, so the user
+`switch/nsmbw/launcher.nro`, `assets.json`, the banners and `games/vanilla/game.nro`, so the user
 copies one `switch` folder to the SD root.
 
 The modules repository (`nsmbw-nx-modules`) carries every standalone binary and resource:
-`launcher.nro`, `vanilla-game.nro`, `vanilla-debug-symbols.zip`, `newersmbw-game.nro`,
-`newersmbw.romfs.zst`, `newersmbw-banner.png` and `newersmbw-debug-symbols.zip`. All catalogue URLs
-point there, so users do not see raw NROs on the main release page.
+`launcher.nro`, `vanilla-game.nro`, `vanilla-debug-symbols.zip`, the Newer assets and one NRO,
+RomFS, banner and debug-symbol archive per mod in `projects/nsmbw/mods/`. All catalogue URLs point
+there, so users do not see raw NROs on the main release page.
 
 Stage both releases after the final build:
 
@@ -292,10 +296,10 @@ The repository root `VERSION` file is the single release version. Both the launc
 Switch runtime NACP read it, and `package_release.py` refuses to stage when an NRO NACP disagrees
 with it. The release tag must match it (`v0.0.1` for `0.0.1`).
 
-The launcher NACP, vanilla NRO NACP, Newer NRO NACP and top-level `recomp_version` are all the
-release version. The game version is separate: vanilla `1.0.0` for USA revision 1, Newer `1.30` for
-the pack. The Newer RomFS keeps the pack version. Bump `VERSION` and rebuild both products for a new
-release; no manual hash editing is needed.
+The launcher NACP can stay on its own version (1.0.0) while the game NROs and top-level
+`recomp_version` move to the release version: pass `--launcher-version 1.0.0`. The game version is
+separate: vanilla `1.0.0` for USA revision 1, Newer `1.30`, Holiday Special `1.12`. Bump `VERSION`,
+rebuild the game NROs and stage; no manual hash editing is needed.
 
 The launcher disables console auto-sleep while it is open, so long downloads and extractions are not
 interrupted by the idle timer.

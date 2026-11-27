@@ -140,9 +140,12 @@ if(MKW_MEMTRACE)
     target_compile_definitions(mkw_runtime_common PRIVATE NSMBW_MEMTRACE=1)
 endif()
 if(MKW_PLATFORM_SWITCH)
-    if(NSMBW_GAME_ID STREQUAL "SMNE03")
+    if(NSMBW_PRODUCT STREQUAL "newer")
         target_compile_definitions(mkw_runtime_common PRIVATE
             NSMBW_BOOT_TITLE="Newer Super Mario Bros. Wii")
+    elseif(NSMBW_PRODUCT STREQUAL "holiday")
+        target_compile_definitions(mkw_runtime_common PRIVATE
+            NSMBW_BOOT_TITLE="Newer Holiday Special")
     else()
         target_compile_definitions(mkw_runtime_common PRIVATE
             NSMBW_BOOT_TITLE="New Super Mario Bros. Wii")
@@ -417,7 +420,7 @@ function(mkw_configure_product target)
     set(MKW_INITIAL_PIPELINE_CACHE
         "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/initial_pipeline_cache.db")
     # Newer reuses most of the base renderer and ships its own captured pipeline cache.
-    if(NSMBW_GAME_ID STREQUAL "SMNE03")
+    if(NSMBW_PRODUCT STREQUAL "newer")
         set(MKW_INITIAL_PIPELINE_CACHE
             "${MKW_RUNTIME_SOURCE_DIR}/assets/pipeline/newer_pipeline_cache.db")
     endif()
@@ -494,8 +497,15 @@ if(MKW_PLATFORM_SWITCH)
         message(FATAL_ERROR "VERSION is empty")
     endif()
     set(MKW_SWITCH_NACP_VERSION "${NSMBW_RECOMP_VERSION}")
+    if(NSMBW_PRODUCT STREQUAL "newer")
+        set(MKW_SWITCH_NACP_NAME "Newer Super Mario Bros. Wii")
+    elseif(NSMBW_PRODUCT STREQUAL "holiday")
+        set(MKW_SWITCH_NACP_NAME "Newer SMBW Holiday Special")
+    else()
+        set(MKW_SWITCH_NACP_NAME "New Super Mario Bros. Wii")
+    endif()
     execute_process(
-        COMMAND "${MKW_NACPTOOL}" --create "New Super Mario Bros. Wii" "Aurora Recomp"
+        COMMAND "${MKW_NACPTOOL}" --create "${MKW_SWITCH_NACP_NAME}" "Aurora Recomp"
             "${MKW_SWITCH_NACP_VERSION}" "${MKW_SWITCH_NACP}"
         RESULT_VARIABLE MKW_NACP_RESULT)
     if(NOT MKW_NACP_RESULT EQUAL 0)
@@ -503,9 +513,11 @@ if(MKW_PLATFORM_SWITCH)
     endif()
     # Per-game home menu icon, so several game.nro files stay distinguishable. Mods without
     # their own icon keep the generic one.
-    if(NSMBW_GAME_ID STREQUAL "SMNE03")
+    if(NSMBW_PRODUCT STREQUAL "newer")
         set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/newersmbw_icon.png")
-    elseif(NSMBW_GAME_ID STREQUAL "SMNE01")
+    elseif(NSMBW_PRODUCT STREQUAL "holiday")
+        set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/newersmbw-holiday_icon.png")
+    elseif(NSMBW_PRODUCT STREQUAL "vanilla")
         set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/src/platform/switch/nsmbw_icon.png")
     else()
         set(MKW_SWITCH_ICON "${MKW_RUNTIME_SOURCE_DIR}/assets/icon/switch.jpg")

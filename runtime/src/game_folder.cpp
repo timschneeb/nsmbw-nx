@@ -618,12 +618,12 @@ std::string Check(const fs::path& root, bool* incomplete) {
     const int revision = static_cast<unsigned char>(header[7]);
     const RuntimeProduct::Descriptor& product = RuntimeProduct::Active();
     const std::string disc(product.discName);
-    // Newer runs on the vanilla folder: the disc header still says SMNE01. The
+    // A pack mod runs on the vanilla folder: the disc header still says SMNE01. The
     // assets.romfs beside the program proves which mod this is.
-    const bool newer_shared = RuntimeProduct::IsNewer() && id == "SMNE01" && revision == 1;
-    if (newer_shared) {
-        if (!RuntimeRiivolution::NewerPackVersionFileValid(product.versionFileSize)) {
-            return leftOut("It has no Newer Super Mario Bros. Wii resources (assets.romfs) beside the program.");
+    const bool pack_shared = RuntimeProduct::UsesPack() && id == "SMNE01" && revision == 1;
+    if (pack_shared) {
+        if (!RuntimeRiivolution::PackVersionFileValid(product.versionFileSize)) {
+            return leftOut("It has no " + GameName() + " resources (assets.romfs) beside the program.");
         }
     } else if (std::string problem = IdProblem(id, revision); !problem.empty()) {
         return problem;
@@ -647,7 +647,7 @@ std::string Check(const fs::path& root, bool* incomplete) {
     if (std::string problem = CheckModules(id, disc, sizeOf); !problem.empty()) {
         return problem;
     }
-    if (newer_shared) {
+    if (pack_shared) {
         return {};
     }
     return CheckVersionFile(id, disc, std::string(product.versionFile), product.versionFileSize, sizeOf);
@@ -674,6 +674,10 @@ std::string CheckImage(const fs::path& image, bool* incomplete) {
     const auto sizeOf = [&](std::string_view relative) -> uintmax_t { return disc->FileSize(relative); };
     if (std::string problem = CheckModules(id, discName, sizeOf); !problem.empty()) {
         return problem;
+    }
+    // Pack mods run on the vanilla image; their version file lives in assets.romfs, not on the disc.
+    if (RuntimeProduct::UsesPack()) {
+        return {};
     }
     if (std::string problem =
             CheckVersionFile(id, discName, std::string(product.versionFile), product.versionFileSize, sizeOf);

@@ -19,6 +19,9 @@ struct Descriptor {
     std::string_view discName = "New Super Mario Bros. Wii for the USA (SMNE01), revision 1";
     std::string_view versionFile = {};
     uint64_t versionFileSize = 0;
+    // Folder inside the RomFS pack that holds the mod's files (NewerSMBW, XmasNewer, ...).
+    // Empty when this build runs without a pack.
+    std::string_view packFolder = {};
     // The game's save in the NAND (network play hands it to every player); mods rename it.
     std::string_view saveFile = "title/00010000/534d4e45/data/wiimj2d.sav";
     // Settings, saves and caches go to a folder of their own (Documents\<this> on Windows, a
@@ -40,6 +43,12 @@ inline bool IsRetroRewind() noexcept {
 
 inline bool IsNewer() noexcept {
     return Active().gameId == "SMNE03";
+}
+
+// True when this build runs a mod over the extracted SMNE01 base and needs its RomFS pack
+// (assets.romfs mounted as pak:/).
+inline bool UsesPack() noexcept {
+    return !Active().versionFile.empty() && !Active().packFolder.empty();
 }
 
 } // namespace RuntimeProduct

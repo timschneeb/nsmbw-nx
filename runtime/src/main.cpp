@@ -1990,9 +1990,9 @@ int RuntimeMain(int argc, char** argv) {
                       << rendererPathError.message() << std::endl;
         }
 #if defined(MKW_PLATFORM_SWITCH)
-        // Newer reuses the base game's shaders. Copy the vanilla Dawn cache once,
+        // Pack mods reuse the base game's shaders. Copy the vanilla Dawn cache once,
         // before the renderer opens it and the shader compile screen appears.
-        if (RuntimeProduct::IsNewer()) {
+        if (RuntimeProduct::UsesPack()) {
             const auto dawnCache = rendererCacheDirectory / "dawn_cache.db";
             std::error_code dawnCacheError;
             if (!std::filesystem::exists(dawnCache, dawnCacheError)) {

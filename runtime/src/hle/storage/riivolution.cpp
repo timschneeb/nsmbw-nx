@@ -152,10 +152,10 @@ std::vector<RuntimeRiivolution::Overlay> RiivoDiscoverRoots() {
                      "canonical Retro Rewind installation");
     }
 
-    // Newer ships as one RomFS image beside its NRO. Mounting it gives the
+    // A mod ships as one RomFS image beside its NRO. Mounting it gives the
     // overlay a read-only devoptab root, so the pack never needs unpacking.
-    if (RuntimeRiivolution::MountNewerPack()) {
-        RiivoAddRoot(overlays, fs::path("pak:/"), "Newer RomFS");
+    if (RuntimeRiivolution::MountGamePack()) {
+        RiivoAddRoot(overlays, fs::path("pak:/"), "Game RomFS");
     }
 
     // Loose files remain supported for manual installs. Explicit config roots win.
@@ -424,8 +424,8 @@ void RiivoInitialize() {
 
 namespace RuntimeRiivolution {
 
-bool MountNewerPack() {
-    if (!RuntimeProduct::IsNewer()) {
+bool MountGamePack() {
+    if (!RuntimeProduct::UsesPack()) {
         return false;
     }
 
@@ -461,26 +461,29 @@ bool MountNewerPack() {
 #endif
 }
 
-bool NewerPackVersionFileValid(uintmax_t expected) {
+bool PackVersionFileValid(uintmax_t expected) {
+    const RuntimeProduct::Descriptor& product = RuntimeProduct::Active();
+    const std::string versionFile(product.versionFile);
+    const std::string packFolder(product.packFolder);
+    if (versionFile.empty()) {
+        return true;
+    }
+
 #if defined(__SWITCH__)
-    if (!MountNewerPack()) {
+    if (!MountGamePack()) {
         return false;
     }
 
     std::error_code ec;
-    const auto path = fs::path("pak:/NewerSMBW") / fs::path(std::string(RuntimeProduct::Active().versionFile));
+    const auto path = fs::path("pak:/") / packFolder / versionFile;
     const uintmax_t size = fs::file_size(path, ec);
     RT_LOG(RT_TAG_RIIVOLUTION) << "pack version file " << PathToUtf8(path) << ": " << (ec ? 0 : size)
               << " bytes (expected " << expected << ")" << std::endl;
     return !ec && size == expected;
 #else
     // No RomFS mount on desktop: the pack's version file is read from a configured overlay root.
-    const std::string versionFile = std::string(RuntimeProduct::Active().versionFile);
-    if (versionFile.empty()) {
-        return true;
-    }
     for (const auto& root : RuntimeConfigFile::OverlayRoots()) {
-        const auto path = RuntimeNandPath::ResolveConfiguredPath(root) / "NewerSMBW" / versionFile;
+        const auto path = RuntimeNandPath::ResolveConfiguredPath(root) / packFolder / versionFile;
         std::error_code ec;
         const uintmax_t size = fs::file_size(path, ec);
         RT_LOG(RT_TAG_RIIVOLUTION) << "pack version file " << PathToUtf8(path) << ": " << (ec ? 0 : size)

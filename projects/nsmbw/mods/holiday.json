@@ -1,0 +1,34 @@
+{
+  "id": "newersmbw-holiday",
+  "name": "Newer Super Mario Bros. Wii Holiday Special",
+  "author": "Newer Team",
+  "game_version": "1.12",
+  "product": "holiday",
+  "game_id": "SMNE01",
+  "project": "projects/nsmbw/recomp-holiday.yml",
+  "generated": "generated-holiday",
+  "build_dir": "build-switch-holiday",
+  "pack": {
+    "folder": "XmasNewer",
+    "xml": "riivolution/XmasNewer.xml",
+    "loader": "XmasNewer/Loader.bin",
+    "version_file": "NewerRes/DLCodeUS_1.bin",
+    "version_size": 1860,
+    "dlcode_addr": "0x80DF8FC0",
+    "newer_fixes": false,
+    "pad_size": 0
+  },
+  "assets": {
+    "nro": "newersmbw-holiday-game.nro",
+    "romfs": "newersmbw-holiday.romfs.zst",
+    "banner": "newersmbw-holiday-banner.png",
+    "symbols": "newersmbw-holiday-debug-symbols.zip"
+  },
+  "nro": "build-switch-holiday/NSMBW.nro",
+  "symbols": "build-switch-holiday/dist/debug-symbols.zip",
+  "romfs_zst": "/tmp/opencode/newersmbw-holiday.romfs.zst",
+  "image": "/tmp/opencode/newersmbw-holiday.romfs",
+  "banner_file": "launcher/assets/banners/newersmbw-holiday.png",
+  "icon_file": "runtime/src/platform/switch/newersmbw-holiday_icon.png",
+  "logo_file": "runtime/src/platform/switch/newersmbw-holiday_logo.png"
+}

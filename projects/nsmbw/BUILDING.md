@@ -177,6 +177,38 @@ Translate [`recomp-newer-pack.yml`](recomp-newer-pack.yml) (same as `recomp-newe
 `-DNSMBW_GAME_ID=SMNE03`. The loader and the blob are translated like the game's own code; the
 loader still runs at boot and loads the pack's `NewerRes` files over the overlay.
 
+### Newer Holiday Special (pack mod)
+
+Holiday Special is a pack over the vanilla USA rev 1 disc with its own small DLCode, not a full
+Newer build. Extract the official pack, then prelink it with the same tool:
+
+```
+python3 projects/nsmbw/tools/newer_pack_prelink.py _references/Newer_W_Holiday_Special_1.12 \
+    --pack-folder XmasNewer --xml riivolution/XmasNewer.xml --no-newer-fixes
+```
+
+`--no-newer-fixes` skips Newer 1.30's replay-heap and DVDDiskCheck patches, which the Holiday pack
+does not need. `--dlcode-addr` defaults to `0x80DF8FC0`, the address the loader's allocation lands
+at. If the loader logs another `[OSReport] DLCode @ ...` address, pass the measured value. A pack
+whose DLCode is much smaller can instead be padded to Newer's 463,252-byte allocation size in the
+RomFS copy, which keeps the loader on the proven `0x80DF8FC0`; the manifest's `pad_size` records
+which choice was used. Holiday's 1,860-byte DLCode was measured at `0x80DF8FC0` in the Switch
+build, so it uses the original file and no padding.
+
+Translate [`recomp-holiday.yml`](recomp-holiday.yml) into `generated-holiday/`, then configure the
+Switch build with `-DNSMBW_PRODUCT=holiday -DNSMBW_GAME_ID=SMNE01
+-DMKW_GENERATED_DIR=<repo>/generated-holiday`. The runtime's product descriptor is
+`src/product/base_product.cpp`; it names the pack folder (`XmasNewer`), version file, save
+(`XmasNer.sav`) and desktop game folder (`game-holiday`).
+
+The launcher entry is generated from [`mods/holiday.json`](mods/holiday.json) by
+`launcher/tools/package_release.py`. Pack the launcher's RomFS from the extracted pack:
+
+```
+python3 launcher/tools/pack_romfs.py _references/Newer_W_Holiday_Special_1.12 \
+    /tmp/newersmbw-holiday.romfs --keep
+```
+
 ### Switch: RomFS pack and shared base
 
 For the launcher, the pack folder is packed as one Nintendo RomFS image and zstd-compressed:
@@ -192,18 +224,18 @@ mounts it as `pak:/` and adds it as the Riivolution overlay root. Newer does not
 bytes). The launcher never copies the base tree.
 
 The Newer build ships its own Aurora pipeline cache (`assets/pipeline/newer_pipeline_cache.db`,
-selected by `NSMBW_GAME_ID=SMNE03`). On first launch the runtime also copies the vanilla Dawn cache
+selected by `NSMBW_PRODUCT=newer`). On first launch the runtime also copies the vanilla Dawn cache
 (`games/vanilla/data/Cache/dawn_cache.db`) if present, which removes most of the initial shader
 compile. Dawn cache entries are keyed by shader hashes, so the shared cache is safe.
 
-The Switch build writes `1.0.0` into the base NRO's NACP and `1.30` into Newer's. The launcher reads
-that version for manually copied games, so keep it in sync with the catalogue. The catalogue itself
-is generated from the built files with `launcher/tools/make_assets.py`; its Newer entry points at
-the mods release and includes the banner asset.
+The Switch build writes `VERSION` into each game NRO's NACP. The launcher catalogue carries the
+game versions (`1.0.0`, `1.30`, `1.12`) for updates; it is generated from the built files and the
+mod manifests with `launcher/tools/package_release.py`, and its mod entries point at the modules
+release with their banners.
 
-The base game and Newer use separate translation folders, `generated/` and `generated-newer/`.
-Configure each runtime build with `-DMKW_GENERATED_DIR=<repo>/generated` or
-`-DMKW_GENERATED_DIR=<repo>/generated-newer`; the first build after a switch recompiles most shards.
+The base game, Newer and Holiday Special use separate translation folders, `generated/`,
+`generated-newer/` and `generated-holiday/`. Configure each runtime build with
+`-DMKW_GENERATED_DIR=<repo>/generated...`; the first build after a switch recompiles most shards.
 
 Things that are specific to Newer:
 

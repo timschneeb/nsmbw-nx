@@ -34,14 +34,15 @@ from make_assets import build_assets, write_assets
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VERSION_FILE = REPO_ROOT / "VERSION"
 DEFAULT_LAUNCHER = REPO_ROOT / "build-launcher" / "launcher.nro"
-DEFAULT_VANILLA = REPO_ROOT / "build-switch-product" / "NSMBW.nro"
+DEFAULT_VANILLA = REPO_ROOT / "build-switch-product2" / "NSMBW.nro"
 DEFAULT_NEWER = REPO_ROOT / "build-switch-newer" / "NSMBW.nro"
 DEFAULT_ROMFS = Path("/tmp/opencode/newersmbw.romfs.zst")
 DEFAULT_IMAGE = Path("/tmp/opencode/newersmbw.romfs")
 DEFAULT_BANNER = REPO_ROOT / "launcher" / "assets" / "banners" / "newersmbw.png"
-DEFAULT_VANILLA_SYMBOLS = REPO_ROOT / "build-switch-product" / "dist" / "debug-symbols.zip"
+DEFAULT_VANILLA_SYMBOLS = REPO_ROOT / "build-switch-product2" / "dist" / "debug-symbols.zip"
 DEFAULT_NEWER_SYMBOLS = REPO_ROOT / "build-switch-newer" / "dist" / "debug-symbols.zip"
 DEFAULT_SOURCE_ASSETS = REPO_ROOT / "launcher" / "assets.json"
+MODS_DIR = REPO_ROOT / "projects" / "nsmbw" / "mods"
 
 # NacpStruct.display_version in libnx.
 NACP_DISPLAY_VERSION = 0x3060
@@ -58,9 +59,9 @@ INSTALL_TEXT = """New Super Mario Bros. Wii for Nintendo Switch
    .ciso, .wia or .rvz) next to launcher.nro. The launcher extracts the shared
    base game data to switch/nsmbw/discs/SMNE01.
 
-4. Newer Super Mario Bros. Wii is installed from "Download games" in the
-   launcher. The base game data is shared; Newer only adds its own NRO and
-   resource image.
+4. Mods such as Newer Super Mario Bros. Wii and Newer Holiday Special are
+   installed from "Download games" in the launcher. The base game data is
+   shared; each mod only adds its own NRO and resource image.
 """
 
 
@@ -114,7 +115,93 @@ def release_url(repo: str, tag: str, pinned: bool, name: str) -> str:
     return "https://github.com/%s/releases/latest/download/%s" % (repo, name)
 
 
-def source_spec(args, version: str, launcher_version: str) -> dict:
+def repo_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def load_mods() -> list[dict]:
+    mods = []
+    if not MODS_DIR.is_dir():
+        return mods
+    for path in sorted(MODS_DIR.glob("*.json")):
+        mod = json.loads(path.read_text(encoding="utf-8"))
+        assets = mod.get("assets", {})
+        mod["nro_path"] = repo_path(mod["nro"])
+        mod["symbols_path"] = repo_path(mod["symbols"])
+        mod["romfs_path"] = repo_path(mod["romfs_zst"])
+        mod["image_path"] = repo_path(mod["image"])
+        mod["banner_path"] = repo_path(mod["banner_file"])
+        for key in ("nro", "romfs", "banner", "symbols"):
+            if not assets.get(key):
+                raise ValueError("%s has no assets.%s" % (path, key))
+        mods.append(mod)
+    return mods
+
+
+def source_spec(args, version: str, launcher_version: str, mods: list[dict]) -> dict:
+    games = {
+        "vanilla": {
+            "name": "New Super Mario Bros. Wii",
+            "author": "Nintendo",
+            "nro": {
+                "recomp_version": version,
+                "game_version": args.vanilla_game_version,
+                "region": args.region,
+                "file": str(args.vanilla),
+                "url": release_url(args.modules_repo, args.tag, args.pinned, "vanilla-game.nro"),
+            },
+        },
+        "newersmbw": {
+            "name": "Newer Super Mario Bros. Wii",
+            "author": "Newer Team",
+            "nro": {
+                "recomp_version": version,
+                "game_version": args.newer_game_version,
+                "region": args.region,
+                "file": str(args.newer),
+                "url": release_url(args.modules_repo, args.tag, args.pinned,
+                                   "newersmbw-game.nro"),
+            },
+            "romfs": {
+                "game_version": args.newer_romfs_version or args.newer_game_version,
+                "region": args.region,
+                "file": str(args.romfs),
+                "image": str(args.image),
+                "url": release_url(args.modules_repo, args.tag, args.pinned,
+                                   "newersmbw.romfs.zst"),
+            },
+            "banner": {
+                "file": str(args.banner),
+                "url": release_url(args.modules_repo, args.tag, args.pinned,
+                                   "newersmbw-banner.png"),
+            },
+        },
+    }
+    for mod in mods:
+        assets = mod["assets"]
+        games[mod["id"]] = {
+            "name": mod["name"],
+            "author": mod["author"],
+            "nro": {
+                "recomp_version": version,
+                "game_version": mod["game_version"],
+                "region": args.region,
+                "file": str(mod["nro_path"]),
+                "url": release_url(args.modules_repo, args.tag, args.pinned, assets["nro"]),
+            },
+            "romfs": {
+                "game_version": mod["game_version"],
+                "region": args.region,
+                "file": str(mod["romfs_path"]),
+                "image": str(mod["image_path"]),
+                "url": release_url(args.modules_repo, args.tag, args.pinned, assets["romfs"]),
+            },
+            "banner": {
+                "file": str(mod["banner_path"]),
+                "url": release_url(args.modules_repo, args.tag, args.pinned, assets["banner"]),
+            },
+        }
     return {
         "recomp_version": version,
         "launcher": {
@@ -122,44 +209,7 @@ def source_spec(args, version: str, launcher_version: str) -> dict:
             "file": str(args.launcher),
             "url": release_url(args.modules_repo, args.tag, args.pinned, "launcher.nro"),
         },
-        "games": {
-            "vanilla": {
-                "name": "New Super Mario Bros. Wii",
-                "author": "Nintendo",
-                "nro": {
-                    "recomp_version": version,
-                    "game_version": args.vanilla_game_version,
-                    "region": args.region,
-                    "file": str(args.vanilla),
-                    "url": release_url(args.modules_repo, args.tag, args.pinned, "vanilla-game.nro"),
-                },
-            },
-            "newersmbw": {
-                "name": "Newer Super Mario Bros. Wii",
-                "author": "Newer Team",
-                "nro": {
-                    "recomp_version": version,
-                    "game_version": args.newer_game_version,
-                    "region": args.region,
-                    "file": str(args.newer),
-                    "url": release_url(args.modules_repo, args.tag, args.pinned,
-                                       "newersmbw-game.nro"),
-                },
-                "romfs": {
-                    "game_version": args.newer_romfs_version or args.newer_game_version,
-                    "region": args.region,
-                    "file": str(args.romfs),
-                    "image": str(args.image),
-                    "url": release_url(args.modules_repo, args.tag, args.pinned,
-                                       "newersmbw.romfs.zst"),
-                },
-                "banner": {
-                    "file": str(args.banner),
-                    "url": release_url(args.modules_repo, args.tag, args.pinned,
-                                       "newersmbw-banner.png"),
-                },
-            },
-        },
+        "games": games,
     }
 
 
@@ -171,13 +221,14 @@ def copy_checked(source: Path, target: Path) -> None:
 
 
 def stage_sd_zip(main_dir: Path, work_dir: Path, launcher: Path, assets_path: Path,
-                 banner: Path, vanilla: Path) -> Path:
+                 banners: list[tuple[str, Path]], vanilla: Path) -> Path:
     stage = work_dir / "switch" / "nsmbw"
     (stage / "banners").mkdir(parents=True, exist_ok=True)
     (stage / "games" / "vanilla").mkdir(parents=True, exist_ok=True)
     copy_checked(launcher, stage / "launcher.nro")
     copy_checked(assets_path, stage / "assets.json")
-    copy_checked(banner, stage / "banners" / "newersmbw.png")
+    for game_id, banner in banners:
+        copy_checked(banner, stage / "banners" / (game_id + ".png"))
     copy_checked(vanilla, stage / "games" / "vanilla" / "game.nro")
     (stage / "INSTALL.txt").write_text(INSTALL_TEXT, encoding="utf-8")
 
@@ -254,21 +305,28 @@ def main() -> int:
     if args.tag.lstrip("v") != version:
         raise ValueError("tag %s does not match VERSION %s" % (args.tag, version))
     launcher_version = args.launcher_version or version
+    mods = [] if args.launcher_only else load_mods()
 
     required = [args.launcher, args.vanilla, args.banner]
     if not args.launcher_only:
         required += [args.newer, args.romfs, args.image]
+        for mod in mods:
+            required += [mod["nro_path"], mod["romfs_path"], mod["image_path"],
+                         mod["banner_path"]]
     for path in required:
         if not path.is_file():
             raise ValueError("missing %s" % path)
     if not args.skip_symbols and not args.launcher_only:
-        for path in (args.vanilla_symbols, args.newer_symbols):
+        symbols = [args.vanilla_symbols, args.newer_symbols]
+        symbols += [mod["symbols_path"] for mod in mods]
+        for path in symbols:
             if not path.is_file():
                 raise ValueError("missing %s (use --skip-symbols to omit)" % path)
 
     versioned = [(args.launcher, launcher_version)]
     if not args.launcher_only:
         versioned += [(args.vanilla, version), (args.newer, version)]
+        versioned += [(mod["nro_path"], version) for mod in mods]
     for path, expected in versioned:
         actual = nro_version(path)
         if actual != expected:
@@ -294,7 +352,7 @@ def main() -> int:
                 name = url.rsplit("/", 1)[-1]
                 component["url"] = release_url(args.modules_repo, args.game_tag, True, name)
     else:
-        assets = build_assets(source_spec(args, version, launcher_version))
+        assets = build_assets(source_spec(args, version, launcher_version, mods))
 
     if args.out.exists():
         shutil.rmtree(args.out)
@@ -316,9 +374,18 @@ def main() -> int:
         if not args.skip_symbols:
             copy_checked(args.vanilla_symbols, modules_dir / "vanilla-debug-symbols.zip")
             copy_checked(args.newer_symbols, modules_dir / "newersmbw-debug-symbols.zip")
+        for mod in mods:
+            mod_assets = mod["assets"]
+            copy_checked(mod["nro_path"], modules_dir / mod_assets["nro"])
+            copy_checked(mod["romfs_path"], modules_dir / mod_assets["romfs"])
+            copy_checked(mod["banner_path"], modules_dir / mod_assets["banner"])
+            if not args.skip_symbols:
+                copy_checked(mod["symbols_path"], modules_dir / mod_assets["symbols"])
 
+    banners = [("newersmbw", args.banner)]
+    banners += [(mod["id"], mod["banner_path"]) for mod in mods]
     zip_path = stage_sd_zip(main_dir, args.out / ".stage", args.launcher,
-                            main_dir / "assets.json", args.banner, args.vanilla)
+                            main_dir / "assets.json", banners, args.vanilla)
 
     # The main release is the user-facing ZIP and the catalogue only.
     main_files = [zip_path, main_dir / "assets.json"]
@@ -330,6 +397,12 @@ def main() -> int:
         if not args.skip_symbols:
             modules_files += [modules_dir / "vanilla-debug-symbols.zip",
                               modules_dir / "newersmbw-debug-symbols.zip"]
+        for mod in mods:
+            mod_assets = mod["assets"]
+            modules_files += [modules_dir / mod_assets["nro"], modules_dir / mod_assets["romfs"],
+                              modules_dir / mod_assets["banner"]]
+            if not args.skip_symbols:
+                modules_files.append(modules_dir / mod_assets["symbols"])
 
     manifest = {
         "tag": args.tag,
